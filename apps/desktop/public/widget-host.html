@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https: http:; font-src data: https: http:; connect-src https: http:;" />
+  <title>Widget Host</title>
+</head>
+<body>
+  <script>
+    window.addEventListener('message', (event) => {
+      if (event.source !== window.parent) {
+        return;
+      }
+
+      if (!event.data || event.data.type !== 'cakal-widget-render' || typeof event.data.html !== 'string') {
+        return;
+      }
+
+      document.open();
+      document.write(event.data.html);
+      document.close();
+    });
+  </script>
+</body>
+</html>

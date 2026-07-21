@@ -1,0 +1,44 @@
+# ── Ortam değişkenleri ve anahtarlar ──
+.env
+.env.*
+!.env.example
+
+# ── Bağımlılıklar ve derleme çıktıları ──
+node_modules/
+dist/
+out/
+release/
+*.tsbuildinfo
+
+# ── Loglar ──
+*.log
+logs/
+
+# ── Çakal runtime: sandbox (LLM üretimi dosyalar + dev secret fallback) ──
+.cakal-sandbox/
+*.cakal-backup
+backups/
+
+# ── Veritabanı dosyaları ──
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Secret ve kimlik dosyaları ──
+secrets/
+credentials/
+mcp-config.json
+.vscode/mcp.json
+supabase/.temp/
+
+# ── IDE ──
+.idea/
+
+# ── Kişisel notlar ve veri dökümleri ──
+Çakal Projesi Geliştirme.txt
+apps/desktop/search_results.csv
+trendyol-test.html
+
+# ── OS ──
+Thumbs.db
+.DS_Store

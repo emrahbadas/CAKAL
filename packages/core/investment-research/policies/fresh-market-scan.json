@@ -1,0 +1,40 @@
+{
+  "id": "fresh-market-scan",
+  "version": "1.0.0",
+  "memory": {
+    "use_user_preferences": true,
+    "use_previous_candidates": false,
+    "use_watchlist_as_seed": false,
+    "use_previous_recommendations_as_evidence": false
+  },
+  "required_states": [
+    "RESEARCH_CHARTER_CREATED",
+    "UNIVERSE_FROZEN",
+    "SOURCE_PLAN_CREATED",
+    "DISCOVERY_RESEARCH",
+    "CANDIDATE_SCREENING",
+    "DEEP_DIVE_RESEARCH",
+    "VALUATION_ANALYSIS",
+    "SCENARIO_ANALYSIS",
+    "RISK_ANALYSIS",
+    "RED_TEAM_REVIEW",
+    "EVIDENCE_VALIDATION",
+    "DECISION_READY",
+    "REPORT_READY",
+    "MONITORING_PLAN_CREATED"
+  ],
+  "forbidden_shortcuts": [
+    "select_only_recent_gainers",
+    "use_search_snippet_as_evidence",
+    "recommend_from_single_source",
+    "skip_counter_thesis",
+    "use_memory_as_evidence",
+    "use_watchlist_as_seed"
+  ],
+  "final_decision": {
+    "require_primary_evidence": true,
+    "require_counter_thesis": true,
+    "require_risk_analysis": true,
+    "allow_personalized_buy_without_mandate": false
+  }
+}

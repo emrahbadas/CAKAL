@@ -1,0 +1,23 @@
+{
+  "id": "investment-research-base",
+  "version": "1.0.0",
+  "required_states": [
+    "RESEARCH_CHARTER_CREATED",
+    "SOURCE_PLAN_CREATED",
+    "EVIDENCE_VALIDATION",
+    "REPORT_READY"
+  ],
+  "source_tiers": {
+    "TIER_A_PRIMARY_OFFICIAL": ["exchange_filings", "regulator_records", "audited_financials", "official_macro_data"],
+    "TIER_B_OFFICIAL_CORPORATE": ["investor_relations", "management_presentations", "earnings_calls", "official_company_announcements"],
+    "TIER_C_REPUTABLE_SECONDARY": ["financial_data_providers", "reputable_financial_news", "independent_research_reports"],
+    "TIER_D_UNVERIFIED": ["social_media", "forums", "telegram", "anonymous_comments", "unverified_videos"]
+  },
+  "global_rules": [
+    "search_snippet_is_not_final_evidence",
+    "tier_d_cannot_verify_material_claim_alone",
+    "facts_and_opinions_must_be_separated",
+    "no_automatic_trade_execution",
+    "potential_mnpi_requires_manual_review"
+  ]
+}

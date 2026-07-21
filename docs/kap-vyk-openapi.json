@@ -1,0 +1,662 @@
+{
+  "openapi" : "3.0.3",
+  "info" : {
+    "title" : "KAP VYK API",
+    "description" : "Kap bildirimleri Rest tabanlı api servis projesi",
+    "version" : "0.0.1-apinizer-337-07a3583"
+  },
+  "servers" : [ {
+    "url" : "https://apigwdev.mkk.com.tr/api/vyk"
+  } ],
+  "security" : [ {
+    "basicAuth" : [ "read", "write" ]
+  } ],
+  "paths" : {
+    "/members" : {
+      "get" : {
+        "tags" : [ "Şirket Servisleri" ],
+        "summary" : "Şirket Listesi Servisi",
+        "description" : "KAP üyesi tüm şirketlerin listesini dönen servistir.",
+        "operationId" : "getMembers",
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/MemberInfo" },
+                "example" : {
+                  "title" : "string",
+                  "stockCode" : "string",
+                  "memberType" : "string",
+                  "kfifUrl" : "string"
+                }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/memberSecurities" : {
+      "get" : {
+        "tags" : [ "Şirket Servisleri" ],
+        "summary" : "Şirket Menkul Kıymet Bilgileri Servisi",
+        "description" : "IGS(işlem gören şirket) tipindeki şirketlerin özet bilgileri ve şirkete ait tüm kıymetlerin genel bilgilerini geri dönen servistir.",
+        "operationId" : "getMemberSecurities",
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/MemberSecuritiesResponse" },
+                "example" : {
+                  "member" : {
+                    "memberType" : "string",
+                    "sermayeSistemi" : "string",
+                    "kayitliSermayeTavani" : 1.5,
+                    "kstSonGecerlilikTarihi" : "string",
+                    "sirketUnvan" : "string",
+                    "mksMbrId" : "string"
+                  },
+                  "securities" : [ {
+                    "isin" : "string",
+                    "isinDesc" : "string",
+                    "borsaKodu" : "string",
+                    "takasKodu" : "string",
+                    "tertipGroup" : "string",
+                    "capital" : 1.5,
+                    "currentCapital" : 1.5,
+                    "groupCode" : "string",
+                    "groupCodeDesc" : "string",
+                    "borsadaIslemeAcik" : true
+                  } ]
+                }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/memberDetail/{id}" : {
+      "get" : {
+        "tags" : [ "Şirket Servisleri" ],
+        "summary" : "Şirket Detay Servisi",
+        "description" : "Sorgulanan şirkete ait genel bilgileri dönen servistir.",
+        "operationId" : "getMemberById",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : { "pattern" : "^\\d{1,5}$", "type" : "string" }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/CompanyDetailResponse" },
+                "example" : {
+                  "nameTr" : "string",
+                  "nameEn" : "string",
+                  "key" : "string",
+                  "publishDateTime" : "string"
+                }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/lastDisclosureIndex" : {
+      "get" : {
+        "tags" : [ "Bildirim Servisleri" ],
+        "summary" : "Yayınlanmış Son Bildirim id Servisi",
+        "description" : "Yayınlanan son Bildirime ait Id bilgisini dönen servistir.",
+        "operationId" : "getLastDisclosureIndex",
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/LastDisclosureIndexResponse" },
+                "example" : { "lastDisclosureIndex" : "string" }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/funds" : {
+      "get" : {
+        "tags" : [ "Fon Servisleri" ],
+        "summary" : "Fon Listesi Servisi",
+        "description" : "Fon listesini dönen servistir.",
+        "operationId" : "getFunds",
+        "parameters" : [
+          { "name" : "fundState", "in" : "query", "required" : false, "schema" : { "type" : "array" } },
+          { "name" : "fundClass", "in" : "query", "required" : false, "schema" : { "type" : "array" } },
+          { "name" : "fundType", "in" : "query", "required" : false, "schema" : { "type" : "array" } }
+        ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/FundInfo" }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/fundDetail/{id}" : {
+      "get" : {
+        "tags" : [ "Fon Servisleri" ],
+        "summary" : "Fon Detay Servisi",
+        "description" : "Sorgulanan fona ait genel bilgileri dönen servistir.",
+        "operationId" : "getFundById",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : { "pattern" : "^\\d{1,5}$", "type" : "string" }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/FundDetailResponse" }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/downloadAttachment/{id}" : {
+      "get" : {
+        "tags" : [ "Bildirim Servisleri" ],
+        "summary" : "Bildirim Ekleri İndirme Servisi",
+        "description" : "Bildirim detay(disclosureDetail) servis dönüşünde yer alan “attachmentUrls” alanından gelen url bilgisi ile downloadAttachment servisi çağrılarak bildirim ekleri indirilir.",
+        "operationId" : "getPublicDisclosureFile",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : { "type" : "string" }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "type" : "string", "format" : "binary" }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/disclosures" : {
+      "get" : {
+        "tags" : [ "Bildirim Servisleri" ],
+        "summary" : "Bildirim Listesi Servisi",
+        "description" : "Request mesajında gönderilen disclosureIndex’den itibaren ilk 50 bildirime ait tip, sınıf, bildirim id ve rapor id bloğunu getiren servistir.",
+        "operationId" : "getDisclosuresInfoList",
+        "parameters" : [
+          {
+            "name" : "disclosureIndex",
+            "in" : "query",
+            "description" : "Gönderilen index ten itibaren listeleme yapılacak Bildirim id bilgisi",
+            "required" : true,
+            "schema" : { "pattern" : "^\\d{1,15}$", "type" : "string" }
+          },
+          {
+            "name" : "disclosureTypes",
+            "in" : "query",
+            "description" : "Listede gönderilmesi beklenen Bildirim tipi",
+            "required" : false,
+            "schema" : { "type" : "string", "example" : "FR" }
+          },
+          {
+            "name" : "disclosureClass",
+            "in" : "query",
+            "description" : "Listede gönderilmesi beklenen Bildirim sınıfı",
+            "required" : false,
+            "schema" : { "type" : "string", "example" : "ODA" }
+          },
+          {
+            "name" : "companyId",
+            "in" : "query",
+            "required" : false,
+            "schema" : { "type" : "array" }
+          }
+        ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/DisclosureInfoResponse" },
+                "example" : {
+                  "disclosureIndex" : "string",
+                  "disclosureType" : "string",
+                  "disclosureClass" : "string",
+                  "subReportIds" : [ "string" ],
+                  "title" : "string",
+                  "companyId" : "string",
+                  "fundId" : "string",
+                  "fundCode" : "string",
+                  "acceptedDataFileTypes" : [ "string" ]
+                }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/disclosureDetail/{disclosureIndex}" : {
+      "get" : {
+        "tags" : [ "Bildirim Servisleri" ],
+        "summary" : "Bildirim Detay Servisi",
+        "description" : "Verilen bildirim indeksine ait bildirimin detaylarını getiren servistir. DisclsureIndex bilgisi disclosures servisinde listelenen numaralardan belirlenebilir.",
+        "operationId" : "getDisclosureById",
+        "parameters" : [
+          {
+            "name" : "disclosureIndex",
+            "in" : "path",
+            "description" : "Gönderilen indexe ait bildirim detayı sorgulanır",
+            "required" : true,
+            "schema" : { "pattern" : "^\\d{1,15}$", "type" : "string" }
+          },
+          {
+            "name" : "fileType",
+            "in" : "query",
+            "description" : "File Type (html|data)",
+            "required" : true,
+            "schema" : { "pattern" : "(html|data)", "type" : "string", "example" : "html" }
+          },
+          {
+            "name" : "subReportList",
+            "in" : "query",
+            "description" : "Bu alan gönderilmezse bütün alt raporlar alınır. Bu alan gönderilirse sadece belirtilen rapor id’sine ait detay alınır.",
+            "required" : false,
+            "schema" : { "type" : "string" }
+          }
+        ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/DisclosureByIdResponse" },
+                "example" : {
+                  "blockedStatus" : "string",
+                  "disclosureIndex" : "string",
+                  "senderId" : "string",
+                  "senderTitle" : "string",
+                  "senderExchCodes" : [ "string" ],
+                  "behalfSenderId" : "string",
+                  "behalfSenderTitle" : "string",
+                  "behalfSenderExchCodes" : [ "string" ],
+                  "behalfFundId" : "string",
+                  "behalfFundCode" : "string",
+                  "behalfFundTitle" : "string",
+                  "disclosureReason" : "string",
+                  "disclosureDelayStatus" : "string",
+                  "relatedDisclosureIndex" : "string",
+                  "disclosureType" : "string",
+                  "disclosureClass" : "string",
+                  "subject" : { "tr" : "string", "en" : "string" },
+                  "consolidation" : "string",
+                  "year" : "string",
+                  "period" : { "tr" : "string", "en" : "string" },
+                  "relatedStocks" : [ { "code" : "string" } ],
+                  "summary" : { "tr" : "string", "en" : "string" },
+                  "time" : "string",
+                  "link" : "string",
+                  "attachmentUrls" : [ { "url" : "string", "fileName" : "string" } ],
+                  "eventType" : "string",
+                  "eventId" : "string",
+                  "htmlMessages" : [ { "tr" : "string", "en" : "string" } ],
+                  "flatData" : [ { } ],
+                  "presentation" : [ { } ],
+                  "isBlocked" : "string",
+                  "isBlockedDescriptionTr" : "string",
+                  "isBlockedDescriptionEn" : "string"
+                }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/caEventStatus" : {
+      "get" : {
+        "tags" : [ "Bildirim Servisleri" ],
+        "summary" : "Hak Kullanım Süreç Durum Servisi",
+        "description" : "Sorgulanan hak kullanım süreçlerine ait durum bilgisinin listelendiği servistir.",
+        "operationId" : "getCAEventStatus",
+        "parameters" : [ {
+          "name" : "processRefId",
+          "in" : "query",
+          "description" : "Gönderilen süreç id lere ait süreç durumları listelenir.",
+          "required" : true,
+          "schema" : { "type" : "string" }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/CAProcessStatus" },
+                "example" : {
+                  "refId" : 1.5,
+                  "status" : "string",
+                  "statusReason" : "string",
+                  "completeDate" : "string"
+                }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    },
+    "/blockedDisclosures" : {
+      "get" : {
+        "tags" : [ "Bildirim Servisleri" ],
+        "summary" : "Bloklanmış Bildirimler Servisi",
+        "description" : "Güncel tarihe kadar KAP sisteminde erişime kapatılan bildirimlerin ve bildirim eklerinin listesi dönülür.",
+        "operationId" : "getBlockedDisclosures",
+        "responses" : {
+          "200" : {
+            "description" : "Successful Operation",
+            "content" : {
+              "application/json" : {
+                "schema" : { "$ref" : "#/components/schemas/BlockedBase" }
+              }
+            }
+          },
+          "400" : { "description" : "Bad Request", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } },
+          "500" : { "description" : "Server Error", "content" : { "application/json" : { "schema" : { "$ref" : "#/components/schemas/VykErrorResponse" } } } }
+        }
+      }
+    }
+  },
+  "components" : {
+    "schemas" : {
+      "VykErrorResponse" : {
+        "title" : "VykErrorResponse",
+        "type" : "object",
+        "properties" : {
+          "code" : { "type" : "string" },
+          "message" : { "type" : "string" }
+        }
+      },
+      "AuthResponse" : {
+        "title" : "AuthResponse",
+        "type" : "object",
+        "properties" : {
+          "token" : { "type" : "string", "description" : "Sistem tarafından üretilen token bilgisi" }
+        }
+      },
+      "MemberInfo" : {
+        "title" : "MemberInfo",
+        "type" : "object",
+        "properties" : {
+          "id" : { "type" : "string" },
+          "title" : { "type" : "string" },
+          "stockCode" : { "type" : "string" },
+          "memberType" : { "type" : "string" },
+          "kfifUrl" : { "type" : "string" }
+        }
+      },
+      "CompanyInfo" : {
+        "title" : "CompanyInfo",
+        "type" : "object",
+        "properties" : {
+          "id" : { "type" : "string" },
+          "memberType" : { "type" : "string" },
+          "sermayeSistemi" : { "type" : "string" },
+          "kayitliSermayeTavani" : { "type" : "number" },
+          "kstSonGecerlilikTarihi" : { "type" : "string" },
+          "sirketUnvan" : { "type" : "string" },
+          "mksMbrId" : { "type" : "string" }
+        }
+      },
+      "MemberSecuritiesResponse" : {
+        "title" : "MemberSecuritiesResponse",
+        "type" : "object",
+        "properties" : {
+          "member" : { "$ref" : "#/components/schemas/CompanyInfo" },
+          "securities" : { "type" : "array" }
+        }
+      },
+      "MemberSecurity" : {
+        "title" : "MemberSecurity",
+        "type" : "object",
+        "properties" : {
+          "isin" : { "type" : "string" },
+          "isinDesc" : { "type" : "string" },
+          "borsaKodu" : { "type" : "string" },
+          "takasKodu" : { "type" : "string" },
+          "tertipGroup" : { "type" : "string" },
+          "capital" : { "type" : "number" },
+          "currentCapital" : { "type" : "number" },
+          "groupCode" : { "type" : "string" },
+          "groupCodeDesc" : { "type" : "string" },
+          "borsadaIslemeAcik" : { "type" : "boolean" }
+        }
+      },
+      "CompanyDetailResponse" : {
+        "title" : "CompanyDetailResponse",
+        "type" : "object",
+        "properties" : {
+          "nameTr" : { "type" : "string" },
+          "nameEn" : { "type" : "string" },
+          "key" : { "type" : "string" },
+          "publishDateTime" : { "type" : "string" },
+          "value" : { "type" : "object" }
+        }
+      },
+      "LastDisclosureIndexResponse" : {
+        "title" : "LastDisclosureIndexResponse",
+        "type" : "object",
+        "properties" : {
+          "lastDisclosureIndex" : { "type" : "string" }
+        }
+      },
+      "FundInfo" : {
+        "title" : "FundInfo",
+        "type" : "object",
+        "properties" : {
+          "umbMemberOid" : { "type" : "string" },
+          "fundOid" : { "type" : "string" },
+          "fundId" : { "type" : "number" },
+          "fundName" : { "type" : "string" },
+          "fundCode" : { "type" : "string" },
+          "fundType" : { "type" : "string" },
+          "fundClass" : { "type" : "string" },
+          "fundExpiry" : { "type" : "string" },
+          "fundState" : { "type" : "string" },
+          "fundMemberOid" : { "type" : "string" },
+          "umbMemberTypes" : { "type" : "string" },
+          "fundMemberTypes" : { "type" : "string" },
+          "kapUrl" : { "type" : "string" },
+          "nonInactiveCount" : { "type" : "number" },
+          "fundCompanyId" : { "type" : "string" },
+          "fundCompanyTitle" : { "type" : "string" }
+        }
+      },
+      "FundDetailResponse" : {
+        "title" : "FundDetailResponse",
+        "type" : "object",
+        "properties" : {
+          "nameTr" : { "type" : "string" },
+          "nameEn" : { "type" : "string" },
+          "key" : { "type" : "string" },
+          "publishDateTime" : { "type" : "string" },
+          "value" : { "type" : "object" },
+          "codeKey" : { "type" : "string" }
+        }
+      },
+      "DisclosureInfoResponse" : {
+        "title" : "DisclosureInfoResponse",
+        "type" : "object",
+        "properties" : {
+          "disclosureIndex" : { "type" : "string" },
+          "disclosureType" : { "type" : "string" },
+          "disclosureClass" : { "type" : "string" },
+          "subReportIds" : { "type" : "array" },
+          "title" : { "type" : "string" },
+          "companyId" : { "type" : "string" },
+          "fundId" : { "type" : "string" },
+          "fundCode" : { "type" : "string" },
+          "acceptedDataFileTypes" : { "type" : "array" }
+        }
+      },
+      "AttachmentUrls" : {
+        "title" : "AttachmentUrls",
+        "type" : "object",
+        "properties" : {
+          "url" : { "type" : "string" },
+          "fileName" : { "type" : "string" }
+        }
+      },
+      "DisclosureByIdResponse" : {
+        "title" : "DisclosureByIdResponse",
+        "type" : "object",
+        "properties" : {
+          "blockedStatus" : { "type" : "string" },
+          "disclosureIndex" : { "type" : "string" },
+          "senderId" : { "type" : "string" },
+          "senderTitle" : { "type" : "string" },
+          "senderExchCodes" : { "type" : "array" },
+          "behalfSenderId" : { "type" : "string" },
+          "behalfSenderTitle" : { "type" : "string" },
+          "behalfSenderExchCodes" : { "type" : "array" },
+          "behalfFundId" : { "type" : "string" },
+          "behalfFundCode" : { "type" : "string" },
+          "behalfFundTitle" : { "type" : "string" },
+          "disclosureReason" : { "type" : "string" },
+          "disclosureDelayStatus" : { "type" : "string" },
+          "relatedDisclosureIndex" : { "type" : "string" },
+          "disclosureType" : { "type" : "string" },
+          "disclosureClass" : { "type" : "string" },
+          "subject" : { "$ref" : "#/components/schemas/Subject" },
+          "consolidation" : { "type" : "string" },
+          "year" : { "type" : "string" },
+          "period" : { "$ref" : "#/components/schemas/Period" },
+          "relatedStocks" : { "type" : "array" },
+          "summary" : { "$ref" : "#/components/schemas/Summary" },
+          "time" : { "type" : "string" },
+          "link" : { "type" : "string" },
+          "attachmentUrls" : { "type" : "array" },
+          "eventType" : { "type" : "string" },
+          "eventId" : { "type" : "string" },
+          "htmlMessages" : { "type" : "array" },
+          "flatData" : { "type" : "array" },
+          "presentation" : { "type" : "array" },
+          "isBlocked" : { "type" : "string" },
+          "isBlockedDescriptionTr" : { "type" : "string" },
+          "isBlockedDescriptionEn" : { "type" : "string" }
+        }
+      },
+      "FlatData" : {
+        "title" : "FlatData",
+        "type" : "object",
+        "properties" : {
+          "id" : { "type" : "string" },
+          "content" : { "type" : "object" }
+        }
+      },
+      "HtmlMessages" : {
+        "title" : "HtmlMessages",
+        "type" : "object",
+        "properties" : {
+          "id" : { "type" : "string" },
+          "tr" : { "type" : "string" },
+          "en" : { "type" : "string" }
+        }
+      },
+      "Period" : {
+        "title" : "Period",
+        "type" : "object",
+        "properties" : {
+          "tr" : { "type" : "string" },
+          "en" : { "type" : "string" }
+        }
+      },
+      "Presentation" : {
+        "title" : "Presentation",
+        "type" : "object",
+        "properties" : {
+          "id" : { "type" : "string" },
+          "content" : { "type" : "object" }
+        }
+      },
+      "RelatedStock" : {
+        "title" : "RelatedStock",
+        "type" : "object",
+        "properties" : {
+          "code" : { "type" : "string" }
+        }
+      },
+      "Subject" : {
+        "title" : "Subject",
+        "type" : "object",
+        "properties" : {
+          "tr" : { "type" : "string" },
+          "en" : { "type" : "string" }
+        }
+      },
+      "Summary" : {
+        "title" : "Summary",
+        "type" : "object",
+        "properties" : {
+          "tr" : { "type" : "string" },
+          "en" : { "type" : "string" }
+        }
+      },
+      "CAProcessStatus" : {
+        "title" : "CAProcessStatus",
+        "type" : "object",
+        "properties" : {
+          "refId" : { "type" : "number" },
+          "status" : { "type" : "string" },
+          "statusReason" : { "type" : "string" },
+          "completeDate" : { "type" : "string" }
+        }
+      },
+      "BlockedBase" : {
+        "title" : "BlockedBase",
+        "type" : "object"
+      }
+    },
+    "securitySchemes" : {
+      "basicAuth" : {
+        "type" : "http",
+        "scheme" : "basic"
+      }
+    }
+  }
+}

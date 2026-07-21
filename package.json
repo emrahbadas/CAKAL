@@ -1,0 +1,44 @@
+{
+  "name": "core-opportunity-engine",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Çakal Çekirdeği — Kişisel Fırsat Motoru",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/desktop",
+    "build": "npm run build --workspace=apps/desktop",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "backtest:sample": "node scripts/run-backtest.cjs backtests/finance-signal-sample.json",
+    "db:check-investment-research": "node scripts/check-investment-research-db.cjs",
+    "db:check-financial-ingestion": "node scripts/check-financial-ingestion-db.cjs",
+    "kap:smoke": "node scripts/run-kap-adapter-smoke.cjs",
+    "kap:sync-once": "node scripts/run-kap-sync-once.cjs",
+    "kap:sync-scheduler": "node scripts/kap-sync-scheduler.cjs",
+    "kap:reparse-current": "node scripts/reparse-kap-current-report.cjs",
+    "kap:process-analysis": "node scripts/process-kap-financial-analysis.cjs",
+    "kap:mapping-coverage": "node scripts/analyze-kap-mapping-coverage.cjs",
+    "kap:scheduler:install-win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-kap-sync-scheduled-task.ps1",
+    "kap:scheduler:uninstall-win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-kap-sync-scheduled-task.ps1",
+    "mkk:vyk-smoke": "node scripts/run-mkk-vyk-smoke.cjs",
+    "research:scan-smoke": "node scripts/run-investment-scan-smoke.cjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.110.7",
+    "dotenv": "^17.4.1",
+    "openai": "^6.33.0",
+    "playwright": "^1.59.1"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}

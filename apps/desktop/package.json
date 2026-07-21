@@ -1,0 +1,53 @@
+{
+  "name": "@cakal/desktop",
+  "version": "2.0.0",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/cleanup-dev-ports.cjs && concurrently --success first --kill-others \"npm run dev:vite\" \"npm run dev:electron\"",
+    "dev:vite": "vite --port 5173 --strictPort",
+    "dev:electron": "node scripts/run-electron-dev.cjs",
+    "build": "tsc && vite build && electron-builder",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "date-fns": "^3.6.0",
+    "input": "^1.0.1",
+    "lucide-react": "^0.424.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "recharts": "^3.8.1",
+    "tailwind-merge": "^2.4.0",
+    "telegram": "^2.26.22",
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "concurrently": "^8.2.2",
+    "electron": "31.3.1",
+    "electron-builder": "^24.13.3",
+    "node-cron": "^4.2.1",
+    "postcss": "^8.4.40",
+    "tailwindcss": "^3.4.7",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "wait-on": "^7.2.0"
+  },
+  "type": "module",
+  "build": {
+    "appId": "com.cakal.cekirdegi",
+    "productName": "Çakal Çekirdeği",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "sample-equity-1",
+    "asset": "SISE",
+    "riskTolerance": "medium",
+    "volatility": 4.2,
+    "sampleSize": 30,
+    "sourceReliability": 82,
+    "confidence": 74,
+    "patternAgeDays": 1,
+    "contradictorySources": 0,
+    "signalRiskLevel": "low",
+    "realizedReturnPercent": 3.8,
+    "expectedDirection": "YUKARI",
+    "regime": "trend"
+  },
+  {
+    "id": "sample-equity-2",
+    "asset": "THYAO",
+    "riskTolerance": "medium",
+    "volatility": 5.1,
+    "sampleSize": 28,
+    "sourceReliability": 79,
+    "confidence": 69,
+    "patternAgeDays": 2,
+    "contradictorySources": 0,
+    "signalRiskLevel": "medium",
+    "realizedReturnPercent": -1.7,
+    "expectedDirection": "YUKARI",
+    "regime": "range"
+  },
+  {
+    "id": "sample-crypto-1",
+    "asset": "BTCUSDT",
+    "riskTolerance": "low",
+    "volatility": 11.5,
+    "sampleSize": 40,
+    "sourceReliability": 78,
+    "confidence": 77,
+    "patternAgeDays": 1,
+    "contradictorySources": 0,
+    "signalRiskLevel": "high",
+    "realizedReturnPercent": 6.4,
+    "expectedDirection": "YUKARI",
+    "regime": "high_volatility"
+  },
+  {
+    "id": "sample-fx-1",
+    "asset": "USDTRY",
+    "riskTolerance": "medium",
+    "volatility": 3.2,
+    "sampleSize": 22,
+    "sourceReliability": 88,
+    "confidence": 70,
+    "patternAgeDays": 1,
+    "contradictorySources": 0,
+    "signalRiskLevel": "low",
+    "realizedReturnPercent": 1.1,
+    "expectedDirection": "YUKARI",
+    "regime": "trend"
+  }
+]

@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "ignoreDeprecations": "5.0",
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@cakal/shared-types": ["./packages/shared-types/src"],
+      "@cakal/agents/*": ["./packages/agents/*/src"],
+      "@cakal/core/*": ["./packages/core/*/src"],
+      "@cakal/sources/*": ["./packages/sources/*/src"],
+      "@cakal/db": ["./packages/db/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}
