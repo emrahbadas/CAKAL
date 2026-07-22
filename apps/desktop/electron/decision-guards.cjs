@@ -2,7 +2,10 @@ const COMMANDER_FINANCE_DOMAIN_RE = /borsa|hisse|xu100|bist|kripto|bitcoin|ether
 const COMMANDER_ACTIONABLE_FINANCE_RE = /\bal\s*sat\b|(?:^|[\s,.;:!?])alım(?:$|[\s,.;:!?])|(?:^|[\s,.;:!?])satış(?:$|[\s,.;:!?])|almalı mıyım|satmalı mıyım|alınır mı|satılır mı|giriş|entry|stop|hedef|target|trade plan|trade edilecek|hangi hisse\s*(alınır|satılır)|kaç lot|işlem aç|işlem kapat|pozisyon aç|pozisyon kapat|al\/sat sinyali|trade sinyali|izleme listesi/i;
 const COMMANDER_INFORMATIONAL_FINANCE_RE = /durum|durumlar|özet|karşılaştır|tablo|listele|neler konuşuluyor|haber|yorum|analiz|grafik|teknik|genel görünüm|ortalama|trend/i;
 const COMMANDER_ACTIONABLE_RESPONSE_RE = /\bAL\b|\bSAT\b|\bBEKLE\b|\bDİKKAT\b|\bDIKKAT\b|giriş|stop|hedef|trade plan|pozisyon/i;
-const COMMANDER_PRODUCT_MARKETPLACE_RE = /ürün|ilan|sahibinden|trendyol|letgo|dolap|hepsiemlak|amazon|ebay|n11|hepsiburada|araba|araç|ev eşyası|telefon|laptop|platformlar arası|stoklu al|stokta|dropshipping|fba|fırsat ara/i;
+// DİKKAT: "ilan" kelime başında aranmalı — düz substring araması "b-ilan-ço"
+// içinde eşleşip bilanço mesajlarını pazaryeri sanıyor ve TÜM finans karar
+// kapılarını (commander gate, hüküm-kanıt kilidi, fiyatlanma kilidi) atlatıyordu.
+const COMMANDER_PRODUCT_MARKETPLACE_RE = /ürün|(?:^|[^a-zçğıöşü])ilan|sahibinden|trendyol|letgo|dolap|hepsiemlak|amazon|ebay|n11|hepsiburada|araba|araç|ev eşyası|telefon|laptop|platformlar arası|stoklu al|stokta|dropshipping|fba|fırsat ara/i;
 const COMMANDER_FRESH_MARKET_SCAN_RE = /sıfırdan|sifirdan|baştan|bastan|geniş\s+tara|genis\s+tara|piyasayı\s+tara|piyasayi\s+tara|piyasa\s+taraması|piyasa\s+taramasi|sepet\s+(çıkar|cikar|oluştur|olustur)|aday\s+(çıkar|cikar)|fırsat\s+hisseleri|firsat\s+hisseleri|umut\s+vadeden\s+hisse|hangi\s+hisseler/i;
 
 const COMMANDER_MARKET_DATA_TOOLS = new Set([
@@ -11,6 +14,7 @@ const COMMANDER_MARKET_DATA_TOOLS = new Set([
   'run_investment_research_scan',
   'get_market_signal',
   'analyze_finance_signal',
+  'analyze_earnings_pricing',
   'generate_stock_chart',
   'get_tcmb_rates',
   'get_forex_rates',
@@ -434,17 +438,95 @@ function evaluateVerdictEvidenceLock(message, response) {
   return { status: 'verdict_locked', missing, response: lockedResponse };
 }
 
+// ============================
+// Fiyatlanma Kilidi (Earnings Pricing Lock)
+// Politika: bilanço kaynaklı AL/fırsat hükmü, analyze_earnings_pricing aracı
+// GERÇEKTEN çalışıp sınıflandırma üretmeden çıkamaz. Doğrulama cevap metnindeki
+// anahtar kelimeyle DEĞİL, tool_call provenance kaydıyla yapılır — çıktıda
+// "önceden fiyatlanmış olabilir" cümlesinin geçmesi ölçüm yapıldığını
+// kanıtlamaz. Bilanço kalitesi yorumu serbesttir; kilit sadece zamanlama
+// hükmünü (AL / güçlü fırsat) sınırlar.
+// ============================
+
+const EARNINGS_PRICING_TOOL = 'analyze_earnings_pricing';
+// Handler sınıflandırma ürettiğinde bu imzayla ikinci bir activity emit eder;
+// kilit "araç çağrıldı" ile "araç tamamlandı" ayrımını bu imzadan yapar.
+const EARNINGS_PRICING_COMPLETED_RE = /s[ıi]n[ıi]fland[ıi]rma\s*:/i;
+
+const FUNDAMENTAL_CONTEXT_RE = /(bilanço|bilanco|temel analiz|finansal tablo|finansal rapor|gelir tablosu|nakit ak[ıi][şs]|favök|favok|ebitda|net k[âa]r|k[âa]r marj|marjlar|borçluluk|borcluluk|özkaynak|ozkaynak|çeyrek sonuç|ceyrek sonuc|kap rapor|kap bildirim|bilanço sezonu|bilanco sezonu)/i;
+
+// Alım tarafı fırsat/zamanlama dili: büyük harf AL hükmü dışında kalan
+// "güçlü fırsat", "alım fırsatı" gibi ifadeler de zamanlama hükmüdür.
+const BUY_OPPORTUNITY_PHRASE_RE = /(güçlü f[ıi]rsat|guclu f[ıi]rsat|al[ıi]m f[ıi]rsat[ıi]|yeni f[ıi]rsat|kaç[ıi]r[ıi]lmaz|kacirilmaz|güçlü al[ıi]m|guclu al[ıi]m)/i;
+
+const BUY_VERDICT_WORD_RE = /(^|[^A-ZÇĞİÖŞÜa-zçğıöşü])AL($|[^A-ZÇĞİÖŞÜa-zçğıöşü])/;
+
+function isBuySideVerdictLine(line) {
+  return isVerdictLine(line) && BUY_VERDICT_WORD_RE.test(line);
+}
+
+function detectBuySideTimingVerdict(response = '') {
+  const text = String(response || '');
+  if (text.split('\n').some(isBuySideVerdictLine)) return true;
+  return BUY_OPPORTUNITY_PHRASE_RE.test(text);
+}
+
+function hasCompletedEarningsPricingRun(events = []) {
+  return (Array.isArray(events) ? events : []).some(
+    (event) =>
+      event &&
+      event.type === 'tool_call' &&
+      String(event.tool) === EARNINGS_PRICING_TOOL &&
+      EARNINGS_PRICING_COMPLETED_RE.test(String(event.detail || ''))
+  );
+}
+
+function isFundamentalDrivenResponse(message = '', response = '') {
+  return FUNDAMENTAL_CONTEXT_RE.test(String(message || '')) || FUNDAMENTAL_CONTEXT_RE.test(String(response || ''));
+}
+
+function evaluateEarningsPricingGate(message, response, events = []) {
+  if (isCommanderProductMarketplaceMessage(message)) return null;
+  // Bilanço/temel analiz dili tek başına finans bağlamıdır: "THYAO bilanço
+  // açıkladı" mesajı borsa/hisse kelimesi geçmese de bu kapının konusudur.
+  const financeContext = isCommanderFinanceMessage(message) || FUNDAMENTAL_CONTEXT_RE.test(String(message || ''));
+  if (!financeContext) return null;
+  if (!isFundamentalDrivenResponse(message, response)) return null;
+  if (!detectBuySideTimingVerdict(response)) return null;
+  if (hasCompletedEarningsPricingRun(events)) return null;
+
+  const lockedResponse = [
+    neutralizeEquityVerdicts(response),
+    '',
+    '---',
+    '⚖️ FİYATLANMA KİLİDİ (deterministik):',
+    'Bilanço kaynaklı AL/fırsat hükmü için önceden fiyatlanma ölçümü (analyze_earnings_pricing) çalışmadı veya tamamlanmadı; hüküm İNCELE seviyesine indirildi.',
+    'Bilanço kalitesi yorumu geçerlidir; ancak piyasa bu sonuçları önceden satın almış olabilir. Ölçüm yapılmadan "iyi bilanço = iyi giriş zamanı" eşitlemesi kurulamaz.',
+    'Tam hüküm şartı: bilanço öncesi 5/20/60 gün getiri + XU100 göreceli getiri + hacim genişlemesi + bilanço sonrası fiyat-hacim tepkisi analyze_earnings_pricing aracıyla ölçülmeli.',
+  ].join('\n');
+
+  return {
+    status: 'pricing_locked',
+    reason: 'Bilanço kaynaklı alım/fırsat hükmü var ama fiyatlanma analizi provenance kaydı yok.',
+    response: lockedResponse,
+  };
+}
+
 module.exports = {
   COMMANDER_DECISION_TOOLS,
+  EARNINGS_PRICING_TOOL,
   COMMANDER_MARKET_DATA_TOOLS,
   RISK_GATE_THRESHOLDS,
   buildCommanderGateResponse,
   classifyAssetClass,
   collectMissingVerdictEvidence,
   detectEquityVerdict,
+  detectBuySideTimingVerdict,
   evaluateCommanderDecisionGate,
+  evaluateEarningsPricingGate,
   evaluateRiskGate,
   evaluateVerdictEvidenceLock,
+  hasCompletedEarningsPricingRun,
   neutralizeEquityVerdicts,
   extractCommanderToolNames,
   getRiskGateThresholds,

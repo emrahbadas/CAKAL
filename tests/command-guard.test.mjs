@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
 import commandGuard from '../apps/desktop/electron/command-guard.cjs';
 
-const { checkCommand, isCommandAllowed, isDangerousCommand } = commandGuard;
+const { checkCommand, isCommandAllowed, isDangerousCommand, isInsideRoot } = commandGuard;
 
 describe('command-guard', () => {
   it('allows safe verification commands', () => {
@@ -93,5 +94,27 @@ describe('command-guard', () => {
 
   it('treats empty input as dangerous', () => {
     expect(isDangerousCommand('')).toBe(true);
+  });
+});
+
+describe('isInsideRoot (path hapsi)', () => {
+  const root = path.resolve('/app/cakal');
+
+  it('accepts the root itself and its children', () => {
+    expect(isInsideRoot(root, root)).toBe(true);
+    expect(isInsideRoot(root, path.join(root, 'src', 'index.ts'))).toBe(true);
+    expect(isInsideRoot(root, path.join(root, '.cakal-sandbox', 'x.json'))).toBe(true);
+  });
+
+  it('rejects sibling directories sharing the root prefix (startsWith bypass)', () => {
+    // Eski startsWith kontrolünün içeride saydığı sınıf:
+    expect(isInsideRoot(root, path.resolve('/app/cakal-evil/file.txt'))).toBe(false);
+    expect(isInsideRoot(root, `${root}-evil${path.sep}file.txt`)).toBe(false);
+  });
+
+  it('rejects traversal and absolute escapes', () => {
+    expect(isInsideRoot(root, path.join(root, '..', 'other'))).toBe(false);
+    expect(isInsideRoot(root, path.resolve('/etc/passwd'))).toBe(false);
+    expect(isInsideRoot(root, path.resolve('/app'))).toBe(false);
   });
 });

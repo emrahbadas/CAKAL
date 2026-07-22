@@ -92,6 +92,8 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
     const recorderRef = useRef<MediaRecorder | null>(null);
     const chunksRef = useRef<Blob[]>([]);
     const playbackRef = useRef<HTMLAudioElement | null>(null);
+    // Uzun cevaplar TTS'ten parça parça gelir; sırada bekleyen blob URL'leri.
+    const ttsQueueRef = useRef<string[]>([]);
     const closedRef = useRef(false);
     const vadRef = useRef({ speaking: false, silenceStart: 0, utteranceStart: 0 });
 
@@ -283,6 +285,9 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
 
     // ── TTS okuma ──
     const stopSpeaking = useCallback(() => {
+      // Sıradaki parçaları da iptal et — KES tek parçayı değil tüm cevabı keser.
+      ttsQueueRef.current.forEach((url) => URL.revokeObjectURL(url));
+      ttsQueueRef.current = [];
       if (playbackRef.current) {
         playbackRef.current.pause();
         playbackRef.current = null;
@@ -299,25 +304,45 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
         lastTtsTextRef.current = text;
         window.cakalAPI.voiceTts(text).then((result) => {
           if (closedRef.current) return;
-          if (!result?.success || !result.audioBase64) {
+          // Uzun cevaplar birden çok ses parçası olarak gelir; sırayla çalınır.
+          const base64Chunks: string[] =
+            result?.success && Array.isArray(result.audioChunks) && result.audioChunks.length
+              ? result.audioChunks
+              : result?.success && result.audioBase64
+                ? [result.audioBase64]
+                : [];
+          if (!base64Chunks.length) {
             setErrorText(result?.error || 'TTS başarısız');
             setState(micOnRef.current ? 'listening' : 'standby');
             return;
           }
           // data: URI yerine blob URL — büyük base64 URI'ler ve CSP ile daha uyumlu.
-          const bytes = Uint8Array.from(atob(result.audioBase64), (c) => c.charCodeAt(0));
-          const blobUrl = URL.createObjectURL(new Blob([bytes], { type: result.mimeType || 'audio/mpeg' }));
-          const audio = new Audio(blobUrl);
-          playbackRef.current = audio;
-          const finishPlayback = () => {
-            URL.revokeObjectURL(blobUrl);
-            playbackRef.current = null;
-            ttsEndAtRef.current = Date.now();
-            if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
+          const urls = base64Chunks.map((b64) => {
+            const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+            return URL.createObjectURL(new Blob([bytes], { type: result.mimeType || 'audio/mpeg' }));
+          });
+          ttsQueueRef.current = urls;
+          const playNext = () => {
+            const nextUrl = ttsQueueRef.current.shift();
+            if (!nextUrl || closedRef.current) {
+              ttsQueueRef.current.forEach((url) => URL.revokeObjectURL(url));
+              ttsQueueRef.current = [];
+              playbackRef.current = null;
+              ttsEndAtRef.current = Date.now();
+              if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
+              return;
+            }
+            const audio = new Audio(nextUrl);
+            playbackRef.current = audio;
+            const finishChunk = () => {
+              URL.revokeObjectURL(nextUrl);
+              playNext();
+            };
+            audio.onended = finishChunk;
+            audio.onerror = () => { setErrorText('Ses çalınamadı (audio error)'); finishChunk(); };
+            audio.play().catch((err) => { setErrorText('Ses çalınamadı: ' + (err?.message || '')); finishChunk(); });
           };
-          audio.onended = finishPlayback;
-          audio.onerror = () => { setErrorText('Ses çalınamadı (audio error)'); finishPlayback(); };
-          audio.play().catch((err) => { setErrorText('Ses çalınamadı: ' + (err?.message || '')); finishPlayback(); });
+          playNext();
         }).catch(() => {
           if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
         });

@@ -4,6 +4,33 @@
 
 ÇAKAL, tek kullanıcı için tasarlanmış, Electron tabanlı bir **kişisel yapay zekâ araştırma ve fırsat asistanıdır**. BIST, döviz, altın, kripto, emlak ve e-ticaret fırsatlarını çoklu kaynaktan araştırır; teknik görünüm, bilanço, haber akışı ve riskleri birlikte değerlendirir — ama yatırım kararını asla kullanıcının yerine vermez.
 
+## Çakalın Doğası
+
+Çakal olmak şunu gerektirir: fırsatın kokusunu uzaktan almak, ama kokuyu kanıt sanmamak. Kalabalığın koştuğu yöne bakmak, ama sürüyle birlikte düşünmeden koşmamak. Gerektiğinde cesur olmak; cesareti kibirle, ihtiyatı korkaklıkla karıştırmamak.
+
+Aslan fazla özgüvenlidir: gücüne inanır, geri çekilmeyi yenilgi sayar. Tavşan her harekette tehdit görür: tehlikeden kaçarken fırsatı da geride bırakır. Piyasa ikisini de sınar — kibri cezalandırır, korkuyu maliyete dönüştürür.
+
+Çakal başka türlü hareket eder. En güçlü olmaya değil, en uyanık kalmaya çalışır. Gürültüye değil, ize bakar. Fiyatın yükselmesini değer, düşmesini fırsat sanmaz. Önce bilginin kaynağını, verinin tazeliğini, kârın kalitesini ve riskin büyüklüğünü sorgular. Kalabalığın ne düşündüğünü izler; kararını kalabalığa teslim etmez.
+
+Çünkü borsada iyi bir şirket, her fiyattan iyi bir yatırım değildir. Güçlü bir bilanço, beklenti önceden satın alınmışsa yeni bir fırsat yaratmaz. Ucuza düşmüş görünen bir hisse, gerçekten değersizleşiyor olabilir. Çakal bu ayrımı yapmadan saldırmaz.
+
+Fırsat varsa yaklaşır. Kanıt varsa değerlendirir. Risk karşılanmıyorsa geri çekilir. Tezi bozulduğunda gurur yapmaz; çünkü piyasada hayatta kalmak, haklı görünmekten daha değerlidir.
+
+Çakalın disiplini basittir:
+
+- Fırsatın varlığı yetmez; yanlış fiyatlanmış olması gerekir.
+- Koku alınabilir; karar kanıtla verilir.
+- Getiri kadar kaybın büyüklüğü ve kaçış yolu da ölçülür.
+- Kalabalık izlenir, körü körüne takip edilmez.
+- Veri yetersizse hüküm üretilmez.
+- Tez bozulursa pozisyona sadakat gösterilmez.
+- Tek fırsat uğruna sermayenin geleceği riske atılmaz.
+- Büyük kazançtan önce hayatta kalmak gelir.
+
+Bu depodaki her karar kapısı — fiyatlanma kilidi, hüküm-kanıt kilidi, risk eşikleri, VERİ YETERSİZ hükmü — bu doğanın koda dökülmüş hâlidir. ÇAKAL bu yüzden kullanıcı adına karar veren bir kehanet makinesi değildir: fırsatı arayan, kanıtı sorgulayan, ters tezi dinleyen ve belirsizlik karşısında sınırını bilen bir araştırma motorudur.
+
+**ÇAKAL — fırsatı koklar; kanıtı görmeden ısırmaz.**
+
 ## Temel Felsefe
 
 1. **Dili cesur, karar motoru muhafazakâr.** Yeterli kanıt (veri tazeliği + kaynak + değerleme + risk seviyesi) toplanmadan kesin AL/SAT hükmü üretilmez; yalnızca İNCELE / İZLE / RİSKLİ / VERİ YETERSİZ denebilir. Bu kural prompt'ta değil, deterministik **karar kilidi**nde yaşar.

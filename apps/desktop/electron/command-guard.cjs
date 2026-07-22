@@ -1,6 +1,17 @@
-// Self-Dev terminal komutları için ortak güvenlik katmanı.
+// Self-Dev terminal komutları ve path erişimi için ortak güvenlik katmanı.
 // İki kademe: önce allowlist (sadece doğrulama amaçlı komutlar),
 // sonra blocklist (Windows/PowerShell/Unix yıkıcı komutları).
+
+const path = require('path');
+
+// Path hapsi: fullPath.startsWith(root) kontrolü kardeş klasörleri içeride
+// sayar (root "...\cakal" iken "...\cakal-evil\x" de startsWith'ten geçer).
+// path.relative tabanlı kontrol bu sınıfı kapatır; win32'de büyük/küçük harf
+// duyarsız karşılaştırmayı path.relative kendisi yapar.
+function isInsideRoot(rootDir, candidatePath) {
+  const relative = path.relative(path.resolve(rootDir), path.resolve(candidatePath));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
 
 const ALLOWED_COMMAND_PATTERNS = [
   /^(npm|pnpm)\s+(test|run\s+(test|lint|build|check|typecheck|dev))\b/i,
@@ -70,4 +81,5 @@ module.exports = {
   isCommandAllowed,
   isDangerousCommand,
   checkCommand,
+  isInsideRoot,
 };

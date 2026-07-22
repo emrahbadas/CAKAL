@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { isInsideRoot } = require('./command-guard.cjs');
 
 const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const PLUGIN_ROOT = '.cakal-sandbox/plugins';
@@ -17,7 +18,7 @@ function pluginManifestPath(pluginId) {
 function resolveInsideProject(projectRoot, repoPath) {
   const normalized = normalizeRepoPath(repoPath);
   const fullPath = path.resolve(projectRoot, normalized);
-  if (!fullPath.startsWith(projectRoot)) {
+  if (!isInsideRoot(projectRoot, fullPath)) {
     throw new Error(`GUVENLIK: Proje disina erisim engellendi: ${repoPath}`);
   }
   return fullPath;
@@ -67,9 +68,50 @@ function assertSafePluginId(id) {
   }
 }
 
+/** IPv4 literal private/loopback/link-local/CGNAT/metadata aralığında mı? */
+function isPrivateIpv4(ip) {
+  const parts = String(ip || '').split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : NaN));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = nums;
+  return (
+    a === 0 ||                             // 0.0.0.0/8
+    a === 10 ||                            // 10.0.0.0/8
+    a === 127 ||                           // loopback
+    (a === 100 && b >= 64 && b <= 127) ||  // 100.64.0.0/10 CGNAT
+    (a === 169 && b === 254) ||            // link-local + cloud metadata (169.254.169.254)
+    (a === 172 && b >= 16 && b <= 31) ||   // 172.16.0.0/12
+    (a === 192 && b === 168)               // 192.168.0.0/16
+  );
+}
+
+/** IP literal (v4 veya v6) engellenecek bir aralıkta mı? */
+function isBlockedIp(ip) {
+  const addr = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (addr.includes(':')) {
+    if (addr === '::' || addr === '::1') return true;                  // unspecified / loopback
+    if (/^fe[89ab]/.test(addr)) return true;                           // fe80::/10 link-local
+    if (addr.startsWith('fc') || addr.startsWith('fd')) return true;   // fc00::/7 unique-local
+    const mapped = addr.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);         // IPv4-mapped
+    if (mapped) return isPrivateIpv4(mapped[1]);
+    return false;
+  }
+  return isPrivateIpv4(addr);
+}
+
 function blockedHost(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1' || host.endsWith('.local');
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    host === 'localhost' ||
+    host === '0.0.0.0' ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||          // metadata.google.internal vb.
+    host.endsWith('.localhost')
+  ) {
+    return true;
+  }
+  return isBlockedIp(host);
 }
 
 function urlForValidation(urlTemplate) {
@@ -246,6 +288,47 @@ async function runSandboxPlugin(args = {}, options = {}) {
     }
   }
 
+  // Çalışma anı host kapısı: manifest doğrulaması placeholder'lı şablona bakar;
+  // {{input.*}} host kısmına denk gelirse gerçek host ancak burada bilinir.
+  states.push('HOST_CHECK');
+  if (blockedHost(requestHost)) {
+    return {
+      success: false,
+      status: 'host_blocked',
+      states,
+      message: `GUVENLIK: Local/private host yasak: ${requestHost}`,
+    };
+  }
+
+  // DNS kapısı (SSRF): public görünen alan adının private/metadata IP'ye
+  // çözülmesi engellenir. fetch bağlantıda yeniden çözümleme yapabileceği için
+  // dar bir TOCTOU penceresi kalır; yalnız-HTTPS + redirect yasağı ile birlikte
+  // kalan risk kabul edilebilir düzeydedir. Testler fetchImpl mock'ladığında
+  // dnsLookup verilmezse atlanır; gerçek fetch yolunda her zaman aktiftir.
+  const dnsLookup = options.dnsLookup !== undefined
+    ? options.dnsLookup
+    : (options.fetchImpl ? null : require('dns').promises.lookup);
+  if (dnsLookup) {
+    states.push('DNS_CHECK');
+    let addresses;
+    try {
+      addresses = await dnsLookup(requestHost.replace(/^\[|\]$/g, ''), { all: true });
+    } catch (_err) {
+      return { success: false, status: 'dns_error', states, message: `DNS cozumlenemedi: ${requestHost}` };
+    }
+    const blocked = (Array.isArray(addresses) ? addresses : [addresses])
+      .map((entry) => (entry && typeof entry === 'object' ? entry.address : entry))
+      .find((address) => isBlockedIp(address));
+    if (blocked) {
+      return {
+        success: false,
+        status: 'private_ip_blocked',
+        states,
+        message: `GUVENLIK: ${requestHost} private/metadata IP'ye cozuluyor (${blocked}). SSRF engellendi.`,
+      };
+    }
+  }
+
   states.push('HTTP_EXECUTION');
   const fetchImpl = options.fetchImpl || fetch;
   const controller = new AbortController();
@@ -294,4 +377,6 @@ module.exports = {
   registerSandboxPlugin,
   listSandboxPlugins,
   runSandboxPlugin,
+  blockedHost,
+  isBlockedIp,
 };

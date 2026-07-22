@@ -165,3 +165,94 @@ describe('sandbox plugin FSM', () => {
     );
   });
 });
+
+describe('SSRF korumaları', () => {
+  const { blockedHost, isBlockedIp } = pluginFsm;
+
+  function plainManifest(overrides = {}) {
+    return {
+      id: 'unit_plain',
+      name: 'Plain',
+      description: 'Secretsiz test plugini.',
+      type: 'http_request',
+      method: 'GET',
+      urlTemplate: 'https://api.example.com/data?q={{input.q}}',
+      inputs: ['q'],
+      requiredSecrets: [],
+      outputMap: {},
+      ...overrides,
+    };
+  }
+
+  it('blocks private, loopback, link-local, CGNAT and metadata addresses', () => {
+    const blocked = [
+      'localhost', '127.0.0.1', '127.8.9.1', '0.0.0.0', '::1', '::',
+      '10.0.0.5', '172.16.0.1', '172.31.255.255', '192.168.1.1',
+      '169.254.169.254', '100.64.0.1', 'fe80::1', 'fd00::1',
+      '::ffff:192.168.1.1', 'metadata.google.internal', 'foo.local', 'bar.internal',
+    ];
+    for (const host of blocked) {
+      expect(blockedHost(host), host).toBe(true);
+    }
+  });
+
+  it('allows normal public hosts and IPs', () => {
+    const allowed = ['api.example.com', 'openweathermap.org', '93.184.216.34', '172.32.0.1', '2606:2800:220:1::1'];
+    for (const host of allowed) {
+      expect(blockedHost(host), host).toBe(false);
+    }
+    expect(isBlockedIp('8.8.8.8')).toBe(false);
+  });
+
+  it('blocks runtime host when input controls the host part of the URL', async () => {
+    registerSandboxPlugin(plainManifest({
+      id: 'unit_hosted',
+      urlTemplate: 'https://{{input.q}}/data',
+    }), { projectRoot });
+    const fetchImpl = vi.fn();
+
+    const result = await runSandboxPlugin({
+      plugin_id: 'unit_hosted',
+      input: { q: '169.254.169.254' },
+    }, { projectRoot, fetchImpl });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('host_blocked');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('blocks domains that resolve to private IPs (DNS gate)', async () => {
+    registerSandboxPlugin(plainManifest(), { projectRoot });
+    const fetchImpl = vi.fn();
+    const dnsLookup = vi.fn(async () => [{ address: '10.0.0.5', family: 4 }]);
+
+    const result = await runSandboxPlugin({
+      plugin_id: 'unit_plain',
+      input: { q: 'x' },
+    }, { projectRoot, fetchImpl, dnsLookup });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('private_ip_blocked');
+    expect(result.states).toContain('DNS_CHECK');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('proceeds when DNS resolves to a public IP', async () => {
+    registerSandboxPlugin(plainManifest(), { projectRoot });
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    }));
+    const dnsLookup = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
+
+    const result = await runSandboxPlugin({
+      plugin_id: 'unit_plain',
+      input: { q: 'x' },
+    }, { projectRoot, fetchImpl, dnsLookup });
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

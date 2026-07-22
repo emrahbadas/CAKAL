@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const cron = require('node-cron');
 const { initOpenAI, chat, multiSourceSearch, resetConversation, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
-const { evaluateCommanderDecisionGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
+const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
 const { runDeterministicAgent } = require('./deterministic-agents.cjs');
 const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
@@ -992,6 +992,56 @@ ipcMain.handle('analysis:open-file', async (_event, filePath) => {
 const VOICE_STT_MODEL = process.env.VOICE_STT_MODEL || 'gpt-4o-mini-transcribe';
 const VOICE_TTS_MODEL = process.env.VOICE_TTS_MODEL || 'gpt-4o-mini-tts';
 const VOICE_TTS_VOICE = process.env.VOICE_TTS_VOICE || 'alloy';
+// OpenAI TTS istek başına 4096 karakter kabul eder; uzun cevaplar cümle
+// sınırlarından parçalanıp sırayla çalınır. Toplam üst sınır maliyet emniyeti.
+const VOICE_TTS_CHUNK_CHARS = 3500;
+const VOICE_TTS_MAX_TOTAL_CHARS = Number(process.env.VOICE_TTS_MAX_CHARS) || 9000;
+
+/** Metni cümle sınırlarına saygılı, chunkSize'ı aşmayan parçalara böl. */
+function splitForTts(text, chunkSize) {
+  const sentences = text.match(/[^.!?…]+[.!?…]*\s*/g) || [text];
+  const chunks = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if (sentence.length > chunkSize) {
+      if (current.trim()) { chunks.push(current.trim()); current = ''; }
+      for (let i = 0; i < sentence.length; i += chunkSize) {
+        chunks.push(sentence.slice(i, i + chunkSize).trim());
+      }
+      continue;
+    }
+    if ((current + sentence).length > chunkSize) {
+      chunks.push(current.trim());
+      current = '';
+    }
+    current += sentence;
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.filter(Boolean);
+}
+
+async function callOpenAiTts(apiKey, input) {
+  const res = await fetch('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: VOICE_TTS_MODEL,
+      voice: VOICE_TTS_VOICE,
+      input,
+      instructions: 'Türkçe, doğal ve akıcı konuş. Finansal terimleri net telaffuz et.',
+      response_format: 'mp3',
+    }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok) {
+    const errText = (await res.text()).slice(0, 200);
+    console.error('[Voice] TTS hatası:', res.status, errText);
+    const error = new Error(`TTS ${res.status}`);
+    error.detail = errText;
+    throw error;
+  }
+  return Buffer.from(await res.arrayBuffer()).toString('base64');
+}
 
 // Latin dışı alfabe (Hangul/CJK/Kiril/Arap) — kısa Türkçe kliplerde STT'nin
 // dili yanlış kilitlediğinin göstergesi ("Gördün mü" -> Korece çıktı gibi).
@@ -1058,9 +1108,9 @@ ipcMain.handle('voice:tts', async (_event, payload) => {
     if (!apiKey) return { success: false, error: 'OPENAI_API_KEY yok' };
     const rawText = String(payload?.text || '').trim();
     if (!rawText) return { success: false, error: 'Metin yok' };
-    // Markdown/tabloları sesli okumaya uygun düz metne indir; token koruması
-    // için üst sınır uygula (uzun analiz cevaplarının tamamını okumak hem
-    // pahalı hem dinlenmez).
+    // Markdown/tabloları sesli okumaya uygun düz metne indir. Uzun cevaplar
+    // 4096 karakter API limitine takılmasın diye cümle sınırlarından parçalanır;
+    // VOICE_TTS_MAX_CHARS toplam maliyet emniyet sınırıdır.
     const speakable = rawText
       .replace(/```[\s\S]*?```/g, ' ')
       .replace(/\|[^\n]*\|/g, ' ')
@@ -1069,28 +1119,13 @@ ipcMain.handle('voice:tts', async (_event, payload) => {
       .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 1200);
+      .slice(0, VOICE_TTS_MAX_TOTAL_CHARS);
     if (!speakable) return { success: false, error: 'Okunabilir metin yok' };
 
-    const res = await fetch('https://api.openai.com/v1/audio/speech', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: VOICE_TTS_MODEL,
-        voice: VOICE_TTS_VOICE,
-        input: speakable,
-        instructions: 'Türkçe, doğal ve akıcı konuş. Finansal terimleri net telaffuz et.',
-        response_format: 'mp3',
-      }),
-      signal: AbortSignal.timeout(45000),
-    });
-    if (!res.ok) {
-      const errText = (await res.text()).slice(0, 200);
-      console.error('[Voice] TTS hatası:', res.status, errText);
-      return { success: false, error: `TTS ${res.status}` };
-    }
-    const audio = Buffer.from(await res.arrayBuffer());
-    return { success: true, audioBase64: audio.toString('base64'), mimeType: 'audio/mpeg' };
+    const chunks = splitForTts(speakable, VOICE_TTS_CHUNK_CHARS);
+    const audioChunks = await Promise.all(chunks.map((chunk) => callOpenAiTts(apiKey, chunk)));
+    // audioBase64: eski istemcilerle uyumluluk için ilk parça.
+    return { success: true, audioChunks, audioBase64: audioChunks[0], mimeType: 'audio/mpeg' };
   } catch (err) {
     console.error('[Voice] tts error:', err.message);
     return { success: false, error: err.message };
@@ -1320,6 +1355,50 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         });
         response = gateResult.response;
       } else {
+        // Fiyatlanma kilidi: bilanço kaynaklı AL/fırsat hükmü, analyze_earnings_pricing
+        // aracı GERÇEKTEN çalışıp sınıflandırma üretmeden (provenance kaydı) çıkamaz.
+        // Doğrulama cevap metnindeki kelimeyle değil tool_call activity log'uyla yapılır.
+        let pricingLock = evaluateEarningsPricingGate(payload.message, response, commanderActivityLog);
+        if (pricingLock) {
+          commanderEmitActivity({
+            type: 'decision_gate',
+            agent: 'commander',
+            detail: 'FİYATLANMA KİLİDİ: bilanço kaynaklı AL/fırsat hükmü var ama analyze_earnings_pricing çalışmadı. Tamamlama denemesi başlatılıyor (1 kez).',
+            timestamp: Date.now(),
+          });
+
+          const pricingCompletionMessage = [
+            payload.message || '',
+            '',
+            '[ÇEKİRDEK ZORUNLULUK — FİYATLANMA KİLİDİ]',
+            'Önceki cevabında bilanço kaynaklı AL/fırsat hükmü vardı ama önceden fiyatlanma ölçümü yapılmadı.',
+            'İki seçeneğin var:',
+            '1) analyze_earnings_pricing aracını çağır (sembol + biliniyorsa bilanço açıklama tarihi), çıkan sınıflandırmayı ve kanıt satırlarını cevaba aynen koy, hükmü sınıflandırmaya göre güncelle (LARGELY_PRICED/OVEREXTENDED ise kovalamama/kâr realizasyonu uyarısıyla).',
+            '2) Ölçüm yapılamıyorsa AL/fırsat hükmünü kaldır; bilanço kalitesini yorumla ama zamanlama hükmü olarak SADECE İNCELE veya İZLE kullan.',
+            'Konsensüs verisi görmediysen consensusSurprise alanını DOLDURMA; beklenti sürprizini UNKNOWN olarak raporla.',
+          ].join('\n');
+
+          response = await chat(pricingCompletionMessage, {
+            perplexityKey: process.env.PERPLEXITY_API_KEY,
+            supabaseClient,
+            profileContext,
+            onActivity: commanderEmitActivity,
+            telegramService: telegram,
+            telegramReader: telegramReader,
+          });
+
+          pricingLock = evaluateEarningsPricingGate(payload.message, response, commanderActivityLog);
+          if (pricingLock) {
+            commanderEmitActivity({
+              type: 'decision_gate',
+              agent: 'commander',
+              detail: 'FİYATLANMA KİLİDİ uygulandı: ölçüm hâlâ yok. Bilanço kaynaklı alım hükmü İNCELE seviyesine indirildi.',
+              timestamp: Date.now(),
+            });
+            response = pricingLock.response;
+          }
+        }
+
         // Hüküm-kanıt kilidi: AL/SAT ancak değerleme + dönem karşılaştırması +
         // kaynak kanıtı + veri tazeliği + risk seviyesi tamamsa çıkabilir.
         let verdictLock = evaluateVerdictEvidenceLock(payload.message, response);
@@ -2568,8 +2647,9 @@ ipcMain.handle('evolution:respond-code', async (_event, logId, response) => {
         const projectRoot = path.resolve(__dirname, '../../..');
         const targetPath = path.resolve(projectRoot, entry.target_path);
 
-        // Güvenlik kontrolü
-        if (targetPath.startsWith(projectRoot)) {
+        // Güvenlik kontrolü (path.relative tabanlı — kardeş klasör bypass'ı kapalı)
+        const { isInsideRoot } = require('./command-guard.cjs');
+        if (isInsideRoot(projectRoot, targetPath)) {
           const dir = path.dirname(targetPath);
           if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
@@ -2628,7 +2708,7 @@ ipcMain.handle('selfdev:read-file', async (_event, filePath) => {
   try {
     const projectRoot = path.resolve(__dirname, '../../..');
     const fullPath = path.resolve(projectRoot, filePath);
-    if (!fullPath.startsWith(projectRoot)) {
+    if (!require('./command-guard.cjs').isInsideRoot(projectRoot, fullPath)) {
       return { status: 'error', error: 'Proje dışına erişim engellendi' };
     }
     if (!fs.existsSync(fullPath)) {
@@ -2645,7 +2725,7 @@ ipcMain.handle('selfdev:list-files', async (_event, dirPath = '') => {
   try {
     const projectRoot = path.resolve(__dirname, '../../..');
     const fullPath = path.resolve(projectRoot, dirPath);
-    if (!fullPath.startsWith(projectRoot)) {
+    if (!require('./command-guard.cjs').isInsideRoot(projectRoot, fullPath)) {
       return { status: 'error', error: 'Proje dışına erişim engellendi' };
     }
     if (!fs.existsSync(fullPath)) {

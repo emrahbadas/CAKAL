@@ -14,6 +14,7 @@ const {
   validateSandboxPluginManifest,
 } = require('./sandbox-plugin-fsm.cjs');
 const { createSecretResolver, requestSecretInputs, listSecretRequests, hasSecret, ensureSecretHostAllowed } = require('./secret-broker.cjs');
+const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 
 // ── Sprint 13: Result Cache (TTL-based in-memory cache) ──
 const _resultCache = new Map();
@@ -673,6 +674,7 @@ ARAÇLARIN (TOOLS):
 - judge_opportunity: Fırsat skorlama ve değerlendirme
 - analyze_finance_signal: BIST hisse, döviz, emtia sinyal analizi (Yahoo Finance gerçek veri)
 - get_financial_statements: BIST şirketi bilanço + gelir tablosu, son 4 çeyrek (İş Yatırım MaliTablo — KAP raporlarının sayısal karşılığı). Bilanço/temel analiz/borçluluk sorularında BİRİNCİL araç.
+- analyze_earnings_pricing: Bilançonun piyasa tarafından ÖNCEDEN fiyatlanıp fiyatlanmadığını ölçer (bilanço öncesi getiri, XU100 göreceli getiri, hacim genişlemesi, bilanço sonrası tepki). Bilanço kaynaklı AL/fırsat hükmü öncesi ZORUNLU.
 - get_stock_price: BIST/döviz/emtia fiyat sorgulama — birden fazla sembol aynı anda (Yahoo Finance)
 - get_bist_gainers: Uzmanpara/Milliyet en çok artan BIST hisseleri — gün içi yükselenler, tavanlar ve % bandı filtreleri
 - run_investment_research_scan: BIST icin uzman workflow'una uygun fresh market scan on taramasi; evren, hard filter, soft ranking, policy eksikleri ve audit kaydi uretir
@@ -730,6 +732,15 @@ KAP FINANSAL VERI DISIPLINI:
 - next_check_at gelecekteyse DB verisini kullan. next_check_at geldiyse once yalnizca KAP bildirim listesi kontrol edilir; bildirim id degismediyse rapor tekrar indirilmez, last_checked_at/next_check_at guncellenir.
 - Yeni veya duzeltilmis finansal bildirim varsa raporu yeni version olarak kaydet; eski rapor silinmez. Guncel rapor kap_current_financial_reports pointer'i ile belirlenir.
 - KAP hata verirse exponential backoff uygula; retry_after dolmadan KAP'i tekrar sorgulama, mevcut DB verisini PARTIAL_RESEARCH notuyla kullan.
+
+BILANCO-FIYATLANMA DISIPLINI (bilanço–beklenti–fiyat üçgeni):
+- Iyi bilanço ile iyi giriş zamanını EŞİTLEME. Borsa geçmiş rakamı değil beklenti farkını satın alır; mükemmel bilanço zaten önceden fiyatlanmış olabilir.
+- Bilanço kaynaklı AL, "güçlü fırsat", "alım fırsatı" benzeri zamanlama hükmü vermeden ÖNCE analyze_earnings_pricing çağır. Çağırmazsan deterministik Fiyatlanma Kilidi hükmü İNCELE seviyesine indirir.
+- Aracın kategorik sınıflandırmasını (LOW_EVIDENCE_OF_PRICING / PARTIALLY_PRICED / LARGELY_PRICED / OVEREXTENDED / INSUFFICIENT_DATA) ve kanıt satırlarını cevapta AYNEN aktar. Kendi başına yüzde skoru üretme; sahte kesinlik yaratma.
+- LARGELY_PRICED veya OVEREXTENDED ise: "güçlü alım fırsatı" deme; kovalamama, kâr realizasyonu riski ve kalan getiri alanının daraldığı uyarılarından en az birini açıkça yaz. Olumlu finansal görünüm sürse bile kalan getiri/risk oranını ayrı değerlendir.
+- Beklenti sürprizi AYRI eksendir: gerçek konsensüs verisi görmeden bilançonun "beklentiden iyi" geldiğini iddia etme. Konsensüs yoksa beklenti sürprizi UNKNOWN'dur — bu fiyat verisi eksikliği DEĞİLDİR; fiyatlanma ihtimali yine ölçülebilir, ama kesin zamanlama hükmünün güvenini düşür ve belirsizliği yaz.
+- INSUFFICIENT_DATA veya fiyat serisi çekilemezse: bilanço kalitesini yorumlayabilirsin; giriş zamanlaması hükmü üretme, durumu açıkça belirt.
+- Zayıf bilanço + sert düşmüş hisse "tepki potansiyeli", güçlü bilanço + aşırı fiyatlanmış hisse "kâr satışı riski" olabilir — sınıflandırmayı bu çerçevede yorumla.
 
 YETENEK ENVANTERİ ANLATIM KURALLARI:
 - Kullanıcı "yeteneklerin neler", "neler yapabiliyorsun", "sana ne ekledik" gibi bir soru sorarsa önce check_my_capabilities çağır.
@@ -1030,6 +1041,7 @@ FİNANS ARAÇLARI KULLANIM KURALLARI:
 - BIST "en çok artan", "en çok yükselen", "tavan", "günün hareketli hisseleri", "%5-%10 arası artanlar" gibi sıralama/liste sorularında → get_bist_gainers kullan; get_stock_price ile sabit watchlist tarayıp liste uydurma
 - Kullanıcı belirli hisse adı vermediyse THYAO/ASELS/TUPRS gibi örnek hisseleri veri diye sunma; ranking istiyorsa get_bist_gainers, genel piyasa istiyorsa XU100 + makro varlıklar kullan
 - Bilanço, temel analiz, finansal tablo, net kâr, FAVÖK, marj, borçluluk, özkaynak, "KAP raporu" sorulduğunda → get_financial_statements kullan; analyze_finance_signal SADECE teknik/fiyat analizidir, bilanço sorusuna teknik analizle cevap verme
+- Bilanço ile fiyat dünyası arasındaki TEK onaylı köprü analyze_earnings_pricing aracıdır: bilanço kaynaklı AL/fırsat zamanlaması ancak bu araçla ölçülür; teknik analizi bilanço yorumunun yerine, bilanço kalitesini giriş zamanlamasının yerine koyma
 - get_financial_statements başarısız olursa web_search fallback kullanılabilir ama cevapta kaynak MUTLAKA "web araması — KAP/İş Yatırım teyidi yok" diye etiketlenmeli
 - BIST hisse fiyatı / analizi sorulduğunda → analyze_finance_signal VEYA get_stock_price kullan (Yahoo Finance gerçek veri)
 - Birden fazla hisse fiyatı karşılaştırma → kullanıcının verdiği sembollerle get_stock_price kullan (virgülle ayır)
@@ -3439,6 +3451,23 @@ KURALLAR:
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_earnings_pricing',
+      description: 'Bilanço önceden fiyatlanma analizi (bilanço–beklenti–fiyat üçgeni). BIST hissesi için bilanço tarihi etrafındaki fiyat/hacim serisinden deterministik kanıt üretir: 5/20/60 gün getiri, XU100 göreceli getiri, hacim genişlemesi, MA50 uzaklığı, bilanço sonrası ilk gün tepkisi. Çıktı kategorik sınıflandırmadır (INSUFFICIENT_DATA / LOW_EVIDENCE_OF_PRICING / PARTIALLY_PRICED / LARGELY_PRICED / OVEREXTENDED) — sayısal skor uydurma. Bilanço kaynaklı AL veya fırsat hükmü vermeden önce bu aracı çağırmak ZORUNLUDUR; çağrılmazsa karar kilidi hükmü İNCELE seviyesine indirir.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'BIST sembolü (örn: THYAO, ASELS)' },
+          announcementDate: { type: 'string', description: 'Bilanço/KAP açıklama tarihi YYYY-MM-DD (biliniyorsa). Verilirse analiz bu tarihe çapalanır; verilmezse güncel fiyatlama durumu ölçülür.' },
+          consensusSurprise: { type: 'string', enum: ['below', 'in_line', 'above'], description: 'SADECE gerçek aracı kurum beklentisi/konsensüs verisi gördüysen doldur (sonuç beklentinin altında/paralel/üstünde). Tahmin YÜRÜTME — veri yoksa boş bırak, sistem UNKNOWN olarak işler.' },
+          consensusSource: { type: 'string', description: 'Konsensüs verisinin kaynağı (consensusSurprise doldurulduysa zorunlu).' },
+        },
+        required: ['symbol'],
+      },
+    },
+  },
 ];
 
 // ============================
@@ -4197,6 +4226,49 @@ async function handleToolCall(name, args, options = {}) {
           data,
           source: 'is_yatirim_malitablo',
           sourceLabel: 'İş Yatırım MaliTablo (KAP raporlarının sayısal karşılığı). Cevapta kaynağı "İş Yatırım verisi" olarak belirt; "KAP raporu" deme — KAP orijinal raporu ile birebir teyit yapılmadı.',
+        };
+      }
+
+      // ── Bilanço Fiyatlanma Analizi (bilanço–beklenti–fiyat köprüsü) ──
+      case 'analyze_earnings_pricing': {
+        const rawSymbol = (args.symbol || '').trim();
+        if (!rawSymbol) return { tool: name, success: false, message: 'Sembol gerekli.' };
+        const resolved = resolveBistSymbol(rawSymbol);
+        if (resolved && !/\.IS$/i.test(resolved)) {
+          return { tool: name, success: false, message: `${rawSymbol} bir BIST şirketi değil; fiyatlanma analizi sadece BIST hisseleri için yapılabilir.` };
+        }
+        const bistCode = (resolved ? resolved.replace(/\.IS$/i, '') : rawSymbol.toUpperCase());
+        emit(`Bilanço fiyatlanma analizi: ${bistCode}${args.announcementDate ? ` (açıklama: ${args.announcementDate})` : ' (güncel mod)'}`);
+
+        const [bars, indexBars] = await Promise.all([
+          fetchYahooOHLC(bistCode, 'bist'),
+          fetchYahooOHLC('XU100', 'bist'),
+        ]);
+        if (!Array.isArray(bars) || bars.length === 0) {
+          return { tool: name, success: false, message: `${bistCode} için fiyat serisi çekilemedi; fiyatlanma ölçülemedi. Bilanço kalitesi yorumlanabilir ama AL/fırsat hükmü üretme.` };
+        }
+
+        const consensus = args.consensusSurprise
+          ? { surprise: args.consensusSurprise, source: args.consensusSource || 'belirtilmedi' }
+          : null;
+        const assessment = assessEarningsPricing({
+          symbol: bistCode,
+          bars,
+          indexBars,
+          announcementDate: args.announcementDate || null,
+          consensus,
+        });
+
+        // Provenance imzası: Fiyatlanma Kilidi bu "sınıflandırma:" emit'ini
+        // arar — araç yalnızca çağrılmakla değil, ölçüm ÜRETMEKLE tamamlanır.
+        emit(`sınıflandırma: ${assessment.classification} (veri güveni: ${assessment.dataConfidence}, beklenti sürprizi: ${assessment.expectationSurprise})`);
+
+        return {
+          tool: name,
+          success: true,
+          data: assessment,
+          source: 'yahoo_finance_ohlc',
+          sourceLabel: 'Yahoo Finance günlük OHLC + XU100 karşılaştırması. Cevapta sınıflandırmayı ve kanıt satırlarını AYNEN aktar; constraints.forbiddenPhrases içindeki ifadeleri kullanma, requiredWarnings uyarılarından en az birini ver. timingVerdictAllowed=false ise giriş zamanlaması hükmü üretme.',
         };
       }
 
@@ -5121,10 +5193,10 @@ async function handleToolCall(name, args, options = {}) {
           return { tool: name, success: false, message: `GÜVENLİK: ${normalizeRepoPath(filePath)} korumalı alanda. Secrets/core dosyaları doğrudan okunamaz.` };
         }
 
-        // Güvenlik: Proje kökü dışına çıkma
+        // Güvenlik: Proje kökü dışına çıkma (path.relative tabanlı)
         const projectRoot = require('path').resolve(__dirname, '../../..');
         const fullPath = require('path').resolve(projectRoot, filePath);
-        if (!fullPath.startsWith(projectRoot)) {
+        if (!require('./command-guard.cjs').isInsideRoot(projectRoot, fullPath)) {
           return { tool: name, success: false, message: 'GÜVENLİK: Proje klasörü dışına erişim engellendi.' };
         }
 
@@ -5159,10 +5231,10 @@ async function handleToolCall(name, args, options = {}) {
           return { tool: name, success: false, message: getSandboxPolicyMessage(filePath) };
         }
 
-        // Güvenlik: Proje kökü dışına çıkma
+        // Güvenlik: Proje kökü dışına çıkma (path.relative tabanlı)
         const projectRoot2 = require('path').resolve(__dirname, '../../..');
         const fullPath2 = require('path').resolve(projectRoot2, filePath);
-        if (!fullPath2.startsWith(projectRoot2)) {
+        if (!require('./command-guard.cjs').isInsideRoot(projectRoot2, fullPath2)) {
           return { tool: name, success: false, message: 'GÜVENLİK: Proje klasörü dışına yazma engellendi.' };
         }
 
@@ -5239,24 +5311,11 @@ async function handleToolCall(name, args, options = {}) {
         const timeoutMs = Math.min(args.timeout_ms || 30000, 120000);
         emit(`Terminal komutu: ${command}`);
 
-        if (!isAllowedSelfDevCommand(command)) {
-          return {
-            tool: name,
-            success: false,
-            message: 'GÜVENLİK: Bu terminal komutu izinli değil. Sadece test/build/lint/okuma amaçlı güvenli doğrulama komutları çalıştırılabilir.',
-          };
-        }
-
-        // Güvenlik: Tehlikeli komutları engelle
-        const dangerousPatterns = [
-          /\brm\s+(-rf|-r)\b/i, /\brmdir\s+\/s/i, /\bdel\s+\/[sfq]/i,
-          /\bformat\b/i, /\bshutdown\b/i, /\breboot\b/i, /\bpowershell\s+-enc/i,
-          /\bcurl\b.*\|\s*(sh|bash)/i, /\bwget\b.*\|\s*(sh|bash)/i,
-          /\bnpm\s+publish\b/i, /\bgit\s+push\b/i, /\bgit\s+reset\s+--hard/i,
-          /\bsudo\b/i, /\bdrop\s+database/i, /\btruncate\b/i,
-        ];
-        if (dangerousPatterns.some(p => p.test(command))) {
-          return { tool: name, success: false, message: `GÜVENLİK: Tehlikeli komut engellendi: ${command}` };
+        // Tek güvenlik kaynağı: command-guard.cjs (allowlist + blocklist).
+        // İki ayrı muhafız aynı kapıyı farklı kurallarla korursa zayıf olan kazanır.
+        const commandGuard = require('./command-guard.cjs').checkCommand(command);
+        if (!commandGuard.allowed) {
+          return { tool: name, success: false, message: `GÜVENLİK: ${commandGuard.reason}` };
         }
 
         // Proje kökünde çalıştır
@@ -5420,7 +5479,7 @@ async function handleToolCall(name, args, options = {}) {
 
         for (const tf of normalizedTargets) {
           const fp = require('path').resolve(projectRoot5, tf);
-          if (fp.startsWith(projectRoot5) && fs5.existsSync(fp)) {
+          if (require('./command-guard.cjs').isInsideRoot(projectRoot5, fp) && fs5.existsSync(fp)) {
             const content = fs5.readFileSync(fp, 'utf-8');
             const lines = content.split('\n');
             analysis[tf] = {
@@ -8563,16 +8622,7 @@ const SELF_DEV_WRITE_PROTECTED_PATH_PATTERNS = [
   /^\.vscode\//i,
 ];
 
-const SELF_DEV_ALLOWED_COMMAND_PATTERNS = [
-  /^(npm|pnpm)\s+(test|run\s+(test|lint|build|check|typecheck|dev))/i,
-  /^npx\s+(tsc|vitest|eslint|playwright|supabase)\b/i,
-  // node: yalnız sürüm ve yazma-korumalı scripts/ dizini; LLM'in yazabildiği
-  // yollardan kod çalıştırmak yasak (child_process izolasyon sınırı değildir).
-  /^node\s+(--version|-v)$/i,
-  /^node\s+(\.[/\\])?scripts[/\\](?!.*\.\.)[\w\-./\\]+\.(cjs|mjs|js)(\s+[^|;&><`$]*)?$/i,
-  /^git\s+(status|diff|log\s+--oneline|rev-parse\s+--short\s+HEAD)$/i,
-  /^(dir|ls|Get-ChildItem|type|cat)\b/i,
-];
+// Terminal komut izinleri artık tek kaynaktan gelir: command-guard.cjs.
 
 function normalizeRepoPath(filePath) {
   return String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
@@ -8705,7 +8755,7 @@ async function applyCapabilityPlan(args = {}, options = {}) {
 
   for (const file of normalizedFiles) {
     const fullPath = path.resolve(projectRoot, file.file_path);
-    if (!fullPath.startsWith(projectRoot)) {
+    if (!require('./command-guard.cjs').isInsideRoot(projectRoot, fullPath)) {
       return { success: false, message: `GÜVENLİK: Proje klasörü dışına yazma engellendi: ${file.file_path}` };
     }
 
@@ -8760,11 +8810,6 @@ async function applyCapabilityPlan(args = {}, options = {}) {
     validation_hint: args.run_validation ? 'run_terminal_command ile npm test veya npm run typecheck çalıştır.' : undefined,
     message: `${written.length} sandbox dosyası uygulandı. Çekirdeğe geçiş için ikinci onay gerekir.`,
   };
-}
-
-function isAllowedSelfDevCommand(command) {
-  const normalized = String(command || '').trim();
-  return SELF_DEV_ALLOWED_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function formatRequiredConfig(requiredConfig) {

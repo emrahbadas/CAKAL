@@ -111,7 +111,7 @@ interface CakalAPI {
 
   // Sesli Asistan — STT/TTS
   voiceTranscribe: (audioBase64: string, mimeType?: string) => Promise<{ success: boolean; text?: string; error?: string }>;
-  voiceTts: (text: string) => Promise<{ success: boolean; audioBase64?: string; mimeType?: string; error?: string }>;
+  voiceTts: (text: string) => Promise<{ success: boolean; audioBase64?: string; audioChunks?: string[]; mimeType?: string; error?: string }>;
 
   // Notifications (realtime)
   onNotification: (callback: (data: unknown) => void) => void;
