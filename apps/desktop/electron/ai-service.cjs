@@ -15,6 +15,7 @@ const {
 } = require('./sandbox-plugin-fsm.cjs');
 const { createSecretResolver, requestSecretInputs, listSecretRequests, hasSecret, ensureSecretHostAllowed } = require('./secret-broker.cjs');
 const { assessEarningsPricing } = require('./earnings-pricing.cjs');
+const executionContractLib = require('./execution-contract.cjs');
 
 // ── Sprint 13: Result Cache (TTL-based in-memory cache) ──
 const _resultCache = new Map();
@@ -507,29 +508,56 @@ function detectTaskType(userMessage) {
 
 function buildToolOnlyFallback(workingHistory = []) {
   const toolMessages = workingHistory.filter((msg) => msg && msg.role === 'tool').slice(-12);
-  const tools = [];
+  const lines = [];
 
   for (const msg of toolMessages) {
     try {
       const parsed = JSON.parse(msg.content || '{}');
-      if (parsed && parsed.tool) tools.push(String(parsed.tool));
+      if (!parsed || !parsed.tool) continue;
+      const status = parsed.success === false ? 'HATA' : 'OK';
+      const detail = typeof parsed.message === 'string' && parsed.message.trim()
+        ? ` — ${parsed.message.trim().substring(0, 160)}`
+        : '';
+      lines.push(`- ${parsed.tool} [${status}]${detail}`);
     } catch {
       // ignore malformed tool content
     }
   }
 
-  const uniqueTools = [...new Set(tools)];
-  if (uniqueTools.length === 0) {
+  if (lines.length === 0) {
     return 'Analiz sırasında araç çağrıları tamamlanamadı. Aynı isteği tekrar deneyelim.';
   }
 
-  const lines = ['Araçlar çalıştı, kısa özet:'];
-  if (uniqueTools.includes('get_stock_price')) lines.push('- Güncel fiyat verileri çekildi.');
-  if (uniqueTools.includes('analyze_finance_signal')) lines.push('- Teknik sinyal analizi üretildi.');
-  if (uniqueTools.includes('get_market_signal')) lines.push('- Piyasa sinyal katmanı değerlendirildi.');
-  if (uniqueTools.includes('generate_stock_chart')) lines.push('- İnteraktif grafik dosyası ve teknik seviyeler üretildi.');
-  lines.push('- Aşağıdaki görseller üzerinden detaylı yorumlamaya devam edebiliriz.');
-  return lines.join('\n');
+  return [
+    'Nihai özet üretilemedi (iterasyon limiti), ama bu turda şu araçlar gerçekten çalıştı:',
+    ...lines,
+    'Detaylı rapor için "ne yaptın?" diye sorabilirsin; işlem kaydı hafızada.',
+  ].join('\n');
+}
+
+// Tur içinde çalışan araçları kalıcı hafızaya yazılacak kısa bir kayda çevirir.
+// sanitizeConversationHistory tool mesajlarını sildiği için bu kayıt olmadan
+// LLM bir sonraki turda kendi yaptığı işi göremiyor ("yapmadım" hatası).
+function buildActionLedger(toolTimings = []) {
+  if (!Array.isArray(toolTimings) || toolTimings.length === 0) return null;
+
+  const lines = toolTimings.map((t) => {
+    const status = t.success === false ? 'HATA' : 'OK';
+    const hints = [];
+    if (t.args) {
+      if (t.args.file_path) hints.push(`dosya: ${t.args.file_path}`);
+      if (t.args.mode) hints.push(`mod: ${t.args.mode}`);
+      if (t.args.symbol) hints.push(`sembol: ${t.args.symbol}`);
+      if (t.args.query) hints.push(`sorgu: ${String(t.args.query).substring(0, 80)}`);
+    }
+    return `- ${t.tool} [${status}]${hints.length ? ' | ' + hints.join(', ') : ''}`;
+  });
+
+  return [
+    `[İŞLEM KAYDI ${new Date().toISOString()}] Bu turda sistem tarafından loglanan gerçek araç çağrıları aşağıdadır.`,
+    'Bu kayıt kesindir; sonraki turlarda "ne yaptın" sorulursa bu listeye dayan, işlemleri inkar etme:',
+    ...lines,
+  ].join('\n');
 }
 
 function detectTaskFromTools(toolCalls) {
@@ -2516,6 +2544,61 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'submit_task_plan',
+      description: 'YÜRÜTME SÖZLEŞMESİ: Dosya yazma/kod üretme görevine başlamadan ÖNCE çağır. Üreteceğin dosyaları (artifacts) ve kabul kriterlerini makine-okunur planla kilitle. Plan bir kez kilitlenir; revizyon yok. write_project_file kullanacağın her görevde bu ilk adımdır.',
+      parameters: {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', description: 'Kısa görev kimliği (ör. finance-locks-v2)' },
+          artifacts: { type: 'array', items: { type: 'string' }, description: 'Üretilecek dosya yolları (sandbox-relative). Testler dahil TÜM planlanan dosyalar.' },
+          acceptanceCriteria: { type: 'array', items: { type: 'string' }, description: 'Görevin tamamlanmış sayılması için gereken somut kriterler' },
+        },
+        required: ['artifacts', 'acceptanceCriteria'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'submit_task_verdict',
+      description: 'YÜRÜTME SÖZLEŞMESİ: Doğrulama fazında, dosyaları geri okuyup planla karşılaştırdıktan sonra çağır. Her artifact için coverage durumu + bulgular + genel hüküm bildir. Aynı bulguyu ikinci kez bildirme (sistem tekrarları tespit edip döngüyü keser).',
+      parameters: {
+        type: 'object',
+        properties: {
+          coverage: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                artifact: { type: 'string', description: 'Dosya yolu' },
+                status: { type: 'string', enum: ['PASS', 'PARTIAL', 'MISSING', 'FAIL'] },
+                evidence: { type: 'string', description: 'Kanıt: geri okuma sonucu ne görüldü' },
+              },
+              required: ['artifact', 'status'],
+            },
+          },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string' },
+                ruleId: { type: 'string', description: 'Kısa kural etiketi (ör. missing-tests, empty-file, schema-invalid)' },
+                description: { type: 'string' },
+                violatesAcceptance: { type: 'boolean', description: 'Kabul kriterini ihlal ediyor mu? false ise düzeltme hakkı doğurmaz.' },
+              },
+              required: ['file', 'ruleId', 'description'],
+            },
+          },
+          overall: { type: 'string', enum: ['COMPLETED', 'PARTIAL', 'FAILED'] },
+        },
+        required: ['coverage', 'overall'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_opportunities',
       description: 'Gerçek kaynaklardan fırsat ara. Trendyol API/scrape, Sahibinden, Letgo/Dolap, Hepsiemlak, Perplexity, AliExpress/Alibaba/1688 (site araştırması) ve forum kaynakları (DH, ShiftDelete, Reddit, Ekşi) ile çoklu kaynak tarama yapar. Emlak, ikinci el, indirim/kampanya ve forum sorguları otomatik algılanır.',
       parameters: {
@@ -3485,6 +3568,29 @@ async function handleToolCall(name, args, options = {}) {
 
   try {
     switch (name) {
+      // ── Yürütme Sözleşmesi (plan → uygula → doğrula döngüsü) ──
+      case 'submit_task_plan': {
+        const ec = options.executionContract;
+        if (!ec) return { tool: name, success: false, message: 'Yürütme sözleşmesi bu istekte aktif değil.' };
+        emit('Görev planı kaydediliyor...');
+        const res = executionContractLib.registerPlan(ec, args);
+        return { tool: name, success: res.ok, message: res.message };
+      }
+
+      case 'submit_task_verdict': {
+        const ec = options.executionContract;
+        if (!ec) return { tool: name, success: false, message: 'Yürütme sözleşmesi bu istekte aktif değil.' };
+        emit('Doğrulama hükmü işleniyor...');
+        const res = executionContractLib.registerVerification(ec, args);
+        return {
+          tool: name,
+          success: res.accepted,
+          message: res.message,
+          should_continue: res.shouldContinue,
+          stop_reason: ec.stopReason || null,
+        };
+      }
+
       // ── Fırsat Arama (Multi-Source — Sprint 10 + Cache Sprint 13) ──
       case 'search_opportunities': {
         const cacheKey = buildToolTimingKey(name, args);
@@ -5231,6 +5337,15 @@ async function handleToolCall(name, args, options = {}) {
           return { tool: name, success: false, message: getSandboxPolicyMessage(filePath) };
         }
 
+        // Yürütme sözleşmesi kapısı: limitler dolduysa yazma reddedilir
+        const execContract = options.executionContract;
+        if (execContract) {
+          const gate = executionContractLib.canMutate(execContract, filePath);
+          if (!gate.allowed) {
+            return { tool: name, success: false, message: `YÜRÜTME KİLİDİ: ${gate.reason}` };
+          }
+        }
+
         // Güvenlik: Proje kökü dışına çıkma (path.relative tabanlı)
         const projectRoot2 = require('path').resolve(__dirname, '../../..');
         const fullPath2 = require('path').resolve(projectRoot2, filePath);
@@ -5285,6 +5400,16 @@ async function handleToolCall(name, args, options = {}) {
           resultMsg = `Dosya patch uygulandı (yedek oluşturuldu): ${filePath}`;
         } else {
           return { tool: name, success: false, message: `Geçersiz mod: ${mode}` };
+        }
+
+        // Yürütme sözleşmesi: mutasyonu nihai dosya içeriğinin hash'iyle kaydet.
+        // Salınım tespit edilirse (dosya eski bir haline geri döndü) sonraki yazmalar kilitlenir.
+        if (execContract) {
+          const finalFileContent = fs2.readFileSync(fullPath2, 'utf-8');
+          const rec = executionContractLib.recordMutation(execContract, { file: filePath, mode, finalContent: finalFileContent });
+          if (rec.oscillation) {
+            resultMsg += ' | UYARI: Bu yazma dosyayı önceki bir içeriğe geri döndürdü (OSCILLATION_DETECTED). Düzeltme döngüsü durduruldu; başka yazma yapma, durumu raporla.';
+          }
         }
 
         // Evolution log'a kaydet
@@ -9238,6 +9363,17 @@ async function chat(message, options = {}) {
   const strategyInsights = getStrategyInsights();
   if (strategyInsights) systemPrompt += strategyInsights;
 
+  // ── Yürütme Sözleşmesi (plan → uygula → geri oku → karşılaştır → sınırlı düzelt) ──
+  const executionContract = executionContractLib.createExecutionContract();
+  systemPrompt += `
+
+## YÜRÜTME SÖZLEŞMESİ (dosya yazma görevleri)
+- Sandbox'a dosya yazacağın bir göreve başlamadan ÖNCE submit_task_plan çağır: üreteceğin TÜM dosyalar (testler dahil) + kabul kriterleri.
+- write_project_file SUCCESS dönmesi işin bittiğini KANITLAMAZ; sadece yazmanın gerçekleştiğini gösterir.
+- Yazma yaptığın turun sonunda sistem otomatik DOĞRULAMA FAZI başlatır: dosyaları read_project_file ile geri oku, planla karşılaştır, submit_task_verdict ile coverage + bulgular bildir.
+- Aynı bulguyu iki kez bildirme, aynı dosyayı ileri-geri değiştirme — sistem tekrarları ve salınımı tespit edip döngüyü keser.
+- Kapanışta görev durumu senin anlatına göre değil, deterministik durum kaydına göre raporlanır. Yaptığın işi asla inkar etme; işlem kaydı esastır.`;
+
   // Görev tipi algıla → doğru modeli seç
   const detectedTask = detectTaskType(message);
   let activeModel = normalizeChatCompletionsModel(getModelForTask(detectedTask));
@@ -9312,6 +9448,7 @@ async function chat(message, options = {}) {
           onActivity,
           telegramService,
           telegramReader,
+          executionContract,
         });
         const toolDuration = Date.now() - toolStart;
 
@@ -9399,7 +9536,114 @@ async function chat(message, options = {}) {
       assistantMessage = response.choices[0]?.message;
     }
 
-    if (assistantMessage?.tool_calls && iterations >= MAX_ITERATIONS) {
+    // ── DOĞRULAMA FAZI (plan → uygula → geri oku → karşılaştır → sınırlı düzelt) ──
+    // Bu turda dosya mutasyonu yapıldıysa, kapanıştan önce zorunlu doğrulama döngüsü.
+    // Sonsuz döngü korumaları execution-contract.cjs içinde deterministik olarak işler.
+    let verifyPhaseRan = false;
+    let executionStatusRecord = null;
+    if (executionContract.mutations.length > 0) {
+      verifyPhaseRan = true;
+      const VERIFY_ALLOWED_TOOLS = new Set(['read_project_file', 'search_project_code', 'write_project_file', 'submit_task_verdict']);
+      const maxVerifyIterations = executionContract.limits.maxVerifyIterations;
+
+      // Ana döngüden kalan son mesajı tutarlı şekilde bağla:
+      // içerikli normal bitişse geçmişe ekle; bekleyen tool çağrısıysa düşür (yetim tool_call API'yi bozar).
+      if (assistantMessage && !assistantMessage.tool_calls && typeof assistantMessage.content === 'string' && assistantMessage.content.trim()) {
+        workingHistory.push({ role: 'assistant', content: assistantMessage.content });
+      } else if (assistantMessage?.tool_calls) {
+        console.warn('[AI] Doğrulama fazı: bekleyen tool çağrıları düşürüldü (iterasyon tavanı).');
+      }
+
+      // Deterministik disk kontrolü — LLM'e sorulmaz, doğrudan geri okunur
+      const projectRootV = require('path').resolve(__dirname, '../../..');
+      const diskReport = executionContractLib.verifyArtifactsOnDisk(executionContract, (relPath) => {
+        const full = require('path').resolve(projectRootV, relPath);
+        if (!require('./command-guard.cjs').isInsideRoot(projectRootV, full)) return { exists: false, content: null };
+        const fsV = require('fs');
+        if (!fsV.existsSync(full)) return { exists: false, content: null };
+        return { exists: true, content: fsV.readFileSync(full, 'utf-8') };
+      });
+
+      workingHistory.push({
+        role: 'user',
+        content: [
+          '[SİSTEM — DOĞRULAMA FAZI] Bu turda dosya mutasyonları yapıldı. Kapanıştan önce plan-karşılaştırmalı doğrulama zorunlu.',
+          `Sözleşme: ${JSON.stringify({ taskId: executionContract.taskId, planned: executionContract.planned, plannedArtifacts: executionContract.plannedArtifacts, acceptanceCriteria: executionContract.acceptanceCriteria, yazilanDosyalar: [...new Set(executionContract.mutations.map(m => m.file))] })}`,
+          `Deterministik disk kontrolü: ${JSON.stringify(diskReport.map(d => ({ file: d.file, exists: d.exists, bytes: d.bytes, ok: d.ok, note: d.note || undefined })))}`,
+          'Görevin:',
+          '1. Yazdığın her dosyayı read_project_file ile geri oku.',
+          '2. Plan ve kabul kriterleriyle karşılaştır.',
+          '3. submit_task_verdict çağır (coverage + findings + overall).',
+          `4. Kriter ihlali varsa ve hakkın varsa düzelt (dosya başına en çok ${executionContract.limits.maxEditsPerFile} yazma, en çok ${executionContract.limits.maxVerificationPasses} verdict pası), sonra tekrar oku ve yeni verdict ver.`,
+          'Bu fazda yalnız read_project_file, search_project_code, write_project_file ve submit_task_verdict kullanılabilir. Yeni analiz aracı çağırma.',
+        ].join('\n'),
+      });
+
+      let vIter = 0;
+      let verifyDone = false;
+      while (!verifyDone && vIter < maxVerifyIterations) {
+        if (onActivity) {
+          onActivity({ type: 'llm_continue', detail: `${activeModel} doğrulama fazı (iterasyon ${vIter + 1}/${maxVerifyIterations})...`, timestamp: Date.now() });
+        }
+        completion = await createChatCompletionWithFallback(openai, {
+          model: activeModel,
+          messages: [{ role: 'system', content: systemPrompt }, ...workingHistory],
+          tools: TOOLS,
+          tool_choice: 'auto',
+          temperature: 0.3,
+          max_completion_tokens: 4096,
+        }, `verify_${vIter + 1}`);
+        response = completion.response;
+        activeModel = completion.modelUsed;
+        assistantMessage = response.choices[0]?.message;
+
+        if (!assistantMessage?.tool_calls) break; // anlatı geldi → faz bitti
+        vIter++;
+        workingHistory.push(assistantMessage);
+
+        for (const toolCall of assistantMessage.tool_calls) {
+          const fnName = toolCall.function.name;
+          let fnArgs = {};
+          try { fnArgs = JSON.parse(toolCall.function.arguments || '{}'); } catch { fnArgs = {}; }
+
+          let result;
+          if (!VERIFY_ALLOWED_TOOLS.has(fnName)) {
+            result = { tool: fnName, success: false, message: 'Doğrulama fazında bu araç kullanılamaz. Sadece geri okuma, karşılaştırma ve sınırlı düzeltme yapılır.' };
+          } else {
+            const toolStart = Date.now();
+            result = await handleToolCall(fnName, fnArgs, {
+              perplexityKey, supabaseClient, onActivity, telegramService, telegramReader, executionContract,
+            });
+            _toolTimings.push({ tool: fnName, args: fnArgs, duration: Date.now() - toolStart, success: result?.success !== false, cached: false });
+          }
+
+          if (fnName === 'submit_task_verdict' && result && result.should_continue === false) {
+            verifyDone = true;
+          }
+          workingHistory.push({ tool_call_id: toolCall.id, role: 'tool', content: JSON.stringify(result) });
+        }
+
+        if (executionContract.stopped || executionContract.done) verifyDone = true;
+      }
+      if (vIter >= maxVerifyIterations && !verifyDone) {
+        console.warn(`[AI] Doğrulama fazı iterasyon tavanına ulaştı (${maxVerifyIterations}).`);
+      }
+
+      // Nihai deterministik durum kaydı: son disk durumuyla hesapla
+      const finalDiskReport = executionContractLib.verifyArtifactsOnDisk(executionContract, (relPath) => {
+        const full = require('path').resolve(projectRootV, relPath);
+        if (!require('./command-guard.cjs').isInsideRoot(projectRootV, full)) return { exists: false, content: null };
+        const fsV = require('fs');
+        if (!fsV.existsSync(full)) return { exists: false, content: null };
+        return { exists: true, content: fsV.readFileSync(full, 'utf-8') };
+      });
+      executionStatusRecord = executionContractLib.buildStatusRecord(executionContract, finalDiskReport);
+      if (executionStatusRecord) {
+        console.log(`[ExecContract] Görev durumu: ${executionStatusRecord.status} (${executionStatusRecord.mutationCount} mutasyon, ${executionStatusRecord.verificationPasses} doğrulama pası)`);
+      }
+    }
+
+    if (assistantMessage?.tool_calls && (iterations >= MAX_ITERATIONS || verifyPhaseRan)) {
       console.warn(`[AI] Max iterations reached (${MAX_ITERATIONS}). Forcing final no-tool narrative.`);
       const forceMessages = [
         { role: 'system', content: systemPrompt + '\n\nYeni araç çağırma. Sadece mevcut tool sonuçlarına dayanarak net Türkçe final yanıt üret.' },
@@ -9415,6 +9659,7 @@ async function chat(message, options = {}) {
         completion = await createChatCompletionWithFallback(openai, {
           model: activeModel,
           messages: forceMessages,
+          tools: TOOLS,
           tool_choice: 'none',
           temperature: 0.6,
           max_completion_tokens: 2048,
@@ -9456,7 +9701,23 @@ async function chat(message, options = {}) {
       }
     }
 
+    // Deterministik görev durum kaydı — LLM anlatısı ne derse desin bu kayıt esastır
+    if (executionStatusRecord) {
+      finalContent += '\n\n---\n📋 **Görev Durum Kaydı (sistem — deterministik)**\n```json\n'
+        + JSON.stringify(executionStatusRecord, null, 2)
+        + '\n```';
+    }
+
     conversationHistory.push({ role: 'assistant', content: finalContent });
+
+    // İşlem kaydını kalıcı geçmişe ekle — sonraki turda LLM yaptığı işi görebilsin
+    const actionLedger = buildActionLedger(_toolTimings);
+    if (actionLedger) {
+      const ledgerWithStatus = executionStatusRecord
+        ? actionLedger + `\nGörev durumu (deterministik): ${executionStatusRecord.status} | dosyalar: ${executionStatusRecord.createdFiles.join(', ') || 'yok'}`
+        : actionLedger;
+      conversationHistory.push({ role: 'assistant', content: ledgerWithStatus });
+    }
 
     if (onActivity) {
       onActivity({ type: 'response_ready', agent: 'commander', contentLength: finalContent.length, detail: `Yanıt hazır (${iterations} tool çağrısı)`, timestamp: Date.now() });
