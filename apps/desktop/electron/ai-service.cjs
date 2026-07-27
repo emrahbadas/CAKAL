@@ -16,6 +16,7 @@ const {
 const { createSecretResolver, requestSecretInputs, listSecretRequests, hasSecret, ensureSecretHostAllowed } = require('./secret-broker.cjs');
 const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
+const safePath = require('./safe-path.cjs');
 
 // ── Sprint 13: Result Cache (TTL-based in-memory cache) ──
 const _resultCache = new Map();
@@ -5295,20 +5296,20 @@ async function handleToolCall(name, args, options = {}) {
         const filePath = args.file_path;
         emit(`Dosya okunuyor: ${filePath}`);
 
-        if (isReadProtectedRepoPath(filePath)) {
-          return { tool: name, success: false, message: `GÜVENLİK: ${normalizeRepoPath(filePath)} korumalı alanda. Secrets/core dosyaları doğrudan okunamaz.` };
+        // Kanonik okuma kapısı: traversal/symlink çözülür, karar kanonik yol
+        // üzerinde verilir ve fs tam olarak o yolu kullanır.
+        const readTarget = resolveSelfDevReadTarget(filePath);
+        if (!readTarget.ok) {
+          return { tool: name, success: false, message: readTarget.reason };
         }
-
-        // Güvenlik: Proje kökü dışına çıkma (path.relative tabanlı)
-        const projectRoot = require('path').resolve(__dirname, '../../..');
-        const fullPath = require('path').resolve(projectRoot, filePath);
-        if (!require('./command-guard.cjs').isInsideRoot(projectRoot, fullPath)) {
-          return { tool: name, success: false, message: 'GÜVENLİK: Proje klasörü dışına erişim engellendi.' };
-        }
+        const fullPath = readTarget.fullPath;
 
         const fs = require('fs');
         if (!fs.existsSync(fullPath)) {
-          return { tool: name, success: false, message: `Dosya bulunamadı: ${filePath}` };
+          return { tool: name, success: false, message: `Dosya bulunamadı: ${readTarget.repoPath}` };
+        }
+        if (!fs.statSync(fullPath).isFile()) {
+          return { tool: name, success: false, message: `Bu bir dosya değil: ${readTarget.repoPath}` };
         }
 
         const content = fs.readFileSync(fullPath, 'utf-8');
@@ -5333,24 +5334,22 @@ async function handleToolCall(name, args, options = {}) {
         const reason = args.reason || 'Belirtilmedi';
         emit(`Dosya yazılıyor (${mode}): ${filePath}`);
 
-        if (!isSandboxRepoPath(filePath) || isWriteProtectedRepoPath(filePath)) {
-          return { tool: name, success: false, message: getSandboxPolicyMessage(filePath) };
+        // Kanonik yazma kapısı: traversal/symlink çözülür, sandbox hapsi
+        // kanonik yol üzerinde uygulanır ve fs tam olarak o yolu kullanır.
+        const writeTarget = resolveSelfDevWriteTarget(filePath);
+        if (!writeTarget.ok) {
+          return { tool: name, success: false, message: writeTarget.reason };
         }
+        const fullPath2 = writeTarget.fullPath;
+        const canonicalRepoPath = writeTarget.repoPath;
 
         // Yürütme sözleşmesi kapısı: limitler dolduysa yazma reddedilir
         const execContract = options.executionContract;
         if (execContract) {
-          const gate = executionContractLib.canMutate(execContract, filePath);
+          const gate = executionContractLib.canMutate(execContract, canonicalRepoPath);
           if (!gate.allowed) {
             return { tool: name, success: false, message: `YÜRÜTME KİLİDİ: ${gate.reason}` };
           }
-        }
-
-        // Güvenlik: Proje kökü dışına çıkma (path.relative tabanlı)
-        const projectRoot2 = require('path').resolve(__dirname, '../../..');
-        const fullPath2 = require('path').resolve(projectRoot2, filePath);
-        if (!require('./command-guard.cjs').isInsideRoot(projectRoot2, fullPath2)) {
-          return { tool: name, success: false, message: 'GÜVENLİK: Proje klasörü dışına yazma engellendi.' };
         }
 
         const fs2 = require('fs');
@@ -5365,10 +5364,10 @@ async function handleToolCall(name, args, options = {}) {
 
         if (mode === 'create') {
           if (fs2.existsSync(fullPath2)) {
-            return { tool: name, success: false, message: `Dosya zaten mevcut: ${filePath}. overwrite veya patch kullan.` };
+            return { tool: name, success: false, message: `Dosya zaten mevcut: ${canonicalRepoPath}. overwrite veya patch kullan.` };
           }
           fs2.writeFileSync(fullPath2, args.content || '', 'utf-8');
-          resultMsg = `Yeni dosya oluşturuldu: ${filePath}`;
+          resultMsg = `Yeni dosya oluşturuldu: ${canonicalRepoPath}`;
         } else if (mode === 'overwrite') {
           const existed = fs2.existsSync(fullPath2);
           // Yedek oluştur
@@ -5377,17 +5376,17 @@ async function handleToolCall(name, args, options = {}) {
             fs2.copyFileSync(fullPath2, backup);
           }
           fs2.writeFileSync(fullPath2, args.content || '', 'utf-8');
-          resultMsg = existed ? `Dosya üzerine yazıldı (yedek oluşturuldu): ${filePath}` : `Dosya oluşturuldu: ${filePath}`;
+          resultMsg = existed ? `Dosya üzerine yazıldı (yedek oluşturuldu): ${canonicalRepoPath}` : `Dosya oluşturuldu: ${canonicalRepoPath}`;
         } else if (mode === 'append') {
           const existing = fs2.existsSync(fullPath2) ? fs2.readFileSync(fullPath2, 'utf-8') : '';
           fs2.writeFileSync(fullPath2, existing + '\n' + (args.content || ''), 'utf-8');
-          resultMsg = `Dosyanın sonuna eklendi: ${filePath}`;
+          resultMsg = `Dosyanın sonuna eklendi: ${canonicalRepoPath}`;
         } else if (mode === 'patch') {
           if (!args.patch_target || !args.patch_replacement) {
             return { tool: name, success: false, message: 'patch modu için patch_target ve patch_replacement gerekli.' };
           }
           if (!fs2.existsSync(fullPath2)) {
-            return { tool: name, success: false, message: `Dosya bulunamadı: ${filePath}` };
+            return { tool: name, success: false, message: `Dosya bulunamadı: ${canonicalRepoPath}` };
           }
           const original = fs2.readFileSync(fullPath2, 'utf-8');
           if (!original.includes(args.patch_target)) {
@@ -5397,7 +5396,7 @@ async function handleToolCall(name, args, options = {}) {
           fs2.copyFileSync(fullPath2, fullPath2 + '.cakal-backup');
           const patched = original.replace(args.patch_target, args.patch_replacement);
           fs2.writeFileSync(fullPath2, patched, 'utf-8');
-          resultMsg = `Dosya patch uygulandı (yedek oluşturuldu): ${filePath}`;
+          resultMsg = `Dosya patch uygulandı (yedek oluşturuldu): ${canonicalRepoPath}`;
         } else {
           return { tool: name, success: false, message: `Geçersiz mod: ${mode}` };
         }
@@ -5406,7 +5405,7 @@ async function handleToolCall(name, args, options = {}) {
         // Salınım tespit edilirse (dosya eski bir haline geri döndü) sonraki yazmalar kilitlenir.
         if (execContract) {
           const finalFileContent = fs2.readFileSync(fullPath2, 'utf-8');
-          const rec = executionContractLib.recordMutation(execContract, { file: filePath, mode, finalContent: finalFileContent });
+          const rec = executionContractLib.recordMutation(execContract, { file: canonicalRepoPath, mode, finalContent: finalFileContent });
           if (rec.oscillation) {
             resultMsg += ' | UYARI: Bu yazma dosyayı önceki bir içeriğe geri döndürdü (OSCILLATION_DETECTED). Düzeltme döngüsü durduruldu; başka yazma yapma, durumu raporla.';
           }
@@ -5416,9 +5415,9 @@ async function handleToolCall(name, args, options = {}) {
         if (supabaseClient) {
           await supabaseClient.from('evolution_log').insert({
             evolution_type: mode === 'create' ? 'new_module' : 'modify_module',
-            title: `Dosya ${mode}: ${filePath}`,
+            title: `Dosya ${mode}: ${canonicalRepoPath}`,
             description: reason,
-            target_path: filePath,
+            target_path: canonicalRepoPath,
             generated_code: (args.content || args.patch_replacement || '').substring(0, 5000),
             diff_content: mode === 'patch' ? `--- ${args.patch_target}\n+++ ${args.patch_replacement}` : null,
             status: 'applied',
@@ -5597,14 +5596,15 @@ async function handleToolCall(name, args, options = {}) {
           if (logEntry) logId = logEntry.id;
         }
 
-        // Hedef dosyaları analiz et
-        const projectRoot5 = require('path').resolve(__dirname, '../../..');
+        // Hedef dosyaları analiz et — kanonik kapıdan geçen yol kullanılır,
+        // yeniden resolve edilmez (kontrol edilen yol = okunan yol).
         const fs5 = require('fs');
         const analysis = {};
 
         for (const tf of normalizedTargets) {
-          const fp = require('path').resolve(projectRoot5, tf);
-          if (require('./command-guard.cjs').isInsideRoot(projectRoot5, fp) && fs5.existsSync(fp)) {
+          const target5 = resolveSelfDevWriteTarget(tf);
+          const fp = target5.ok ? target5.fullPath : null;
+          if (fp && fs5.existsSync(fp) && fs5.statSync(fp).isFile()) {
             const content = fs5.readFileSync(fp, 'utf-8');
             const lines = content.split('\n');
             analysis[tf] = {
@@ -8728,11 +8728,36 @@ const SELF_DEV_SANDBOX_ROOTS = [
   '.cakal-sandbox/plugins/',
 ];
 
+// Okuma denylist'i: kanonik repo yolu (traversal çözülmüş hâli) üzerinde
+// çalışır. Amaç anahtar materyali, kimlik dosyaları ve secret store'ların
+// LLM context'ine girmesini engellemek.
 const SELF_DEV_READ_PROTECTED_PATH_PATTERNS = [
+  // Ortam değişkenleri
   /^\.env(\.|$)/i,
+  // Depo iç yapıları
   /^node_modules\//i,
   /^\.git\//i,
   /^supabase\/\.temp\//i,
+  // Secret store'lar — .cakal-sandbox/secrets/ Electron hazır değilken
+  // secret-broker'ın dev fallback'idir; sandbox altında olduğu için
+  // yazma kısıtından muaf sanılmamalı, okuma da kapalı olmalı.
+  /(^|\/)\.cakal-sandbox\/secrets\//i,
+  /(^|\/)cakal-secrets\.json$/i,
+  /(^|\/)[^/]*secrets?[^/]*\.json$/i,
+  // Anahtar materyali
+  /\.(pem|key|p12|pfx|asc|gpg|jks|keystore)$/i,
+  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.|$)/i,
+  /(^|\/)\.ssh\//i,
+  // Kimlik / servis hesabı dosyaları
+  /(^|\/)credentials?(\.|$)/i,
+  /(^|\/)[^/]*service[-_]?account[^/]*\.json$/i,
+  // Paket yöneticisi ve araç kimlik dosyaları
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.netrc$/i,
+  /(^|\/)mcp-config\.json$/i,
+  /^\.vscode\/mcp\.json$/i,
+  // Çekirdek dosyaların yedekleri
+  /\.cakal-backup$/i,
 ];
 
 const SELF_DEV_WRITE_PROTECTED_PATH_PATTERNS = [
@@ -8753,19 +8778,60 @@ function normalizeRepoPath(filePath) {
   return String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
 }
 
+function selfDevProjectRoot() {
+  return require('path').resolve(__dirname, '../../..');
+}
+
+// ── Kanonik kapı ──
+// Guard kararı ile dosya işlemi AYNI yol üzerinde verilmelidir. Aşağıdaki iki
+// fonksiyon `safe-path.cjs` ile ham girdiyi kanonik hâle getirir, kararı kanonik
+// `repoPath` üzerinde alır ve fs'e verilecek `fullPath`i döner. Çağıran taraf
+// dönen fullPath'i yeniden resolve ETMEMELİDİR.
+
+/** Yazma kapısı: kanonik yol sandbox köklerinden birinin altında olmalı. */
+function resolveSelfDevWriteTarget(filePath) {
+  const resolved = safePath.resolveWithinRoot(selfDevProjectRoot(), filePath);
+  if (!resolved.ok) {
+    return { ok: false, reason: `GÜVENLİK: ${normalizeRepoPath(filePath)} reddedildi — ${resolved.reason}` };
+  }
+  const inSandbox = SELF_DEV_SANDBOX_ROOTS.some((root) => safePath.startsWithRoot(resolved.repoPath, root));
+  const isProtected = SELF_DEV_WRITE_PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(resolved.repoPath));
+  if (!inSandbox || isProtected) {
+    return { ok: false, reason: getSandboxPolicyMessage(resolved.repoPath) };
+  }
+  return resolved;
+}
+
+/** Okuma kapısı: kanonik yol denylist'e takılmamalı. */
+function resolveSelfDevReadTarget(filePath) {
+  const resolved = safePath.resolveWithinRoot(selfDevProjectRoot(), filePath);
+  if (!resolved.ok) {
+    return { ok: false, reason: `GÜVENLİK: ${normalizeRepoPath(filePath)} reddedildi — ${resolved.reason}` };
+  }
+  if (SELF_DEV_READ_PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(resolved.repoPath))) {
+    return { ok: false, reason: `GÜVENLİK: ${resolved.repoPath} korumalı alanda. Secret/kimlik/çekirdek dosyaları okunamaz.` };
+  }
+  return resolved;
+}
+
+// Geriye dönük yardımcılar — yalnız mesaj/etiket üretimi için. Karar
+// vermek üzere KULLANILMAZ; karar yukarıdaki iki kanonik kapıdadır.
 function isReadProtectedRepoPath(filePath) {
-  const normalized = normalizeRepoPath(filePath);
-  return SELF_DEV_READ_PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+  const resolved = safePath.resolveWithinRoot(selfDevProjectRoot(), filePath);
+  if (!resolved.ok) return true;
+  return SELF_DEV_READ_PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(resolved.repoPath));
 }
 
 function isWriteProtectedRepoPath(filePath) {
-  const normalized = normalizeRepoPath(filePath);
-  return SELF_DEV_WRITE_PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+  const resolved = safePath.resolveWithinRoot(selfDevProjectRoot(), filePath);
+  if (!resolved.ok) return true;
+  return SELF_DEV_WRITE_PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(resolved.repoPath));
 }
 
 function isSandboxRepoPath(filePath) {
-  const normalized = normalizeRepoPath(filePath);
-  return SELF_DEV_SANDBOX_ROOTS.some((root) => normalized.startsWith(root));
+  const resolved = safePath.resolveWithinRoot(selfDevProjectRoot(), filePath);
+  if (!resolved.ok) return false;
+  return SELF_DEV_SANDBOX_ROOTS.some((root) => safePath.startsWithRoot(resolved.repoPath, root));
 }
 
 function getSandboxPolicyMessage(filePath) {
@@ -8850,11 +8916,22 @@ async function applyCapabilityPlan(args = {}, options = {}) {
     mode: file.mode || 'create',
   }));
 
-  const invalid = normalizedFiles.filter((file) => !isSandboxRepoPath(file.file_path) || isWriteProtectedRepoPath(file.file_path));
+  // Kanonik yazma kapısı — write_project_file ile aynı tek kaynak.
+  // Çözülen fullPath aşağıda doğrudan kullanılır; yeniden resolve edilmez.
+  const resolvedTargets = [];
+  const invalid = [];
+  for (const file of normalizedFiles) {
+    const target = resolveSelfDevWriteTarget(file.file_path);
+    if (!target.ok) {
+      invalid.push(file.file_path);
+    } else {
+      resolvedTargets.push({ ...file, fullPath: target.fullPath, repoPath: target.repoPath });
+    }
+  }
   if (invalid.length > 0) {
     return {
       success: false,
-      message: `GÜVENLİK: Capability planı sadece sandbox alanına yazabilir. Geçersiz yollar: ${invalid.map((file) => file.file_path).join(', ')}`,
+      message: `GÜVENLİK: Capability planı sadece sandbox alanına yazabilir. Geçersiz yollar: ${invalid.join(', ')}`,
       allowed_roots: SELF_DEV_SANDBOX_ROOTS,
     };
   }
@@ -8875,21 +8952,17 @@ async function applyCapabilityPlan(args = {}, options = {}) {
 
   const fs = require('fs');
   const path = require('path');
-  const projectRoot = path.resolve(__dirname, '../../..');
   const written = [];
 
-  for (const file of normalizedFiles) {
-    const fullPath = path.resolve(projectRoot, file.file_path);
-    if (!require('./command-guard.cjs').isInsideRoot(projectRoot, fullPath)) {
-      return { success: false, message: `GÜVENLİK: Proje klasörü dışına yazma engellendi: ${file.file_path}` };
-    }
+  for (const file of resolvedTargets) {
+    const fullPath = file.fullPath;
 
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     const exists = fs.existsSync(fullPath);
     const mode = file.mode;
 
     if (mode === 'create' && exists) {
-      return { success: false, message: `Dosya zaten mevcut: ${file.file_path}. overwrite veya append kullan.` };
+      return { success: false, message: `Dosya zaten mevcut: ${file.repoPath}. overwrite veya append kullan.` };
     }
     if (!['create', 'overwrite', 'append'].includes(mode)) {
       return { success: false, message: `Geçersiz yazma modu: ${mode}` };
@@ -8905,7 +8978,7 @@ async function applyCapabilityPlan(args = {}, options = {}) {
       fs.writeFileSync(fullPath, file.content, 'utf-8');
     }
 
-    written.push({ file_path: file.file_path, mode, bytes: Buffer.byteLength(file.content, 'utf-8') });
+    written.push({ file_path: file.repoPath, mode, bytes: Buffer.byteLength(file.content, 'utf-8') });
   }
 
   if (options.supabaseClient) {
@@ -9555,13 +9628,16 @@ async function chat(message, options = {}) {
       }
 
       // Deterministik disk kontrolü — LLM'e sorulmaz, doğrudan geri okunur
-      const projectRootV = require('path').resolve(__dirname, '../../..');
       const diskReport = executionContractLib.verifyArtifactsOnDisk(executionContract, (relPath) => {
-        const full = require('path').resolve(projectRootV, relPath);
-        if (!require('./command-guard.cjs').isInsideRoot(projectRootV, full)) return { exists: false, content: null };
+        // plannedArtifacts LLM kontrolündedir; sandbox kapısından geçmeyen bir
+        // yol için varlık/boyut bilgisi bile sızdırılmaz.
+        const target = resolveSelfDevWriteTarget(relPath);
+        if (!target.ok) return { exists: false, content: null };
         const fsV = require('fs');
-        if (!fsV.existsSync(full)) return { exists: false, content: null };
-        return { exists: true, content: fsV.readFileSync(full, 'utf-8') };
+        if (!fsV.existsSync(target.fullPath) || !fsV.statSync(target.fullPath).isFile()) {
+          return { exists: false, content: null };
+        }
+        return { exists: true, content: fsV.readFileSync(target.fullPath, 'utf-8') };
       });
 
       workingHistory.push({
@@ -9631,11 +9707,15 @@ async function chat(message, options = {}) {
 
       // Nihai deterministik durum kaydı: son disk durumuyla hesapla
       const finalDiskReport = executionContractLib.verifyArtifactsOnDisk(executionContract, (relPath) => {
-        const full = require('path').resolve(projectRootV, relPath);
-        if (!require('./command-guard.cjs').isInsideRoot(projectRootV, full)) return { exists: false, content: null };
+        // plannedArtifacts LLM kontrolündedir; sandbox kapısından geçmeyen bir
+        // yol için varlık/boyut bilgisi bile sızdırılmaz.
+        const target = resolveSelfDevWriteTarget(relPath);
+        if (!target.ok) return { exists: false, content: null };
         const fsV = require('fs');
-        if (!fsV.existsSync(full)) return { exists: false, content: null };
-        return { exists: true, content: fsV.readFileSync(full, 'utf-8') };
+        if (!fsV.existsSync(target.fullPath) || !fsV.statSync(target.fullPath).isFile()) {
+          return { exists: false, content: null };
+        }
+        return { exists: true, content: fsV.readFileSync(target.fullPath, 'utf-8') };
       });
       executionStatusRecord = executionContractLib.buildStatusRecord(executionContract, finalDiskReport);
       if (executionStatusRecord) {
@@ -9972,4 +10052,13 @@ module.exports = {
   determineOpportunitySources,
   hasChinaSourcingIntent,
   buildToolResultPreview,
+  // Güvenlik sınırı — regresyon testleri için export edilir (denetim HIGH-4).
+  // Bu fonksiyonlar projenin sandbox hapsini tanımlar; testsiz kalmamalı.
+  normalizeRepoPath,
+  isSandboxRepoPath,
+  isReadProtectedRepoPath,
+  isWriteProtectedRepoPath,
+  resolveSelfDevReadTarget,
+  resolveSelfDevWriteTarget,
+  SELF_DEV_SANDBOX_ROOTS,
 };
