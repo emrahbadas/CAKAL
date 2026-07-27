@@ -1,8 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('cakalAPI', {
-  // Analysis — open in browser
-  openAnalysisFile: (filePath) => ipcRenderer.invoke('analysis:open-file', filePath),
+  // Analysis — open in browser.
+  // Yalnız uygulamanın ürettiği artifactId kabul edilir; ham yol taşınmaz.
+  openAnalysisArtifact: (artifactId) => ipcRenderer.invoke('analysis:open-artifact', artifactId),
 
   // AI Chat
   runAgent: (agentName, payload) =>

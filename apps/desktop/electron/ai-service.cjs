@@ -17,6 +17,7 @@ const { createSecretResolver, requestSecretInputs, listSecretRequests, hasSecret
 const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
 const safePath = require('./safe-path.cjs');
+const { registerAnalysisArtifact } = require('./analysis-artifacts.cjs');
 
 // ── Sprint 13: Result Cache (TTL-based in-memory cache) ──
 const _resultCache = new Map();
@@ -2480,7 +2481,7 @@ function buildBrowserAnalysisHTML({ symbol, title, currentPrice, change, exchang
 }
 
 // Build COMPACT in-app widget (no Chart.js, pure CSS — reliable in Electron iframe)
-function buildCompactWidgetHTML({ symbol, currentPrice, change, currency, metrics, levels, analysts, analysis, filePath }) {
+function buildCompactWidgetHTML({ symbol, currentPrice, change, currency, metrics, levels, analysts, analysis, artifactId }) {
   const price = currentPrice || 0;
   const chg = change || 0;
   const curr = currency || 'TL';
@@ -2524,7 +2525,7 @@ function buildCompactWidgetHTML({ symbol, currentPrice, change, currency, metric
 ${metricsHTML}
 ${levelsHTML}
 ${shortAnalysis ? '<div style="font-size:11px;color:#a1a1aa;line-height:1.5;margin-bottom:10px;padding:8px 10px;background:#1f1f23;border-radius:6px;border-left:2px solid #f59e0b;"><span style="color:#f59e0b;font-weight:600;">🐺</span> ' + shortAnalysis + '</div>' : ''}
-<button onclick="window.parent.postMessage({type:'open-analysis-file',path:'${filePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'},'*')" style="
+<button onclick="window.parent.postMessage({type:'open-analysis-file',artifactId:'${String(artifactId).replace(/[^0-9a-f-]/g, '')}'},'*')" style="
   width:100%;padding:10px;border:none;border-radius:8px;
   background:linear-gradient(135deg,#f59e0b,#d97706);color:#18181b;
   font-size:13px;font-weight:600;cursor:pointer;
@@ -5754,10 +5755,22 @@ async function handleToolCall(name, args, options = {}) {
         fs.writeFileSync(filePath, browserHTML, 'utf-8');
         emit(`💾 Detaylı analiz sayfası oluşturuldu: ${fileName}`);
 
+        // Widget'a dosya YOLU gömülmez; yalnız opak bir artifactId gömülür.
+        // Yol main process'teki kayıt defterinde kalır ve açma anında yeniden
+        // doğrulanır. Böylece LLM'in yazdığı bir widget keyfi dosya açtıramaz.
+        const artifactId = registerAnalysisArtifact(filePath);
+        if (!artifactId) {
+          return {
+            tool: name,
+            success: false,
+            message: 'Analiz sayfası kaydedilemedi (artifact doğrulaması başarısız).',
+          };
+        }
+
         // 3) Build compact in-app widget with "Open in Browser" button
         const compactHTML = buildCompactWidgetHTML({
           symbol, currentPrice, change, currency,
-          metrics, levels, analysts, analysis, filePath,
+          metrics, levels, analysts, analysis, artifactId,
         });
 
         const widgetBlock = '```widget\n' + compactHTML + '\n```';

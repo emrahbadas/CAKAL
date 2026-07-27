@@ -13,8 +13,10 @@ interface WidgetRendererProps {
 export default function WidgetRenderer({ html, title, height }: WidgetRendererProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeHeight, setIframeHeight] = useState(height || 420);
-  const stockWidgetPathMatch = html.match(/open-analysis-file',path:'([^']+)'/);
-  const stockWidgetPath = stockWidgetPathMatch ? stockWidgetPathMatch[1].replace(/\\\\/g, '\\') : null;
+  // Widget artık dosya YOLU taşımaz; yalnız uygulamanın ürettiği opak
+  // artifactId'yi taşır. Asıl güvenlik kapısı main process'tedir.
+  const artifactIdMatch = html.match(/open-analysis-file',artifactId:'([0-9a-f-]{36})'/);
+  const stockWidgetArtifactId = artifactIdMatch ? artifactIdMatch[1] : null;
   const hasStockWidgetMarker = /cakal-stock-widget-v3/i.test(html);
 
   // Inject dark theme CSS variables + base styles into the widget HTML
@@ -70,11 +72,17 @@ ${html}
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
+      // Yardımcı katman: yalnız kendi iframe'imizden gelen mesajlar dinlenir.
+      // Tek başına yeterli DEĞİLDİR (kötü mesaj doğru iframe'den de gelebilir);
+      // asıl kapı main process'teki artifact kayıt defteridir.
+      if (e.source !== iframeRef.current?.contentWindow) return;
+
       if (e.data?.type === 'widget-resize' && e.data.height) {
         setIframeHeight(Math.min(e.data.height, 800));
       }
-      if (e.data?.type === 'open-analysis-file' && e.data.path) {
-        (window as any).cakalAPI?.openAnalysisFile(e.data.path);
+      if (e.data?.type === 'open-analysis-file' && typeof e.data.artifactId === 'string') {
+        if (!/^[0-9a-f-]{36}$/.test(e.data.artifactId)) return;
+        (window as any).cakalAPI?.openAnalysisArtifact(e.data.artifactId);
       }
     };
     window.addEventListener('message', handler);
@@ -90,10 +98,10 @@ ${html}
           </h3>
         </div>
       )}
-      {hasStockWidgetMarker && stockWidgetPath && (
+      {hasStockWidgetMarker && stockWidgetArtifactId && (
         <div className="px-4 pb-2">
           <button
-            onClick={() => (window as any).cakalAPI?.openAnalysisFile(stockWidgetPath)}
+            onClick={() => (window as any).cakalAPI?.openAnalysisArtifact(stockWidgetArtifactId)}
             className="w-full rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold py-2 hover:bg-amber-400 transition-colors"
           >
             Detayli Interaktif Grafigi Tarayicida Ac
