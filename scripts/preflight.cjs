@@ -127,6 +127,53 @@ function parseNameStatus(raw) {
   return entries;
 }
 
+/**
+ * Unified diff'i dosya bazında ayırır.
+ * Bulgunun HANGİ dosyadan geldiğini bilmek şart: aksi halde rapor, dokunulan
+ * tüm dosyaları suçlu gösterir ve insan yanlış yere bakar.
+ * @returns {Map<string, {added: string[], removed: string[]}>}
+ */
+function splitPatchByFile(patch) {
+  const files = new Map();
+  let current = null;
+
+  for (const line of String(patch || '').split('\n')) {
+    const header = line.match(/^diff --git a\/(.*) b\/(.*)$/);
+    if (header) {
+      current = normalize(header[2]);
+      if (!files.has(current)) files.set(current, { added: [], removed: [] });
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('index ')) continue;
+    if (line.startsWith('+')) files.get(current).added.push(line.slice(1));
+    else if (line.startsWith('-')) files.get(current).removed.push(line.slice(1));
+  }
+  return files;
+}
+
+/**
+ * Satırdan string literallerini ve satır yorumlarını temizler.
+ *
+ * Gerekçe: kapının kendi testi `'it.only("x", ...)'` gibi bir fixture STRING'i
+ * içerir. Ham metin üzerinde arama yapılırsa kapı kendi testini bloklar —
+ * gerçek bir yanlış pozitif. Yanlış pozitif veren kapıya insan güvenmeyi
+ * bırakır, o yüzden bu ayrım güvenlik açısından kritiktir.
+ *
+ * Bu bir sezgisel (heuristic) temizliktir, JS parser değildir; tek satır
+ * kapsamında çalışır ve amaç için yeterlidir.
+ */
+function stripNonCode(line) {
+  let text = String(line);
+  // Önce string literalleri: içlerindeki // veya .only kod sayılmamalı.
+  text = text.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  text = text.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  text = text.replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  // Sonra satır yorumu.
+  text = text.replace(/\/\/.*$/, '');
+  return text;
+}
+
 /** Unified diff'ten eklenen/silinen satırları ayırır. */
 function splitDiffLines(patch) {
   const added = [];
@@ -192,43 +239,72 @@ function checkTests(entries, findings, ctx) {
   if (touched.length === 0) return;
 
   const patch = ctx.diffFor(touched.map((e) => e.file));
-  const { added, removed } = splitDiffLines(patch);
+  const byFile = splitPatchByFile(patch);
+
+  const ONLY_PATTERN = /\b(?:describe|it|test)\.only\b/g;
+  const SKIP_PATTERN = /\b(?:describe|it|test)\.(?:skip|todo)\b|\bxit\b|\bxdescribe\b/g;
+  const ASSERTION_PATTERN = /\bexpect\s*\(|\bassert\w*\s*\(/g;
+
+  const only = { files: [], total: 0 };
+  const skip = { files: [], total: 0 };
+  const assertions = { files: [], total: 0 };
+
+  // Dosya bazında say: bulgu yalnız gerçekten eşleşen dosyayı gösterir.
+  for (const [file, lines] of byFile) {
+    if (!TEST_PATH_PATTERN.test(file)) continue;
+
+    // Kod/metin ayrımı: fixture string'i içindeki `.only` gerçek `.only` değildir.
+    const added = lines.added.map(stripNonCode);
+    const removed = lines.removed.map(stripNonCode);
+
+    const onlyDelta = countMatches(added, ONLY_PATTERN) - countMatches(removed, ONLY_PATTERN);
+    if (onlyDelta > 0) {
+      only.files.push(file);
+      only.total += onlyDelta;
+    }
+
+    const skipDelta = countMatches(added, SKIP_PATTERN) - countMatches(removed, SKIP_PATTERN);
+    if (skipDelta > 0) {
+      skip.files.push(file);
+      skip.total += skipDelta;
+    }
+
+    const assertionDelta = countMatches(added, ASSERTION_PATTERN) - countMatches(removed, ASSERTION_PATTERN);
+    if (assertionDelta < 0) {
+      assertions.files.push(file);
+      assertions.total += assertionDelta;
+    }
+  }
 
   // .only → testleri sessizce daraltır, blok
-  const onlyAdded = countMatches(added, /\b(?:describe|it|test)\.only\b/g)
-    - countMatches(removed, /\b(?:describe|it|test)\.only\b/g);
-  if (onlyAdded > 0) {
+  if (only.files.length > 0) {
     findings.push({
       severity: 'BLOCK',
       code: 'TEST_ONLY_ADDED',
-      message: `.only kullanımı eklenmiş (${onlyAdded}). Diğer testleri sessizce devre dışı bırakır.`,
-      files: touched.map((e) => e.file),
+      message: `.only kullanımı eklenmiş (${only.total}). Diğer testleri sessizce devre dışı bırakır.`,
+      files: only.files,
     });
   }
 
   // skip/todo → gerekçe gerektirir, insan incelemesi
-  const skipDelta = countMatches(added, /\b(?:describe|it|test)\.(?:skip|todo)\b|\bxit\b|\bxdescribe\b/g)
-    - countMatches(removed, /\b(?:describe|it|test)\.(?:skip|todo)\b|\bxit\b|\bxdescribe\b/g);
-  if (skipDelta > 0) {
+  if (skip.files.length > 0) {
     findings.push({
       severity: 'REVIEW',
       code: 'TEST_SKIPPED',
-      message: `Atlanan test sayısı artmış (+${skipDelta}). Gerekçe gerekiyor.`,
-      files: touched.map((e) => e.file),
+      message: `Atlanan test sayısı artmış (+${skip.total}). Gerekçe gerekiyor.`,
+      files: skip.files,
     });
   }
 
   // Assertion azalması → OTOMATİK BLOK DEĞİL.
   // Üç zayıf assertion tek güçlü assertion'a dönüşmüş olabilir; kapı
   // hüküm vermez, insana işaret eder.
-  const assertionPattern = /\bexpect\s*\(|\bassert\w*\s*\(/g;
-  const assertionDelta = countMatches(added, assertionPattern) - countMatches(removed, assertionPattern);
-  if (assertionDelta < 0) {
+  if (assertions.files.length > 0) {
     findings.push({
       severity: 'REVIEW',
       code: 'ASSERTION_COUNT_DROPPED',
-      message: `Assertion sayısı net ${Math.abs(assertionDelta)} azalmış. Zayıflatma olabilir; sadeleştirme de olabilir. İnceleme gerekli.`,
-      files: touched.map((e) => e.file),
+      message: `Assertion sayısı net ${Math.abs(assertions.total)} azalmış. Zayıflatma olabilir; sadeleştirme de olabilir. İnceleme gerekli.`,
+      files: assertions.files,
     });
   }
 }
@@ -474,6 +550,8 @@ module.exports = {
   parseArgs,
   parseNameStatus,
   splitDiffLines,
+  splitPatchByFile,
+  stripNonCode,
   countMatches,
   isProtectedPath,
   isSecretPath,

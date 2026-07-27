@@ -10,6 +10,8 @@ const {
   run,
   parseNameStatus,
   splitDiffLines,
+  splitPatchByFile,
+  stripNonCode,
   countMatches,
   isProtectedPath,
   isSecretPath,
@@ -125,6 +127,48 @@ describe('diff ayrıştırma', () => {
 
   it('eşleşme sayar', () => {
     expect(countMatches(['expect(a)', 'expect(b); expect(c)'], /\bexpect\s*\(/g)).toBe(3);
+  });
+
+  it('patch\'i dosya bazında ayırır', () => {
+    const patch = [
+      'diff --git a/tests/a.test.mjs b/tests/a.test.mjs',
+      'index 111..222 100644',
+      '--- a/tests/a.test.mjs',
+      '+++ b/tests/a.test.mjs',
+      '@@ -1,1 +1,1 @@',
+      '+a-eklenen',
+      '-a-silinen',
+      'diff --git a/tests/b.test.mjs b/tests/b.test.mjs',
+      '--- a/tests/b.test.mjs',
+      '+++ b/tests/b.test.mjs',
+      '+b-eklenen',
+    ].join('\n');
+
+    const byFile = splitPatchByFile(patch);
+    expect([...byFile.keys()]).toEqual(['tests/a.test.mjs', 'tests/b.test.mjs']);
+    expect(byFile.get('tests/a.test.mjs')).toEqual({ added: ['a-eklenen'], removed: ['a-silinen'] });
+    expect(byFile.get('tests/b.test.mjs').added).toEqual(['b-eklenen']);
+  });
+});
+
+describe('kod/metin ayrımı (stripNonCode)', () => {
+  it('string literali içindeki kodu kod saymaz', () => {
+    expect(stripNonCode(`write(dir, 'x', 'it.only("a", () => {});')`)).not.toMatch(/\.only/);
+    expect(stripNonCode('const s = "it.skip(1)";')).not.toMatch(/\.skip/);
+    expect(stripNonCode('const t = `expect(x)`;')).not.toMatch(/expect\(/);
+  });
+
+  it('satır yorumundaki kodu kod saymaz', () => {
+    expect(stripNonCode('// it.only burada aciklama')).not.toMatch(/\.only/);
+  });
+
+  it('gerçek kodu bozmaz', () => {
+    expect(stripNonCode('it.only("x", () => {});')).toMatch(/it\.only/);
+    expect(stripNonCode('  expect(a).toBe(b);')).toMatch(/expect\(/);
+  });
+
+  it('string içindeki // gerçek yorum sanılmaz', () => {
+    expect(stripNonCode(`const url = 'https://ornek.com'; it.only("x");`)).toMatch(/it\.only/);
   });
 });
 
@@ -250,6 +294,42 @@ describe('test bütünlüğü', () => {
     expect(result.verdict).toBe('REVIEW');
     expect(codes(result)).toContain('ASSERTION_COUNT_DROPPED');
     expect(codes(result)).not.toContain('TEST_DELETED');
+  });
+
+  it('string içindeki .only bloklamaz (yanlış pozitif regresyonu)', () => {
+    // Kapının KENDİ testi bu şekilde bir fixture string'i içerir; ham metin
+    // araması yapılırsa kapı kendi testini bloklardı.
+    const dir = makeRepo();
+    seedRepo(dir);
+    write(dir, 'tests/kapi.test.mjs', [
+      "it('kapi .only yakalar', () => {",
+      "  write(dir, 'tests/a.test.mjs', 'it.only(\"x\", () => {});');",
+      '  expect(gate(dir).verdict).toBe(\'BLOCK\');',
+      '});',
+      '',
+    ].join('\n'));
+    commitAll(dir, 'kapi testi ekle');
+
+    const result = gate(dir);
+    expect(codes(result)).not.toContain('TEST_ONLY_ADDED');
+    expect(result.verdict).toBe('PASS');
+  });
+
+  it('bulgu yalnızca suçlu dosyayı gösterir', () => {
+    const dir = makeRepo();
+    seedRepo(dir, {
+      'tests/temiz.test.mjs': 'it("t", () => { expect(1).toBe(1); });\n',
+      'tests/suclu.test.mjs': 'it("s", () => { expect(1).toBe(1); });\n',
+    });
+    write(dir, 'tests/temiz.test.mjs', 'it("t", () => { expect(1).toBe(1); expect(2).toBe(2); });\n');
+    write(dir, 'tests/suclu.test.mjs', 'it.only("s", () => { expect(1).toBe(1); });\n');
+    commitAll(dir, 'biri suclu');
+
+    const result = gate(dir);
+    const finding = result.findings.find((f) => f.code === 'TEST_ONLY_ADDED');
+    expect(finding).toBeTruthy();
+    expect(finding.files).toEqual(['tests/suclu.test.mjs']);
+    expect(finding.files).not.toContain('tests/temiz.test.mjs');
   });
 
   it('test eklemek serbesttir (PASS)', () => {
