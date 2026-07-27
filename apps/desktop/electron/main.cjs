@@ -9,6 +9,7 @@ const { runDeterministicAgent } = require('./deterministic-agents.cjs');
 const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
 const { storeSecret, hasSecret, listSecretRefs, listSecretRequests, fulfillSecretRequest } = require('./secret-broker.cjs');
+const { resolveAnalysisArtifact } = require('./analysis-artifacts.cjs');
 
 // Load environment variables. Sıra: proje kökü .env (dev) → resources/.env
 // (paketli sürümde bundle edildiyse) → userData/.env (kurulu sürüm için
@@ -969,15 +970,25 @@ process.on('unhandledRejection', (reason) => {
 // IPC: Analysis File — open in default browser
 // ==============================
 
-ipcMain.handle('analysis:open-file', async (_event, filePath) => {
+// Renderer'dan HAM YOL kabul edilmez. Widget HTML'ini LLM yazabildiği ve
+// iframe'de script çalıştığı için, yol taşıyan bir kanal LLM'in keyfi dosya
+// (ör. kendi yazdığı bir .bat) açtırmasına giden bir zincir oluşturuyordu.
+// Artık yalnızca uygulamanın kendi ürettiği ve kayıt defterinde bulunan bir
+// artifactId kabul edilir; yol kayıttan gelir ve açma anında yeniden doğrulanır.
+ipcMain.handle('analysis:open-artifact', async (_event, artifactId) => {
   try {
-    if (!filePath || !fs.existsSync(filePath)) {
-      return { success: false, error: 'Dosya bulunamadı' };
+    const resolved = resolveAnalysisArtifact(artifactId);
+    if (!resolved) {
+      console.warn('[IPC] analysis:open-artifact reddedildi — bilinmeyen veya geçersiz artifact');
+      return { success: false, error: 'Geçersiz veya süresi geçmiş analiz dosyası.' };
     }
-    await shell.openPath(filePath);
+    const openError = await shell.openPath(resolved);
+    if (openError) {
+      return { success: false, error: openError };
+    }
     return { success: true };
   } catch (err) {
-    console.error('[IPC] analysis:open-file error:', err);
+    console.error('[IPC] analysis:open-artifact error:', err);
     return { success: false, error: err.message };
   }
 });
