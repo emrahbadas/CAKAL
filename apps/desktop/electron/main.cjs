@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const cron = require('node-cron');
 const { initOpenAI, chat, multiSourceSearch, resetConversation, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
-const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
+const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
 const { runDeterministicAgent } = require('./deterministic-agents.cjs');
 const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
@@ -1425,6 +1425,52 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         });
         response = gateResult.response;
       } else {
+        // Yönetilmemiş sıralama kilidi (ÇIKIŞ TARAFI):
+        // Giriş niyeti regex'i Türkçe'nin ifade çeşitliliğinde kaçabilir
+        // ("ensağlam", "top 5 aday", "bunlardan hangileri?"). Bu kapı kullanıcı
+        // ifadesini tahmin etmeye çalışmaz; ÇAKAL'ın ÜRETTİĞİ cevaba bakar:
+        // ortada hisse sıralaması varsa arkasında yönetilmiş araştırma da olmalı.
+        let rankingLock = evaluateUngovernedRankingGate(payload.message, response, commanderActivityLog);
+        if (rankingLock) {
+          commanderEmitActivity({
+            type: 'decision_gate',
+            agent: 'commander',
+            detail: 'YÖNETİLMEMİŞ SIRALAMA: hisse sıralaması var ama araştırma taraması çalışmadı. Tamamlama denemesi başlatılıyor (1 kez).',
+            timestamp: Date.now(),
+          });
+
+          const rankingCompletionMessage = [
+            payload.message || '',
+            '',
+            '[ÇEKİRDEK ZORUNLULUK — YÖNETİLMEMİŞ SIRALAMA]',
+            'Önceki cevabında hisse sıralaması/seçimi vardı ama yönetilmiş araştırma taraması çalışmadı.',
+            'Sıralama bir aday seçimidir; günlük değişim listesi (get_bist_gainers) tek başına buna yetmez.',
+            'İki seçeneğin var:',
+            '1) run_investment_research_scan aracını çalıştır; evren kapsamını, elenenleri ve gerekçelerini cevaba koy.',
+            '2) Tarama yapılamıyorsa sıralamayı KALDIR. "En sağlam/en iyi" deme; en fazla "bugünün en güçlü momentum hareketleri" de ve bunun bir kalite ölçüsü OLMADIĞINI açıkça yaz.',
+          ].join('\n');
+
+          response = await chat(rankingCompletionMessage, {
+            perplexityKey: process.env.PERPLEXITY_API_KEY,
+            supabaseClient,
+            profileContext,
+            onActivity: commanderEmitActivity,
+            telegramService: telegram,
+            telegramReader: telegramReader,
+          });
+
+          rankingLock = evaluateUngovernedRankingGate(payload.message, response, commanderActivityLog);
+          if (rankingLock) {
+            commanderEmitActivity({
+              type: 'decision_gate',
+              agent: 'commander',
+              detail: `${rankingLock.status}: ${rankingLock.reason}`,
+              timestamp: Date.now(),
+            });
+            response = rankingLock.response;
+          }
+        }
+
         // Fiyatlanma kilidi: bilanço kaynaklı AL/fırsat hükmü, analyze_earnings_pricing
         // aracı GERÇEKTEN çalışıp sınıflandırma üretmeden (provenance kaydı) çıkamaz.
         // Doğrulama cevap metnindeki kelimeyle değil tool_call activity log'uyla yapılır.

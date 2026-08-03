@@ -6,7 +6,47 @@ const COMMANDER_ACTIONABLE_RESPONSE_RE = /\bAL\b|\bSAT\b|\bBEKLE\b|\bDİKKAT\b|\
 // içinde eşleşip bilanço mesajlarını pazaryeri sanıyor ve TÜM finans karar
 // kapılarını (commander gate, hüküm-kanıt kilidi, fiyatlanma kilidi) atlatıyordu.
 const COMMANDER_PRODUCT_MARKETPLACE_RE = /ürün|(?:^|[^a-zçğıöşü])ilan|sahibinden|trendyol|letgo|dolap|hepsiemlak|amazon|ebay|n11|hepsiburada|araba|araç|ev eşyası|telefon|laptop|platformlar arası|stoklu al|stokta|dropshipping|fba|fırsat ara/i;
+// Fresh market scan tetikleyicileri.
+// GEÇMİŞ HATA: "en sağlam 3 tanesini sırala" bu listede yoktu; ne actionable
+// ne fresh-scan sayıldığı için karar kapısı HİÇ çalışmadı ve model sadece
+// get_bist_gainers ile sığ cevap üretti. Üstünlük/sıralama talepleri de bir
+// aday seçimi talebidir; kapı onlarda da açılmalı.
 const COMMANDER_FRESH_MARKET_SCAN_RE = /sıfırdan|sifirdan|baştan|bastan|geniş\s+tara|genis\s+tara|piyasayı\s+tara|piyasayi\s+tara|piyasa\s+taraması|piyasa\s+taramasi|sepet\s+(çıkar|cikar|oluştur|olustur)|aday\s+(çıkar|cikar)|fırsat\s+hisseleri|firsat\s+hisseleri|umut\s+vadeden\s+hisse|hangi\s+hisseler/i;
+
+// Üstünlük + sıralama + seçim kalıpları. Türkçe'de ifade sonsuz çeşitlenir;
+// bu liste kapsayıcı DEĞİLDİR — asıl emniyet supabı çıkış tarafındaki
+// UNGOVERNED_RANKING kapısıdır (evaluateUngovernedRankingGate).
+const COMMANDER_RANKING_REQUEST_RE = new RegExp([
+  // "en sağlam/iyi/güçlü/cazip/mantıklı..." (Türkçe karakterli sözcük sınırı yok)
+  'en\\s+(saglam|sağlam|iyi|güçlü|guclu|cazip|mantıklı|mantikli|karlı|karli|umutlu|uygun|potansiyelli|dipte|ucuz)',
+  // "top 5", "ilk 3", "3 tanesini", "en iyi 3"
+  '\\btop\\s*\\d+', 'ilk\\s*\\d+', '\\d+\\s*tane(sini|si)?', '\\d+\\s*adet',
+  // sıralama fiilleri (yazım varyantları dahil: sırala/sirala/sıralar mısın)
+  'sırala', 'sirala', 'siralar\\s*mısın', 'sıralar\\s*mısın',
+  // seçim / tercih talebi
+  'seç(er\\s*misin)?\\b', 'sec(er\\s*misin)?\\b', 'sen\\s*olsan', 'tercih\\s*eder',
+  // karşılaştırmalı üstünlük
+  'hangisi\\s+(daha|en)', 'hangileri', 'daha\\s+mantıklı', 'daha\\s+mantikli',
+  // önceki tool çıktısına gönderme
+  'bunlardan\\s+hangi', 'bu\\s+listede', 'listedekiler',
+  // öneri talebi
+  'öner(ir\\s*misin)?\\b', 'oner(ir\\s*misin)?\\b', 'tavsiye\\s*eder',
+].join('|'), 'i');
+
+// Çıktının bir HİSSE SIRALAMASI/SEÇİMİ içerdiğini gösteren desenler.
+// Kapı, kullanıcı ifadesini tahmin etmek yerine ÇAKAL'ın kendi ürettiği
+// metni denetler; bu deterministik ve kapsam olarak çok daha dar bir yüzeydir.
+const RANKING_RESPONSE_MARKERS = [
+  /(^|\n)\s*\d+[).\-]\s*[A-ZÇĞİÖŞÜ]{3,6}\b/m,      // "1) TUREX" / "2. SSAAT"
+  /(^|\n)\s*[-*]\s*[A-ZÇĞİÖŞÜ]{3,6}\s*[—:-]/m,      // "- TUREX —"
+  /en\s+(sağlam|saglam|iyi|güçlü|guclu|cazip)\s+\d*\s*(hisse|üç|uc|3)/i,
+  // DİKKAT: JS regex'te Türkçe 'İ' (U+0130) `i` ile EŞLEŞMEZ ve `\b` Türkçe
+  // harflerde güvenilmez. Bu yüzden sınıf açıkça yazılır: [İIiı]
+  /(^|[^a-zçğıöşü])([İIiı]lk|[Tt]op)\s*\d+\s*(hisse|aday)/,
+];
+
+// Bir sıralamanın "yönetilmiş" sayılması için gereken kanıt araçları.
+const GOVERNED_RANKING_TOOLS = new Set(['run_investment_research_scan', 'verify_claim']);
 
 const COMMANDER_MARKET_DATA_TOOLS = new Set([
   'get_stock_price',
@@ -121,7 +161,72 @@ function isCommanderActionableFinanceRequest(message = '') {
 
 function isCommanderFreshMarketScanRequest(message = '') {
   const text = String(message || '');
-  return isCommanderFinanceMessage(text) && COMMANDER_FRESH_MARKET_SCAN_RE.test(text);
+  if (!isCommanderFinanceMessage(text)) return false;
+  return COMMANDER_FRESH_MARKET_SCAN_RE.test(text) || COMMANDER_RANKING_REQUEST_RE.test(text);
+}
+
+/** Cevap metni bir hisse sıralaması/seçimi sunuyor mu? */
+function responseContainsEquityRanking(response = '') {
+  const text = String(response || '');
+  if (!text.trim()) return false;
+  return RANKING_RESPONSE_MARKERS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * ÇIKIŞ KAPISI — girişte niyet kaçsa bile devreye girer.
+ *
+ * Gerekçe: Türkçe'de sıralama talebinin ifadesi sonsuz çeşitlenir (yazım
+ * hataları, İngilizce karışımı, "bunlardan hangileri?" gibi bağlamsal
+ * referanslar). Giriş regex'i kapsayıcı olamaz. Bu kapı ise ÇAKAL'ın KENDİ
+ * ürettiği metne bakar: ortada bir hisse sıralaması varsa, arkasında
+ * yönetilmiş araştırma da olmalıdır.
+ *
+ * Kural: cevap sıralama içeriyor VE araştırma/kanıt aracı çalışmamışsa
+ *        → BLOCKED_UNGOVERNED_RANKING
+ */
+function evaluateUngovernedRankingGate(message, response, events = []) {
+  if (isCommanderProductMarketplaceMessage(message)) return null;
+  if (!responseContainsEquityRanking(response)) return null;
+
+  // Finans bağlamı mesajdan VEYA cevaptan gelebilir.
+  // GEÇMİŞ HATA: "en sağlam 3 tanesini sırala" tek başına finans kelimesi
+  // içermiyor — bağlam önceki turdan geliyordu. Yalnız mesaja bakan bir kapı
+  // tam da yakalaması gereken vakayı kaçırırdı. Cevap hisse sıralaması
+  // içeriyorsa finans bağlamı zaten kanıtlanmıştır.
+  const financeContext = isCommanderFinanceMessage(message) || isCommanderFinanceMessage(response);
+  if (!financeContext) return null;
+
+  const usedTools = extractCommanderToolNames(events);
+  if (usedTools.some((tool) => GOVERNED_RANKING_TOOLS.has(tool))) return null;
+
+  const reason = usedTools.length === 0
+    ? 'Hisse sıralaması üretildi fakat hiçbir araştırma aracı çalışmadı.'
+    : `Hisse sıralaması üretildi fakat yönetilmiş araştırma çalışmadı (kullanılan: ${usedTools.join(', ')}).`;
+
+  return {
+    status: 'BLOCKED_UNGOVERNED_RANKING',
+    reason,
+    usedTools,
+    response: buildUngovernedRankingResponse(reason, usedTools),
+  };
+}
+
+function buildUngovernedRankingResponse(reason, usedTools) {
+  const toolNote = usedTools.length > 0 ? usedTools.join(', ') : 'yok';
+  return [
+    '## Sıralama üretilemedi — araştırma kapısı açılmadı',
+    '',
+    `**Sebep:** ${reason}`,
+    `**Çalışan araçlar:** ${toolNote}`,
+    '',
+    'Hisse sıralaması bir aday seçimidir; yalnız günlük değişim listesiyle yapılamaz.',
+    'Bunun için evren taraması, likidite/veri kalitesi filtresi ve kanıt doğrulaması gerekir.',
+    '',
+    '**Yapılabilecek:** `run_investment_research_scan` ile yönetilmiş tarama çalıştır,',
+    'ya da soruyu daralt (ör. tek hisse teknik görünüm, bilanço özeti).',
+    '',
+    'Not: Ölçülmemiş sıralama, en güçlü momentum listesi ile karıştırılmamalıdır.',
+  ].join('\n');
 }
 
 function isCommanderInformationalFinanceRequest(message = '') {
@@ -524,7 +629,12 @@ module.exports = {
   detectBuySideTimingVerdict,
   evaluateCommanderDecisionGate,
   evaluateEarningsPricingGate,
+  evaluateUngovernedRankingGate,
   evaluateRiskGate,
+  responseContainsEquityRanking,
+  buildUngovernedRankingResponse,
+  COMMANDER_RANKING_REQUEST_RE,
+  GOVERNED_RANKING_TOOLS,
   evaluateVerdictEvidenceLock,
   hasCompletedEarningsPricingRun,
   neutralizeEquityVerdicts,
