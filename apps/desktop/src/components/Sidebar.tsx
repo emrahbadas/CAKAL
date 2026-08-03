@@ -8,6 +8,7 @@ import {
   Zap,
   Database,
   Brain,
+  Stethoscope,
 } from 'lucide-react';
 
 const navItems = [
@@ -17,6 +18,7 @@ const navItems = [
   { to: '/profile', icon: User, label: 'Profil' },
   { to: '/feedback', icon: MessageCircle, label: 'Geri Bildirim' },
   { to: '/evolution', icon: Database, label: 'Evrim Motoru' },
+  { to: '/surgery', icon: Stethoscope, label: 'Cerrahi Bakım' },
   { to: '/settings', icon: Settings, label: 'Ayarlar' },
 ];
 

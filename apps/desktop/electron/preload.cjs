@@ -9,6 +9,12 @@ contextBridge.exposeInMainWorld('cakalAPI', {
   runAgent: (agentName, payload) =>
     ipcRenderer.invoke('agent:run', agentName, payload),
 
+  // Cerrahi bakım — diff inceleme ve onaylı merge
+  surgeryListBranches: () => ipcRenderer.invoke('surgery:list-branches'),
+  surgeryPreflight: (payload) => ipcRenderer.invoke('surgery:preflight', payload),
+  surgeryDiff: (payload) => ipcRenderer.invoke('surgery:diff', payload),
+  surgeryApproveMerge: (payload) => ipcRenderer.invoke('surgery:approve-merge', payload),
+
   // Database
   getProfile: () => ipcRenderer.invoke('db:get-profile'),
   updateProfile: (updates) => ipcRenderer.invoke('db:update-profile', updates),
