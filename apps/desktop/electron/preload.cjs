@@ -10,6 +10,19 @@ contextBridge.exposeInMainWorld('cakalAPI', {
     ipcRenderer.invoke('agent:run', agentName, payload),
 
   // Cerrahi bakım — diff inceleme ve onaylı merge
+  // Cerrahi oturum: bağlantı, bekleyen talepler, başlat/iptal.
+  // Başlatma yetkisi yalnız kullanıcıdadır; ÇAKAL yalnız talep kaydeder.
+  surgeryAuthStatus: () => ipcRenderer.invoke('surgery:auth-status'),
+  surgerySessionStatus: () => ipcRenderer.invoke('surgery:session-status'),
+  surgeryListRequests: () => ipcRenderer.invoke('surgery:list-requests'),
+  surgeryStart: (payload) => ipcRenderer.invoke('surgery:start', payload),
+  surgeryAbort: () => ipcRenderer.invoke('surgery:abort'),
+  onSurgeryActivity: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('surgery-activity', handler);
+    return () => ipcRenderer.removeListener('surgery-activity', handler);
+  },
+
   surgeryListBranches: () => ipcRenderer.invoke('surgery:list-branches'),
   surgeryPreflight: (payload) => ipcRenderer.invoke('surgery:preflight', payload),
   surgeryDiff: (payload) => ipcRenderer.invoke('surgery:diff', payload),

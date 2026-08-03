@@ -17,6 +17,7 @@ const { CopilotSurgeon } = require('./copilot-surgeon.cjs');
 const handoff = require('./handoff.cjs');
 const protectedPaths = require('./protected-paths.cjs');
 const { buildPermissionHandler } = require('./permission-hook.cjs');
+const { createSessionManager } = require('./session-manager.cjs');
 
 /**
  * Varsayılan cerrah sağlayıcısını üretir. clientFactory verilmezse üretimde
@@ -28,6 +29,7 @@ function createSurgeon(opts = {}) {
 
 module.exports = {
   createSurgeon,
+  createSessionManager,
   CopilotSurgeon,
   handoff,
   buildPermissionHandler,

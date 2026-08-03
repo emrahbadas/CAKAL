@@ -2546,6 +2546,22 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'propose_surgical_change',
+      description: 'Kullanıcı ÇAKAL\'a YENİ BİR ÖZELLİK, yeni tool, UI değişikliği veya kaynak kod düzeltmesi istediğinde çağır (Kademe 2). Sandbox prototipi değil, gerçek kaynak kod değişikliği gerektiren talepler içindir. Bu araç cerrahiyi BAŞLATMAZ; yalnız talebi kaydeder — başlatma yetkisi kullanıcıdadır. Mevcut bir veri kaynağını HTTPS GET ile eklemek yeterliyse önce sandbox plugin yolunu düşün (Kademe 1).',
+      parameters: {
+        type: 'object',
+        properties: {
+          original_user_request: { type: 'string', description: 'Kullanıcının talebi DEĞİŞTİRİLMEDEN, birebir. Yeniden ifade etme, özetleme.' },
+          title: { type: 'string', description: 'Kısa başlık (ör. "Kripto anlık veri kaynağı")' },
+          rationale: { type: 'string', description: 'Bunun neden kaynak kod değişikliği gerektirdiğine dair kısa gerekçe (yardımcı bağlam)' },
+        },
+        required: ['original_user_request'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'submit_task_plan',
       description: 'YÜRÜTME SÖZLEŞMESİ: Dosya yazma/kod üretme görevine başlamadan ÖNCE çağır. Üreteceğin dosyaları (artifacts) ve kabul kriterlerini makine-okunur planla kilitle. Plan bir kez kilitlenir; revizyon yok. write_project_file kullanacağın her görevde bu ilk adımdır.',
       parameters: {
@@ -3571,6 +3587,35 @@ async function handleToolCall(name, args, options = {}) {
   try {
     switch (name) {
       // ── Yürütme Sözleşmesi (plan → uygula → doğrula döngüsü) ──
+      // ── Kademe 2: kaynak kod değişikliği talebini cerrahi hatta devret ──
+      case 'propose_surgical_change': {
+        const registerSurgicalRequest = options.registerSurgicalRequest;
+        if (typeof registerSurgicalRequest !== 'function') {
+          return { tool: name, success: false, message: 'Cerrahi hat bu oturumda kullanılabilir değil.' };
+        }
+        const original = String(args.original_user_request || '').trim();
+        if (!original) {
+          return { tool: name, success: false, message: 'original_user_request zorunlu: kullanıcının talebini DEĞİŞTİRMEDEN aktar.' };
+        }
+        emit(`Cerrahi bakım talebi kaydediliyor: ${args.title || 'başlıksız'}`);
+        const record = registerSurgicalRequest({
+          originalUserRequest: original,
+          cakalInterpretation: args.rationale ? String(args.rationale) : null,
+          title: args.title ? String(args.title) : null,
+        });
+        return {
+          tool: name,
+          success: true,
+          changeRequestId: record.changeRequestId,
+          message: [
+            `Talep kaydedildi (${record.changeRequestId}).`,
+            'Cerrahi BAŞLAMADI — başlatma yetkisi yalnız kullanıcıdadır.',
+            'Kullanıcıya şunu söyle: sol menüdeki "Cerrahi Bakım" ekranını aç, talebi gör ve "Başlat" de.',
+            'Orada ne yapılacağını, hangi dalda çalışılacağını ve sonrasında diff onayını görecek.',
+          ].join(' '),
+        };
+      }
+
       case 'submit_task_plan': {
         const ec = options.executionContract;
         if (!ec) return { tool: name, success: false, message: 'Yürütme sözleşmesi bu istekte aktif değil.' };
@@ -9442,7 +9487,7 @@ async function chat(message, options = {}) {
   if (!openai) throw new Error('OpenAI not initialized. Call initOpenAI(apiKey) first.');
 
   const requestStartTime = Date.now(); // Sprint 13: timing
-  const { perplexityKey, supabaseClient, profileContext, onActivity, telegramService, telegramReader } = options;
+  const { perplexityKey, supabaseClient, profileContext, onActivity, telegramService, telegramReader, registerSurgicalRequest } = options;
 
   // Build system prompt with dynamic context + strategy insights
   let systemPrompt = buildDynamicSystemPrompt(profileContext || {});
@@ -9535,6 +9580,7 @@ async function chat(message, options = {}) {
           telegramService,
           telegramReader,
           executionContract,
+          registerSurgicalRequest,
         });
         const toolDuration = Date.now() - toolStart;
 
@@ -9701,7 +9747,7 @@ async function chat(message, options = {}) {
           } else {
             const toolStart = Date.now();
             result = await handleToolCall(fnName, fnArgs, {
-              perplexityKey, supabaseClient, onActivity, telegramService, telegramReader, executionContract,
+              perplexityKey, supabaseClient, onActivity, telegramService, telegramReader, executionContract, registerSurgicalRequest,
             });
             _toolTimings.push({ tool: fnName, args: fnArgs, duration: Date.now() - toolStart, success: result?.success !== false, cached: false });
           }

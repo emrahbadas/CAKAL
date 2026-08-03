@@ -11,6 +11,7 @@ const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-le
 const { storeSecret, hasSecret, listSecretRefs, listSecretRequests, fulfillSecretRequest } = require('./secret-broker.cjs');
 const { resolveAnalysisArtifact } = require('./analysis-artifacts.cjs');
 const surgeryReview = require('./surgery/review-service.cjs');
+const { createSessionManager } = require('./surgery/session-manager.cjs');
 
 // Load environment variables. Sıra: proje kökü .env (dev) → resources/.env
 // (paketli sürümde bundle edildiyse) → userData/.env (kurulu sürüm için
@@ -1000,6 +1001,68 @@ ipcMain.handle('analysis:open-artifact', async (_event, artifactId) => {
 // BLOCK durumunda kullanıcı onayı bile merge'i açmaz (review-service kontrol eder).
 // ==============================
 
+// Cerrahi oturum yöneticisi: bekleyen talepler, başlatma, iptal.
+// Cerrahi YALNIZ buradan başlar ve yalnız kullanıcının UI onayıyla.
+const surgerySession = createSessionManager({
+  repoRoot: path.resolve(__dirname, '../../..'),
+});
+
+// Cerrahi olaylarını renderer'a köprüle (ayrı kanal: sohbet aktivitesiyle karışmasın)
+surgerySession.onEvent((event) => {
+  const win = mainWindow || BrowserWindow.getAllWindows()[0];
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('surgery-activity', event);
+  }
+});
+
+ipcMain.handle('surgery:auth-status', async () => {
+  try {
+    return { success: true, ...(await surgerySession.checkAuth()) };
+  } catch (err) {
+    return { success: false, authenticated: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:session-status', async () => {
+  try {
+    return { success: true, ...surgerySession.getStatus() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:list-requests', async () => {
+  try {
+    return { success: true, requests: surgerySession.listRequests() };
+  } catch (err) {
+    return { success: false, error: err.message, requests: [] };
+  }
+});
+
+ipcMain.handle('surgery:start', async (_event, payload = {}) => {
+  try {
+    if (!payload.changeRequestId) {
+      return { success: false, error: 'changeRequestId gerekli.' };
+    }
+    const result = await surgerySession.startSurgery(payload.changeRequestId, {
+      timeoutMs: payload.timeoutMs,
+    });
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:start error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:abort', async () => {
+  try {
+    const result = await surgerySession.abortSurgery();
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('surgery:list-branches', async () => {
   try {
     return { success: true, branches: surgeryReview.listSurgicalBranches() };
@@ -1362,6 +1425,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         onActivity: commanderEmitActivity,
         telegramService: telegram,
         telegramReader: telegramReader,
+        registerSurgicalRequest: surgerySession.registerRequest,
       });
 
       let gateResult = evaluateCommanderDecisionGate(payload.message, response, commanderActivityLog);
@@ -1411,6 +1475,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           onActivity: commanderEmitActivity,
           telegramService: telegram,
           telegramReader: telegramReader,
+        registerSurgicalRequest: surgerySession.registerRequest,
         });
 
         gateResult = evaluateCommanderDecisionGate(payload.message, response, commanderActivityLog);
@@ -1457,6 +1522,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             onActivity: commanderEmitActivity,
             telegramService: telegram,
             telegramReader: telegramReader,
+        registerSurgicalRequest: surgerySession.registerRequest,
           });
 
           rankingLock = evaluateUngovernedRankingGate(payload.message, response, commanderActivityLog);
@@ -1501,6 +1567,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             onActivity: commanderEmitActivity,
             telegramService: telegram,
             telegramReader: telegramReader,
+        registerSurgicalRequest: surgerySession.registerRequest,
           });
 
           pricingLock = evaluateEarningsPricingGate(payload.message, response, commanderActivityLog);
@@ -1545,6 +1612,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             onActivity: commanderEmitActivity,
             telegramService: telegram,
             telegramReader: telegramReader,
+        registerSurgicalRequest: surgerySession.registerRequest,
           });
 
           verdictLock = evaluateVerdictEvidenceLock(payload.message, response);

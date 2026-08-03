@@ -29,6 +29,8 @@ const PROTECTED_PATHS = [
   'apps/desktop/electron/surgery/permission-hook.cjs',
   'apps/desktop/electron/surgery/handoff.cjs',
   'apps/desktop/electron/surgery/copilot-surgeon.cjs',
+  'apps/desktop/electron/surgery/session-manager.cjs',
+  'apps/desktop/electron/surgery/review-service.cjs',
   'apps/desktop/electron/surgery/index.cjs',
 ];
 

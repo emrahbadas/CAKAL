@@ -31,6 +31,19 @@ interface Branch {
   subject: string;
 }
 
+interface ChangeRequest {
+  changeRequestId: string;
+  originalUserRequest: string;
+  cakalInterpretation: string | null;
+  createdAt: string;
+}
+
+interface SurgeryEvent {
+  type: string;
+  detail?: string;
+  ts: number;
+}
+
 const api = () => (window as any).cakalAPI;
 
 const VERDICT_STYLE: Record<Verdict, { cls: string; label: string; Icon: typeof ShieldCheck }> = {
@@ -72,6 +85,50 @@ export default function SurgeryScreen() {
   const [message, setMessage] = useState<string | null>(null);
   const [verify, setVerify] = useState(true);
 
+  // ── Cerrahi oturum durumu ──
+  const [auth, setAuth] = useState<{ checked: boolean; authenticated: boolean; error?: string }>({ checked: false, authenticated: false });
+  const [requests, setRequests] = useState<ChangeRequest[]>([]);
+  const [sessionStatus, setSessionStatus] = useState<string>('IDLE');
+  const [events, setEvents] = useState<SurgeryEvent[]>([]);
+
+  const loadSession = useCallback(async () => {
+    const [reqRes, statusRes] = await Promise.all([
+      api()?.surgeryListRequests(),
+      api()?.surgerySessionStatus(),
+    ]);
+    setRequests(reqRes?.requests || []);
+    setSessionStatus(statusRes?.status || 'IDLE');
+  }, []);
+
+  const checkAuth = useCallback(async () => {
+    setBusy('Copilot bağlantısı kontrol ediliyor...');
+    try {
+      const res = await api()?.surgeryAuthStatus();
+      setAuth({ checked: true, authenticated: Boolean(res?.authenticated), error: res?.error });
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  // Canlı cerrahi olayları
+  useEffect(() => {
+    const off = api()?.onSurgeryActivity?.((e: SurgeryEvent) => {
+      setEvents((prev) => [...prev.slice(-60), e]);
+      if (['surgery_started', 'surgery_awaiting_review', 'surgery_failed', 'surgery_aborted', 'request_registered'].includes(e.type)) {
+        loadSession();
+      }
+    });
+    return () => { if (typeof off === 'function') off(); };
+  }, [loadSession]);
+
+  useEffect(() => { loadSession(); }, [loadSession]);
+
+  const abortSurgery = useCallback(async () => {
+    await api()?.surgeryAbort();
+    await loadSession();
+    setMessage('Cerrahi iptal edildi. Çalışma alanı inceleme için korundu.');
+  }, [loadSession]);
+
   const loadBranches = useCallback(async () => {
     setBusy('Dallar yükleniyor...');
     try {
@@ -84,6 +141,34 @@ export default function SurgeryScreen() {
   }, []);
 
   useEffect(() => { loadBranches(); }, [loadBranches]);
+
+  // loadBranches'ten SONRA tanımlanır: bağımlılık dizisi render anında
+  // değerlendirildiği için, önce tanımlanırsa TDZ hatası verir.
+  const startSurgery = useCallback(async (changeRequestId: string, summary: string) => {
+    const ok = window.confirm(
+      'CERRAHİ BAŞLATILACAK\n\n' +
+      `Talep: ${summary}\n\n` +
+      'Kodlama ajanı ayrı bir çalışma alanında (worktree) çalışacak.\n' +
+      'Canlı uygulama dizinine dokunulmayacak.\n' +
+      'İş bitince diff\'i burada onaylayacaksın.\n\nBaşlatılsın mı?'
+    );
+    if (!ok) return;
+
+    setEvents([]);
+    setBusy('Cerrahi çalışıyor — bu birkaç dakika sürebilir...');
+    try {
+      const res = await api()?.surgeryStart({ changeRequestId });
+      if (res?.success) {
+        setMessage(`Cerrahi tamamlandı: ${res.branch} — ${res.surgeonStatus} (${res.rejectedCount ?? 0} izin reddi). Aşağıdan incele.`);
+        await loadBranches();
+      } else {
+        setMessage(`Cerrahi başarısız: ${res?.error || 'bilinmeyen hata'}`);
+      }
+      await loadSession();
+    } finally {
+      setBusy(null);
+    }
+  }, [loadSession, loadBranches]);
 
   const inspect = useCallback(async (branch: string) => {
     setSelected(branch);
@@ -158,6 +243,84 @@ export default function SurgeryScreen() {
 
       {busy && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-300">{busy}</div>}
       {message && <div className="rounded-lg border border-zinc-700 bg-zinc-800/60 px-4 py-2 text-sm text-zinc-300">{message}</div>}
+
+      {/* ── Kodlama ajanı bağlantısı ── */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-200">Kodlama Ajanı — GitHub Copilot</h2>
+            <p className="text-xs text-zinc-500">
+              {!auth.checked && 'Bağlantı durumu bilinmiyor.'}
+              {auth.checked && auth.authenticated && 'Bağlı — oturum açık, cerrahi başlatılabilir.'}
+              {auth.checked && !auth.authenticated && (auth.error || 'Oturum kapalı. Terminalde `copilot` komutuyla giriş yap.')}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+              sessionStatus === 'RUNNING' ? 'bg-amber-500/15 text-amber-300'
+                : sessionStatus === 'AWAITING_REVIEW' ? 'bg-cyan-500/15 text-cyan-300'
+                : sessionStatus === 'FAILED' ? 'bg-red-500/15 text-red-300'
+                : 'bg-zinc-800 text-zinc-400'
+            }`}>{sessionStatus}</span>
+            <button onClick={checkAuth} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
+              Bağlantıyı Kontrol Et
+            </button>
+            {sessionStatus === 'RUNNING' && (
+              <button onClick={abortSurgery} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10">
+                İptal Et
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Bekleyen değişiklik talepleri ── */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <h2 className="mb-2 text-sm font-semibold text-zinc-200">Bekleyen Değişiklik Talepleri</h2>
+        {requests.length === 0 ? (
+          <p className="text-xs text-zinc-600">
+            Bekleyen talep yok. Sohbette ÇAKAL'a yeni bir özellik iste; kaynak kod gerektiriyorsa talebi buraya düşürür.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {requests.map((r) => (
+              <div key={r.changeRequestId} className="flex items-start justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-mono text-amber-400/80">{r.changeRequestId}</div>
+                  <div className="mt-0.5 text-sm text-zinc-200">{r.originalUserRequest}</div>
+                  {r.cakalInterpretation && (
+                    <div className="mt-1 text-[11px] text-zinc-500">🐺 {r.cakalInterpretation}</div>
+                  )}
+                </div>
+                <button
+                  onClick={() => startSurgery(r.changeRequestId, r.originalUserRequest)}
+                  disabled={sessionStatus === 'RUNNING' || !auth.authenticated}
+                  className="shrink-0 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={!auth.authenticated ? 'Önce Copilot bağlantısını kontrol et' : 'Cerrahiyi başlat'}
+                >
+                  Başlat
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Canlı cerrahi akışı ── */}
+      {events.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <h2 className="mb-2 text-sm font-semibold text-zinc-200">Canlı Akış</h2>
+          <div className="max-h-48 space-y-1 overflow-auto font-mono text-[11px]">
+            {events.map((e, i) => (
+              <div key={i} className={e.type === 'surgery_permission' && e.detail?.startsWith('reject') ? 'text-red-400' : 'text-zinc-400'}>
+                <span className="text-zinc-600">{new Date(e.ts).toLocaleTimeString('tr-TR')}</span>{' '}
+                <span className="text-cyan-400">{e.type}</span>{' '}
+                {e.detail}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-[18rem_1fr] gap-4">
         <aside className="space-y-2">
