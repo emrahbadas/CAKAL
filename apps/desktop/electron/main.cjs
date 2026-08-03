@@ -10,6 +10,7 @@ const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
 const { storeSecret, hasSecret, listSecretRefs, listSecretRequests, fulfillSecretRequest } = require('./secret-broker.cjs');
 const { resolveAnalysisArtifact } = require('./analysis-artifacts.cjs');
+const surgeryReview = require('./surgery/review-service.cjs');
 
 // Load environment variables. Sıra: proje kökü .env (dev) → resources/.env
 // (paketli sürümde bundle edildiyse) → userData/.env (kurulu sürüm için
@@ -989,6 +990,64 @@ ipcMain.handle('analysis:open-artifact', async (_event, artifactId) => {
     return { success: true };
   } catch (err) {
     console.error('[IPC] analysis:open-artifact error:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ==============================
+// IPC: Cerrahi bakım — diff inceleme ve onaylı merge
+// Merge kararı LLM'e veya cerraha ait değildir; yalnız kullanıcı verir.
+// BLOCK durumunda kullanıcı onayı bile merge'i açmaz (review-service kontrol eder).
+// ==============================
+
+ipcMain.handle('surgery:list-branches', async () => {
+  try {
+    return { success: true, branches: surgeryReview.listSurgicalBranches() };
+  } catch (err) {
+    console.error('[IPC] surgery:list-branches error:', err.message);
+    return { success: false, error: err.message, branches: [] };
+  }
+});
+
+ipcMain.handle('surgery:preflight', async (_event, payload = {}) => {
+  try {
+    const gate = surgeryReview.runPreflight({
+      base: payload.base || 'main',
+      head: payload.head,
+      verify: payload.verify === true,
+    });
+    console.log(`[Surgery] preflight ${payload.head}: ${gate.verdict}`);
+    return { success: true, gate };
+  } catch (err) {
+    console.error('[IPC] surgery:preflight error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:diff', async (_event, payload = {}) => {
+  try {
+    if (payload.file) {
+      return { success: true, diff: surgeryReview.getFileDiff({ base: payload.base || 'main', head: payload.head, file: payload.file }), truncated: false };
+    }
+    return { success: true, ...surgeryReview.getDiff({ base: payload.base || 'main', head: payload.head }) };
+  } catch (err) {
+    console.error('[IPC] surgery:diff error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:approve-merge', async (_event, payload = {}) => {
+  try {
+    const result = surgeryReview.approveAndMerge({
+      base: payload.base || 'main',
+      head: payload.head,
+      approved: payload.approved === true,
+      verify: payload.verify !== false,
+    });
+    console.log(`[Surgery] merge ${payload.head}: ${result.merged ? 'MERGED' : result.reason}`);
+    return { success: true, result };
+  } catch (err) {
+    console.error('[IPC] surgery:approve-merge error:', err.message);
     return { success: false, error: err.message };
   }
 });

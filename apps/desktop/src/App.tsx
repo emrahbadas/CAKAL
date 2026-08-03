@@ -7,6 +7,7 @@ import ProfileScreen from './screens/ProfileScreen';
 import FeedbackScreen from './screens/FeedbackScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import EvolutionScreen from './screens/EvolutionScreen';
+import SurgeryScreen from './screens/SurgeryScreen';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="profile" element={<ProfileScreen />} />
         <Route path="feedback" element={<FeedbackScreen />} />
         <Route path="evolution" element={<EvolutionScreen />} />
+        <Route path="surgery" element={<SurgeryScreen />} />
         <Route path="settings" element={<SettingsScreen />} />
       </Route>
     </Routes>

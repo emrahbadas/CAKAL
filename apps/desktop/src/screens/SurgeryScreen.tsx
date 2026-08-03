@@ -1,0 +1,256 @@
+import { useCallback, useEffect, useState } from 'react';
+import { ShieldCheck, ShieldAlert, ShieldQuestion, RefreshCw, GitMerge, FileDiff } from 'lucide-react';
+
+// ─── Cerrahi Bakım — diff inceleme ve onaylı merge ───
+// Kullanıcının "yanlış gideni göremiyorum" derdinin çözümü: cerrahın ürettiği
+// değişiklik inmeden önce kapı sonucu + diff burada gösterilir.
+// Merge kararı ÇAKAL'a veya cerraha ait değildir; bu ekrandan kullanıcı verir.
+
+type Severity = 'BLOCK' | 'REVIEW' | 'INFO';
+type Verdict = 'PASS' | 'REVIEW' | 'BLOCK' | 'ERROR';
+
+interface Finding {
+  severity: Severity;
+  code: string;
+  message: string;
+  files?: string[];
+  details?: string[];
+}
+
+interface Gate {
+  verdict: Verdict;
+  exitCode: number;
+  stats: { filesChanged: number; insertions: number; deletions: number };
+  checks: Record<string, string>;
+  findings: Finding[];
+  files: { status: string; file: string }[];
+}
+
+interface Branch {
+  branch: string;
+  subject: string;
+}
+
+const api = () => (window as any).cakalAPI;
+
+const VERDICT_STYLE: Record<Verdict, { cls: string; label: string; Icon: typeof ShieldCheck }> = {
+  PASS: { cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10', label: 'ONAYA HAZIR', Icon: ShieldCheck },
+  REVIEW: { cls: 'text-amber-400 border-amber-500/30 bg-amber-500/10', label: 'İNCELEME GEREKLİ', Icon: ShieldQuestion },
+  BLOCK: { cls: 'text-red-400 border-red-500/30 bg-red-500/10', label: 'BLOKE', Icon: ShieldAlert },
+  ERROR: { cls: 'text-red-400 border-red-500/30 bg-red-500/10', label: 'KAPI HATASI', Icon: ShieldAlert },
+};
+
+const SEVERITY_STYLE: Record<Severity, string> = {
+  BLOCK: 'border-red-500/40 bg-red-500/5 text-red-300',
+  REVIEW: 'border-amber-500/40 bg-amber-500/5 text-amber-300',
+  INFO: 'border-zinc-700 bg-zinc-800/40 text-zinc-300',
+};
+
+function DiffView({ text }: { text: string }) {
+  return (
+    <pre className="max-h-[28rem] overflow-auto rounded-lg bg-zinc-950 p-3 text-[11px] leading-relaxed">
+      {text.split('\n').map((line, i) => {
+        let cls = 'text-zinc-400';
+        if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-zinc-500';
+        else if (line.startsWith('+')) cls = 'text-emerald-400';
+        else if (line.startsWith('-')) cls = 'text-red-400';
+        else if (line.startsWith('@@')) cls = 'text-cyan-400';
+        else if (line.startsWith('diff --git')) cls = 'text-amber-400 font-semibold';
+        return <div key={i} className={cls}>{line || ' '}</div>;
+      })}
+    </pre>
+  );
+}
+
+export default function SurgeryScreen() {
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selected, setSelected] = useState<string>('');
+  const [gate, setGate] = useState<Gate | null>(null);
+  const [diff, setDiff] = useState<string>('');
+  const [diffNote, setDiffNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [verify, setVerify] = useState(true);
+
+  const loadBranches = useCallback(async () => {
+    setBusy('Dallar yükleniyor...');
+    try {
+      const res = await api()?.surgeryListBranches();
+      setBranches(res?.branches || []);
+      if (!res?.success) setMessage(res?.error || 'Dallar okunamadı.');
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  useEffect(() => { loadBranches(); }, [loadBranches]);
+
+  const inspect = useCallback(async (branch: string) => {
+    setSelected(branch);
+    setGate(null);
+    setDiff('');
+    setDiffNote(null);
+    setMessage(null);
+    setBusy(verify ? 'Kapı çalışıyor (test + typecheck)...' : 'Kapı çalışıyor...');
+    try {
+      const [gateRes, diffRes] = await Promise.all([
+        api()?.surgeryPreflight({ head: branch, verify }),
+        api()?.surgeryDiff({ head: branch }),
+      ]);
+      if (gateRes?.success) setGate(gateRes.gate);
+      else setMessage(gateRes?.error || 'Kapı çalıştırılamadı.');
+      if (diffRes?.success) {
+        setDiff(diffRes.diff || '');
+        setDiffNote(diffRes.note || null);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }, [verify]);
+
+  const merge = useCallback(async () => {
+    if (!selected || !gate) return;
+    const ok = window.confirm(
+      `"${selected}" dalı main'e merge edilecek.\n\n` +
+      `Kapı: ${gate.verdict}\nDosya: ${gate.stats.filesChanged}  +${gate.stats.insertions}/-${gate.stats.deletions}\n\n` +
+      'Onaylıyor musun?'
+    );
+    if (!ok) return;
+
+    setBusy('Merge ediliyor...');
+    try {
+      const res = await api()?.surgeryApproveMerge({ head: selected, approved: true, verify });
+      const r = res?.result;
+      if (r?.merged) {
+        setMessage(`Merge tamamlandı. Geri dönüş: ${r.rollbackCommand}`);
+        await inspect(selected);
+      } else {
+        setMessage(`Merge yapılmadı — ${r?.reason || 'bilinmeyen'}: ${r?.message || res?.error || ''}`);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }, [selected, gate, verify, inspect]);
+
+  const style = gate ? VERDICT_STYLE[gate.verdict] : null;
+  const canMerge = gate !== null && gate.verdict !== 'BLOCK' && gate.verdict !== 'ERROR';
+
+  return (
+    <div className="flex h-full flex-col gap-4 overflow-auto p-6">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-100">Cerrahi Bakım</h1>
+          <p className="text-sm text-zinc-500">Kapı sonucu ve diff — merge kararı sende.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-zinc-400">
+            <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} className="accent-amber-500" />
+            Test + typecheck çalıştır
+          </label>
+          <button
+            onClick={loadBranches}
+            className="flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Yenile
+          </button>
+        </div>
+      </header>
+
+      {busy && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-300">{busy}</div>}
+      {message && <div className="rounded-lg border border-zinc-700 bg-zinc-800/60 px-4 py-2 text-sm text-zinc-300">{message}</div>}
+
+      <div className="grid grid-cols-[18rem_1fr] gap-4">
+        <aside className="space-y-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cerrahi Dallar</h2>
+          {branches.length === 0 && <p className="text-sm text-zinc-600">Bekleyen cerrahi paket yok.</p>}
+          {branches.map((b) => (
+            <button
+              key={b.branch}
+              onClick={() => inspect(b.branch)}
+              className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                selected === b.branch ? 'border-amber-500/50 bg-amber-500/10' : 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800'
+              }`}
+            >
+              <div className="truncate text-xs font-medium text-zinc-200">{b.branch.replace('cakal/feature-', '')}</div>
+              <div className="truncate text-[11px] text-zinc-500">{b.subject}</div>
+            </button>
+          ))}
+        </aside>
+
+        <section className="space-y-4">
+          {!gate && !busy && <p className="text-sm text-zinc-600">İncelemek için soldan bir cerrahi paket seç.</p>}
+
+          {gate && style && (
+            <>
+              <div className={`flex items-center justify-between rounded-lg border px-4 py-3 ${style.cls}`}>
+                <div className="flex items-center gap-3">
+                  <style.Icon className="h-5 w-5" />
+                  <div>
+                    <div className="text-sm font-semibold">{style.label}</div>
+                    <div className="text-xs opacity-80">
+                      {gate.stats.filesChanged} dosya · +{gate.stats.insertions} / -{gate.stats.deletions}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={merge}
+                  disabled={!canMerge}
+                  className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
+                    canMerge
+                      ? 'bg-amber-500 text-zinc-900 hover:bg-amber-400'
+                      : 'cursor-not-allowed bg-zinc-800 text-zinc-600'
+                  }`}
+                  title={canMerge ? 'main dalına merge et' : 'Kapı bloke ettiği için merge kapalı'}
+                >
+                  <GitMerge className="h-4 w-4" />
+                  {canMerge ? 'Onayla ve Merge Et' : 'Merge Kapalı'}
+                </button>
+              </div>
+
+              {Object.keys(gate.checks || {}).length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(gate.checks).map(([name, state]) => (
+                    <span
+                      key={name}
+                      className={`rounded-md border px-2 py-1 text-[11px] ${
+                        state === 'PASS' ? 'border-emerald-500/30 text-emerald-400'
+                        : state === 'FAIL' ? 'border-red-500/30 text-red-400'
+                        : 'border-zinc-700 text-zinc-500'
+                      }`}
+                    >
+                      {name}: {state}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {gate.findings.length > 0 && (
+                <div className="space-y-2">
+                  {gate.findings.map((f, i) => (
+                    <div key={i} className={`rounded-lg border px-3 py-2 text-xs ${SEVERITY_STYLE[f.severity]}`}>
+                      <div className="font-semibold">[{f.code}] {f.message}</div>
+                      {f.files?.slice(0, 8).map((file) => (
+                        <div key={file} className="mt-1 font-mono text-[11px] opacity-80">— {file}</div>
+                      ))}
+                      {f.details?.slice(0, 8).map((d, j) => (
+                        <div key={j} className="mt-1 font-mono text-[11px] opacity-80">| {d}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  <FileDiff className="h-3.5 w-3.5" /> Değişiklikler
+                  {diffNote && <span className="ml-2 font-normal normal-case text-amber-500/80">{diffNote}</span>}
+                </div>
+                {diff ? <DiffView text={diff} /> : <p className="text-sm text-zinc-600">Diff yok.</p>}
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
