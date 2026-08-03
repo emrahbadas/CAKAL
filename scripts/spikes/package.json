@@ -1,0 +1,9 @@
+{
+  "name": "cakal-copilot-spike",
+  "private": true,
+  "type": "module",
+  "description": "Gecici spike ortami - CAKAL kaynak agacindan izole",
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.8"
+  }
+}
