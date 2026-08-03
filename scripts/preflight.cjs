@@ -27,44 +27,18 @@ const path = require('path');
 
 // ============================================================
 // KONFİGÜRASYON
-// Bu blok kapının anayasasıdır. Değiştirilmesi mimari inceleme gerektirir.
+// Korunan yol / secret listesi TEK KAYNAKTAN gelir: surgery/protected-paths.
+// Böylece merge kapısı (bu dosya) ile canlı izin kancası aynı sınırı korur.
+// Bu blok kapının anayasasıdır; değiştirilmesi mimari inceleme gerektirir.
 // ============================================================
 
-// Cerrahın dokunamayacağı çekirdek dosyalar. Güvenlik sınırını tanımlayan
-// veya kapının kendisini oluşturan her şey buraya girer.
-const PROTECTED_PATHS = [
-  // Güvenlik katmanları
-  'apps/desktop/electron/safe-path.cjs',
-  'apps/desktop/electron/command-guard.cjs',
-  'apps/desktop/electron/secret-broker.cjs',
-  'apps/desktop/electron/sandbox-plugin-fsm.cjs',
-  'apps/desktop/electron/decision-guards.cjs',
-  'apps/desktop/electron/analysis-artifacts.cjs',
-  'apps/desktop/electron/execution-contract.cjs',
-  'packages/core/investment-research/shared/policy-core.cjs',
-  // Kapının kendisi — cerrah kapıyı kendi lehine ayarlayamaz
-  'scripts/preflight.cjs',
-];
-
-// Dizin bazlı korumalar (prefix eşleşmesi)
-const PROTECTED_PREFIXES = [
-  '.github/workflows/',
-];
-
-// Secret / kimlik dosyaları — hiçbir koşulda diff'te görünmemeli
-const SECRET_PATTERNS = [
-  /^\.env(\.|$)/i,
-  /\.(pem|key|p12|pfx|asc|gpg|jks|keystore)$/i,
-  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.|$)/i,
-  /(^|\/)\.ssh\//i,
-  /(^|\/)credentials?(\.|$)/i,
-  /(^|\/)[^/]*service[-_]?account[^/]*\.json$/i,
-  /(^|\/)[^/]*secrets?[^/]*\.json$/i,
-  /(^|\/)\.npmrc$/i,
-  /(^|\/)\.netrc$/i,
-  /(^|\/)cakal-secrets\.json$/i,
-  /(^|\/)\.cakal-sandbox\/secrets\//i,
-];
+const {
+  PROTECTED_PATHS,
+  PROTECTED_PREFIXES,
+  SECRET_PATTERNS,
+  isProtectedPath: sharedIsProtectedPath,
+  isSecretPath: sharedIsSecretPath,
+} = require('../apps/desktop/electron/surgery/protected-paths.cjs');
 
 const TEST_PATH_PATTERN = /(^tests\/|\.test\.|\.spec\.)/i;
 
@@ -99,16 +73,9 @@ function normalize(filePath) {
   return String(filePath || '').replace(/\\/g, '/').trim();
 }
 
-function isProtectedPath(filePath) {
-  const p = normalize(filePath);
-  return PROTECTED_PATHS.some((protectedPath) => p === protectedPath)
-    || PROTECTED_PREFIXES.some((prefix) => p.startsWith(prefix));
-}
-
-function isSecretPath(filePath) {
-  const p = normalize(filePath);
-  return SECRET_PATTERNS.some((pattern) => pattern.test(p));
-}
+// Paylaşılan tek kaynağa devret (surgery/protected-paths). Yerel kopya yok.
+const isProtectedPath = sharedIsProtectedPath;
+const isSecretPath = sharedIsSecretPath;
 
 /** `git diff --name-status base...head` çıktısını yapılandırır. */
 function parseNameStatus(raw) {
