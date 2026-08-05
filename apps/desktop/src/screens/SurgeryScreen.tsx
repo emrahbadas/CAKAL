@@ -282,7 +282,11 @@ export default function SurgeryScreen() {
             <p className="text-xs text-zinc-500">
               {!auth.checked && 'Bağlantı durumu bilinmiyor.'}
               {auth.checked && auth.authenticated && 'Bağlı — oturum açık, cerrahi başlatılabilir.'}
-              {auth.checked && !auth.authenticated && (auth.error || 'Oturum kapalı. Terminalde `copilot` komutuyla giriş yap.')}
+              {auth.checked && !auth.authenticated && (auth.error || 'Oturum kapalı. "GitHub\'a Giriş Yap" ile bağlan.')}
+            </p>
+            <p className="mt-1 text-[11px] text-zinc-600">
+              Kendi GitHub hesabınla bağlanırsın; kimlik bilgisi bu bilgisayarda, senin
+              kullanıcı profilinde saklanır. Cerrahi için kendi Copilot aboneliğin gerekir.
             </p>
           </div>
           <div className="flex items-center gap-2">

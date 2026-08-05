@@ -94,14 +94,42 @@ function createSessionManager(options = {}) {
     };
   }
 
-  /** Copilot kimlik durumu. Token okunmaz; yalnız var/yok. */
+  /**
+   * Copilot kimlik durumu. Token okunmaz; yalnız var/yok.
+   *
+   * DURUMSUZ kontrol: bağlan → sor → kapat. CLI'ı sürekli ayakta tutmak
+   * kaynak yakar ve yeni hata yolları açar; bağlantı asıl cerrahi sırasında
+   * oturum boyunca açık kalır.
+   *
+   * Bu yüzden alt seviyedeki connect/disconnect olayları YENİDEN ETİKETLENİR:
+   * ham hâlleriyle akışta "bağlandı → koptu" gibi görünüp kullanıcıya bağlantı
+   * düşüyormuş izlenimi veriyordu.
+   */
   async function checkAuth() {
-    const surgeon = surgeonFactory({ onEvent: emit });
+    emit({ type: 'auth_check_started' });
+    const surgeon = surgeonFactory({
+      onEvent: (event) => {
+        // Kontrol turunun iç gürültüsünü dışarı sızdırma; yalnız gerçek
+        // hataları geçir.
+        if (event?.type === 'surgeon_connected' || event?.type === 'surgeon_disconnected'
+          || event?.type === 'surgeon_auth') {
+          return;
+        }
+        emit(event);
+      },
+    });
     try {
       const result = await surgeon.connect();
-      return { ok: true, authenticated: Boolean(result?.authenticated) };
+      const authenticated = Boolean(result?.authenticated);
+      emit({
+        type: 'auth_check_finished',
+        detail: authenticated ? 'oturum açık' : 'oturum kapalı — giriş gerekli',
+      });
+      return { ok: true, authenticated };
     } catch (err) {
-      return { ok: false, authenticated: false, error: err?.message || 'bağlantı kurulamadı' };
+      const message = err?.message || 'bağlantı kurulamadı';
+      emit({ type: 'auth_check_failed', detail: message });
+      return { ok: false, authenticated: false, error: message };
     } finally {
       try { await surgeon.disconnect(); } catch { /* yoksay */ }
     }
