@@ -21,7 +21,8 @@ const path = require('path');
 const crypto = require('crypto');
 
 const handoff = require('./handoff.cjs');
-const { CopilotSurgeon } = require('./copilot-surgeon.cjs');
+const { CopilotSurgeon, resolveNativeCliPath } = require('./copilot-surgeon.cjs');
+const { startDeviceLogin, GITHUB_DEVICE_URL } = require('./auth-login.cjs');
 
 const STATUS = Object.freeze({
   IDLE: 'IDLE',
@@ -104,6 +105,42 @@ function createSessionManager(options = {}) {
     } finally {
       try { await surgeon.disconnect(); } catch { /* yoksay */ }
     }
+  }
+
+  // ── GitHub girişi (cihaz kodu akışı) ──
+  // ÇAKAL kullanıcı adına giriş YAPMAZ: yalnız kodu ekrana taşır, onayı
+  // kullanıcı kendi tarayıcısında verir, token CLI'ın kasasında kalır.
+  let activeLogin = null;
+
+  async function startLogin(opts = {}) {
+    if (activeLogin) return { ok: false, error: 'Giriş akışı zaten çalışıyor.' };
+
+    const cliPath = opts.cliPath || resolveNativeCliPath();
+    if (!cliPath) {
+      return { ok: false, error: 'Copilot CLI bulunamadı. @github/copilot paketi kurulu olmalı.' };
+    }
+
+    emit({ type: 'login_started' });
+    try {
+      activeLogin = startDeviceLogin({
+        cliPath,
+        onEvent: emit,
+        timeoutMs: opts.timeoutMs,
+        spawnImpl: opts.spawnImpl,
+      });
+      const result = await activeLogin.promise;
+      return { ok: result.ok, error: result.ok ? null : result.message, deviceUrl: GITHUB_DEVICE_URL };
+    } finally {
+      activeLogin = null;
+    }
+  }
+
+  function cancelLogin() {
+    if (!activeLogin) return { ok: false, error: 'Çalışan giriş akışı yok.' };
+    activeLogin.cancel();
+    activeLogin = null;
+    emit({ type: 'login_cancelled' });
+    return { ok: true };
   }
 
   /** Cerraha verilecek görev metni: orijinal talep + bağlayıcı kısıtlar. */
@@ -254,6 +291,8 @@ function createSessionManager(options = {}) {
     listRequests,
     getStatus,
     checkAuth,
+    startLogin,
+    cancelLogin,
     startSurgery,
     abortSurgery,
     cleanupWorktree,

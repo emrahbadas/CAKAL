@@ -22,11 +22,80 @@ function redact(text) {
     .replace(/Authorization:\s*Bearer\s+\S+/gi, 'Authorization: Bearer [REDACTED]');
 }
 
+// ── Electron altında CLI başlatma sorunu ve çözümü ─────────────────────
+//
+// SDK, CLI'ı şöyle başlatır:
+//     const isJsFile = cliPath.endsWith('.js');
+//     isJsFile ? spawn(process.execPath, [cliPath, ...args]) : spawn(cliPath, args)
+//
+// Electron main process'inde `process.execPath` Node DEĞİL, Electron
+// binary'sidir. Varsayılan yol (.js) bu yüzden çalışmaz:
+//   - düzeltmesiz            → "CLI server exited unexpectedly with code 0"
+//     (Electron dosyayı yeni uygulama açma isteği sanıp hemen çıkar)
+//   - ELECTRON_RUN_AS_NODE=1 → "error: too many arguments. Expected 0 got 1"
+//     (Electron-as-node argv'ye fazladan giriş ekliyor, CLI ayrıştırıcısı takılıyor)
+//
+// ÇÖZÜM: platform paketindeki NATIVE binary'yi göster. Uzantı .js olmadığı
+// için SDK onu doğrudan çalıştırır; Node hiç devreye girmez.
+// Gerçek Electron 31.3.1 içinde doğrulandı: protocolVersion 3, auth OK.
+
+const NATIVE_BIN_NAME = process.platform === 'win32' ? 'copilot.exe' : 'copilot';
+
+/**
+ * `@github/copilot-<platform>-<arch>` paketindeki native CLI binary'sini bulur.
+ * @returns {string|null} tam yol, bulunamazsa null
+ */
+function resolveNativeCliPath(options = {}) {
+  const platform = options.platform || process.platform;
+  const arch = options.arch || process.arch;
+  // SDK ile aynı isimlendirme: linux'ta musl varyantı da denenir.
+  const variants = platform === 'linux' ? ['linux', 'linuxmusl'] : [platform];
+  const resolver = options.resolve || require.resolve;
+
+  for (const variant of variants) {
+    try {
+      // DİKKAT: derin import kullanılamaz. Platform paketinin exports haritası
+      //   { ".": "./copilot.exe", "./sdk": { "import": ... } }
+      // şeklindedir; `/package.json` ve `/sdk` CJS'ten ERR_PACKAGE_PATH_NOT_EXPORTED
+      // verir. Kök giriş noktası ise doğrudan native binary'yi döndürür.
+      const resolved = resolver(`@github/copilot-${variant}-${arch}`);
+      if (resolved && require('fs').existsSync(resolved)) return resolved;
+    } catch {
+      // bu varyant kurulu değil, sıradakine bak
+    }
+  }
+  return null;
+}
+
+/**
+ * CopilotClient seçeneklerini kurar.
+ * Düz Node altında (testler, scriptler) varsayılan yol zaten çalışır ve
+ * doğrulanmıştır — dokunulmaz. Yalnız Electron'da native binary'ye yönlendirilir.
+ */
+function buildClientOptions(options = {}) {
+  const versions = options.versions || process.versions;
+  const baseEnv = options.baseEnv || process.env;
+  if (!versions || !versions.electron) return {};
+
+  const nativeCliPath = options.nativeCliPath !== undefined
+    ? options.nativeCliPath
+    : resolveNativeCliPath();
+
+  if (!nativeCliPath) {
+    throw new Error(
+      'Copilot CLI native binary bulunamadı. Electron altında paketlenmiş .js '
+      + 'giriş noktası çalışmıyor; @github/copilot platform paketi kurulu olmalı.',
+    );
+  }
+  // Kendi sürecimizin env'i değil, yalnız çocuk sürecin env'i.
+  return { env: { ...baseEnv, COPILOT_CLI_PATH: nativeCliPath } };
+}
+
 /** Üretim varsayılanı: SDK'yı yalnız gerçekten çalışırken yükle. */
 function defaultClientFactory() {
   // eslint-disable-next-line global-require
   const { CopilotClient } = require('@github/copilot-sdk');
-  return new CopilotClient();
+  return new CopilotClient(buildClientOptions());
 }
 
 class CopilotSurgeon {
@@ -140,4 +209,11 @@ class CopilotSurgeon {
   }
 }
 
-module.exports = { CopilotSurgeon, redact, defaultClientFactory };
+module.exports = {
+  CopilotSurgeon,
+  redact,
+  defaultClientFactory,
+  buildClientOptions,
+  resolveNativeCliPath,
+  NATIVE_BIN_NAME,
+};

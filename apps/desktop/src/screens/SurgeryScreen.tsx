@@ -90,6 +90,8 @@ export default function SurgeryScreen() {
   const [requests, setRequests] = useState<ChangeRequest[]>([]);
   const [sessionStatus, setSessionStatus] = useState<string>('IDLE');
   const [events, setEvents] = useState<SurgeryEvent[]>([]);
+  const [loginCode, setLoginCode] = useState<{ code: string; url: string } | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const loadSession = useCallback(async () => {
     const [reqRes, statusRes] = await Promise.all([
@@ -110,10 +112,38 @@ export default function SurgeryScreen() {
     }
   }, []);
 
+  const startLogin = useCallback(async () => {
+    setLoggingIn(true);
+    setLoginCode(null);
+    setMessage(null);
+    try {
+      const res = await api()?.surgeryLoginStart();
+      if (res?.ok) {
+        setMessage('GitHub girişi tamamlandı.');
+        await checkAuth();
+      } else {
+        setMessage(`Giriş tamamlanmadı: ${res?.error || 'bilinmeyen'}`);
+      }
+    } finally {
+      setLoggingIn(false);
+      setLoginCode(null);
+    }
+  }, [checkAuth]);
+
+  const cancelLogin = useCallback(async () => {
+    await api()?.surgeryLoginCancel();
+    setLoggingIn(false);
+    setLoginCode(null);
+  }, []);
+
   // Canlı cerrahi olayları
   useEffect(() => {
     const off = api()?.onSurgeryActivity?.((e: SurgeryEvent) => {
       setEvents((prev) => [...prev.slice(-60), e]);
+      if (e.type === 'login_code' && (e as any).code) {
+        setLoginCode({ code: (e as any).code, url: (e as any).url });
+      }
+      if (e.type === 'login_finished' || e.type === 'login_cancelled') setLoginCode(null);
       if (['surgery_started', 'surgery_awaiting_review', 'surgery_failed', 'surgery_aborted', 'request_registered'].includes(e.type)) {
         loadSession();
       }
@@ -262,6 +292,19 @@ export default function SurgeryScreen() {
                 : sessionStatus === 'FAILED' ? 'bg-red-500/15 text-red-300'
                 : 'bg-zinc-800 text-zinc-400'
             }`}>{sessionStatus}</span>
+            {!auth.authenticated && !loggingIn && (
+              <button
+                onClick={startLogin}
+                className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-white"
+              >
+                GitHub'a Giriş Yap
+              </button>
+            )}
+            {loggingIn && (
+              <button onClick={cancelLogin} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
+                Girişi İptal Et
+              </button>
+            )}
             <button onClick={checkAuth} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
               Bağlantıyı Kontrol Et
             </button>
@@ -272,6 +315,31 @@ export default function SurgeryScreen() {
             )}
           </div>
         </div>
+
+        {/* Cihaz kodu: ÇAKAL senin adına giriş YAPMAZ — kodu taşır, onayı sen verirsin */}
+        {loginCode && (
+          <div className="mt-4 rounded-lg border border-zinc-100/20 bg-zinc-950 p-4">
+            <p className="text-xs text-zinc-400">
+              GitHub'da şu adrese git ve aşağıdaki kodu gir. Onayı <strong>sen</strong> vereceksin;
+              ÇAKAL senin adına giriş yapmaz ve token'ı hiç görmez.
+            </p>
+            <div className="mt-3 flex items-center gap-4">
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 font-mono text-2xl tracking-widest text-amber-300 select-all">
+                {loginCode.code}
+              </div>
+              <div className="flex flex-col gap-1">
+                <button
+                  onClick={() => api()?.surgeryOpenDevicePage()}
+                  className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-amber-400"
+                >
+                  Tarayıcıda Aç
+                </button>
+                <span className="font-mono text-[10px] text-zinc-600 select-all">{loginCode.url}</span>
+              </div>
+            </div>
+            <p className="mt-3 text-[11px] text-zinc-500">Onayladıktan sonra bu pencere kendiliğinden güncellenir.</p>
+          </div>
+        )}
       </div>
 
       {/* ── Bekleyen değişiklik talepleri ── */}

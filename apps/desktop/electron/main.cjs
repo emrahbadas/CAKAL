@@ -1023,6 +1023,36 @@ ipcMain.handle('surgery:auth-status', async () => {
   }
 });
 
+// GitHub cihaz kodu girişi. ÇAKAL kullanıcı adına giriş yapmaz; kodu ekrana
+// taşır, onayı kullanıcı kendi tarayıcısında verir, token CLI kasasında kalır.
+ipcMain.handle('surgery:login-start', async () => {
+  try {
+    return { success: true, ...(await surgerySession.startLogin()) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:login-cancel', async () => {
+  try {
+    return { success: true, ...surgerySession.cancelLogin() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Yalnız GitHub'ın resmî cihaz aktivasyon adresi açılabilir; CLI çıktısından
+// gelen rastgele bir URL açtırılamaz.
+ipcMain.handle('surgery:open-device-page', async () => {
+  try {
+    const { GITHUB_DEVICE_URL } = require('./surgery/auth-login.cjs');
+    await shell.openExternal(GITHUB_DEVICE_URL);
+    return { success: true, url: GITHUB_DEVICE_URL };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('surgery:session-status', async () => {
   try {
     return { success: true, ...surgerySession.getStatus() };

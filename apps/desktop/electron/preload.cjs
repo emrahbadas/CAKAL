@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('cakalAPI', {
   // Cerrahi oturum: bağlantı, bekleyen talepler, başlat/iptal.
   // Başlatma yetkisi yalnız kullanıcıdadır; ÇAKAL yalnız talep kaydeder.
   surgeryAuthStatus: () => ipcRenderer.invoke('surgery:auth-status'),
+  surgeryLoginStart: () => ipcRenderer.invoke('surgery:login-start'),
+  surgeryLoginCancel: () => ipcRenderer.invoke('surgery:login-cancel'),
+  surgeryOpenDevicePage: () => ipcRenderer.invoke('surgery:open-device-page'),
   surgerySessionStatus: () => ipcRenderer.invoke('surgery:session-status'),
   surgeryListRequests: () => ipcRenderer.invoke('surgery:list-requests'),
   surgeryStart: (payload) => ipcRenderer.invoke('surgery:start', payload),
