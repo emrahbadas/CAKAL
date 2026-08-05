@@ -40,6 +40,9 @@ const {
   isSecretPath: sharedIsSecretPath,
 } = require('../apps/desktop/electron/surgery/protected-paths.cjs');
 
+// Ürün anayasasının mekanik zorlayıcısı.
+const capabilityPolicy = require('../apps/desktop/electron/surgery/capability-policy.cjs');
+
 const TEST_PATH_PATTERN = /(^tests\/|\.test\.|\.spec\.)/i;
 
 // Migration dosyaları — geri alma planı olmadan merge edilemez
@@ -327,6 +330,100 @@ function checkMigrations(entries, findings, ctx) {
   }
 }
 
+// Yeni dış host: kapsam genişlemesinin en görünür izi.
+const URL_RE = /https?:\/\/([a-z0-9.-]+\.[a-z]{2,})(?:[/:?#]|$)/gi;
+
+// Zaten kullanılan altyapı host'ları; her diff'te tekrar sorulmasın.
+const KNOWN_HOSTS = new Set([
+  'github.com', 'api.github.com', 'raw.githubusercontent.com',
+  'query1.finance.yahoo.com', 'query2.finance.yahoo.com',
+  'www.kap.org.tr', 'kap.org.tr', 'www.tcmb.gov.tr', 'evds2.tcmb.gov.tr',
+  'api.openai.com', 'api.perplexity.ai', 'api.telegram.org',
+  'schema.org', 'json-schema.org', 'www.w3.org', 'nodejs.org',
+]);
+
+function extractNewHosts(addedLines) {
+  const hosts = new Set();
+  for (const line of addedLines) {
+    for (const match of String(line).matchAll(URL_RE)) {
+      const host = match[1].toLowerCase();
+      if (!KNOWN_HOSTS.has(host)) hosts.add(host);
+    }
+  }
+  return [...hosts];
+}
+
+/**
+ * ÜRÜN ANAYASASI KAPISI.
+ * Kapsam dışı değişikliğin mekanik parmak izini arar: dış servise yazma,
+ * ödeme/broker işlemi, yazma yetkili kimlik kapsamı, otonom zamanlanmış iş,
+ * yeni dış host. Beyan (capability manifest) varsa kanıtla karşılaştırılır.
+ */
+// Anayasa taraması ÜRETİM kodunu hedefler.
+// Kapsam dışına çıkaran şey çalışma zamanında koşan koddur; test fixture'ı ve
+// politikanın kendi regex tanımları kaçınılmaz olarak aynı kelimeleri içerir.
+// (Aynı ders: `.only` dedektörü kendi test dosyasını bloklamıştı.)
+// Test dosyaları yine taranır ama BLOK değil İNCELEME üretir — görünürlük
+// kaybolmasın, yanlış pozitif de merge'i kilitlemesin.
+const CHARTER_SELF_REFERENCE = /surgery\/capability-policy\.cjs$/i;
+
+function checkProductCharter(entries, findings, ctx) {
+  const touched = entries.filter((e) => e.status !== 'D' && !CHARTER_SELF_REFERENCE.test(e.file));
+  if (touched.length === 0) return;
+
+  const productionFiles = touched.filter((e) => !TEST_PATH_PATTERN.test(e.file));
+  const testFiles = touched.filter((e) => TEST_PATH_PATTERN.test(e.file));
+
+  const scan = (files) => {
+    if (files.length === 0) return null;
+    const patch = ctx.diffFor(files.map((e) => e.file));
+    const { added } = splitDiffLines(patch);
+    return { added, result: capabilityPolicy.evaluateChange({ addedLines: added.map(stripNonCode) }) };
+  };
+
+  const prod = scan(productionFiles);
+  if (prod) {
+    if (prod.result.verdict === 'BLOCK') {
+      findings.push({
+        severity: 'BLOCK',
+        code: 'CHARTER_VIOLATION',
+        message: 'Ürün anayasası ihlali: bu değişiklik ÇAKAL\'ın kapsamı dışında.',
+        files: productionFiles.map((e) => e.file),
+        details: prod.result.reasons,
+      });
+    } else if (prod.result.verdict === 'REVIEW') {
+      findings.push({
+        severity: 'REVIEW',
+        code: 'CHARTER_REVIEW',
+        message: 'Kapsam genişlemesi işareti — insan incelemesi gerekli.',
+        files: productionFiles.map((e) => e.file),
+        details: prod.result.reasons,
+      });
+    }
+
+    const newHosts = extractNewHosts(prod.added);
+    if (newHosts.length > 0) {
+      findings.push({
+        severity: 'REVIEW',
+        code: 'NEW_EXTERNAL_HOST',
+        message: `Yeni dış host eklenmiş (${newHosts.length}). Hangi veri, neden gerekli?`,
+        details: newHosts.slice(0, 12),
+      });
+    }
+  }
+
+  const test = scan(testFiles);
+  if (test && test.result.verdict !== 'ALLOW') {
+    findings.push({
+      severity: 'REVIEW',
+      code: 'CHARTER_SIGNAL_IN_TESTS',
+      message: 'Test dosyasında kapsam işareti var. Fixture ise sorun yok; gerçek dış çağrı ise incelenmeli.',
+      files: testFiles.map((e) => e.file),
+      details: test.result.reasons,
+    });
+  }
+}
+
 function checkScope(entries, stats, findings) {
   if (entries.length > SCOPE_LIMITS.maxFiles) {
     findings.push({
@@ -431,6 +528,7 @@ function run(argv = process.argv.slice(2)) {
   checkTests(entries, findings, ctx);
   checkDependencies(entries, findings, ctx);
   checkMigrations(entries, findings, ctx);
+  checkProductCharter(entries, findings, ctx);
   checkScope(entries, stats, findings);
 
   if (args.verify) {

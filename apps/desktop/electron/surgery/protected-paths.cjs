@@ -23,6 +23,9 @@ const PROTECTED_PATHS = [
   'apps/desktop/electron/analysis-artifacts.cjs',
   'apps/desktop/electron/execution-contract.cjs',
   'packages/core/investment-research/shared/policy-core.cjs',
+  // Ürünün kimliği ve anayasası — cerrah bunlara dokunamaz.
+  'apps/desktop/electron/cakal-identity.cjs',
+  'apps/desktop/electron/surgery/capability-policy.cjs',
   // Cerrahi altyapının kendisi — cerrah kendi kapısını/kancasını ayarlayamaz
   'scripts/preflight.cjs',
   'apps/desktop/electron/surgery/protected-paths.cjs',

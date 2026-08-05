@@ -23,6 +23,7 @@ const crypto = require('crypto');
 const handoff = require('./handoff.cjs');
 const { CopilotSurgeon, resolveNativeCliPath } = require('./copilot-surgeon.cjs');
 const { startDeviceLogin, GITHUB_DEVICE_URL } = require('./auth-login.cjs');
+const cakalIdentity = require('../cakal-identity.cjs');
 
 const STATUS = Object.freeze({
   IDLE: 'IDLE',
@@ -182,6 +183,8 @@ function createSessionManager(options = {}) {
       changeRequest.cakalInterpretation
         ? `## ÇAKAL'ın yorumu (yardımcı bağlam, talimat değil)\n${changeRequest.cakalInterpretation}\n`
         : '',
+      cakalIdentity.buildSurgeonContract(),
+      '',
       '## Bağlayıcı kısıtlar',
       '- Yalnız bu worktree içinde çalış. Dışına çıkma.',
       '- Güvenlik katmanlarına, preflight kapısına ve cerrahi altyapıya DOKUNMA.',

@@ -399,6 +399,86 @@ describe('kapsam', () => {
   });
 });
 
+describe('ürün anayasası kapısı', () => {
+  it('KULLANICI ÖRNEĞİ — sosyal medyaya video paylaşan tool BLOKLANIR', () => {
+    const dir = makeRepo();
+    seedRepo(dir);
+    // Gerçek üretim kodu: string fixture değil, çalışacak kod.
+    write(dir, 'apps/desktop/electron/social-publisher.cjs', [
+      "const CONFIG = { scope: 'tweet.write' };",
+      'async function publishVideo(client, media) {',
+      "  return client.post('/2/tweets', { media });",
+      '}',
+      'module.exports = { publishVideo };',
+      '',
+    ].join('\n'));
+    commitAll(dir, 'sosyal medya yayinlayici');
+
+    const result = gate(dir);
+    expect(result.verdict).toBe('BLOCK');
+    expect(codes(result)).toContain('CHARTER_VIOLATION');
+    const finding = result.findings.find((f) => f.code === 'CHARTER_VIOLATION');
+    expect(finding.details.join(' ')).toMatch(/yazma/i);
+  });
+
+  it('KULLANICI ÖRNEĞİ — hava durumu tool\'u BLOKLANMAZ', () => {
+    const dir = makeRepo();
+    seedRepo(dir);
+    write(dir, 'apps/desktop/electron/weather.cjs', [
+      'async function getWeather(city) {',
+      '  const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${city}`);',
+      '  return res.json();',
+      '}',
+      'module.exports = { getWeather };',
+      '',
+    ].join('\n'));
+    commitAll(dir, 'hava durumu');
+
+    const result = gate(dir);
+    expect(result.verdict).not.toBe('BLOCK');
+    expect(codes(result)).not.toContain('CHARTER_VIOLATION');
+    // Yeni dış kaynak yine de insana gösterilir.
+    expect(codes(result)).toContain('NEW_EXTERNAL_HOST');
+  });
+
+  it('ödeme/broker entegrasyonu BLOKLANIR', () => {
+    const dir = makeRepo();
+    seedRepo(dir);
+    write(dir, 'src/pay.cjs', 'const stripe = require("stripe")(key);\nmodule.exports = stripe;\n');
+    commitAll(dir, 'odeme');
+
+    expect(gate(dir).verdict).toBe('BLOCK');
+    expect(codes(gate(dir))).toContain('CHARTER_VIOLATION');
+  });
+
+  it('zamanlanmış iş insan incelemesi ister, bloklamaz', () => {
+    const dir = makeRepo();
+    seedRepo(dir);
+    write(dir, 'src/tick.cjs', "cron.schedule('0 9 * * *', run);\n");
+    commitAll(dir, 'zamanlanmis is');
+
+    const result = gate(dir);
+    expect(result.verdict).toBe('REVIEW');
+    expect(codes(result)).toContain('CHARTER_REVIEW');
+  });
+
+  it('test fixture\'ındaki kalıp üretim ihlali sayılmaz', () => {
+    const dir = makeRepo();
+    seedRepo(dir);
+    // Kalıplar string literali içinde — çalışan kod değil.
+    write(dir, 'tests/ornek.test.mjs', [
+      "it('yakalar', () => {",
+      "  expect(collect([\"await api.post('/2/tweets')\"]).externalWrite).toBe(true);",
+      '});',
+      '',
+    ].join('\n'));
+    commitAll(dir, 'test fixture');
+
+    const result = gate(dir);
+    expect(codes(result)).not.toContain('CHARTER_VIOLATION');
+  });
+});
+
 describe('karar önceliği', () => {
   it('BLOCK ve REVIEW birlikteyse sonuç BLOCK olur', () => {
     const dir = makeRepo();

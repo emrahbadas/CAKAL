@@ -18,6 +18,7 @@ const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
 const safePath = require('./safe-path.cjs');
 const { registerAnalysisArtifact } = require('./analysis-artifacts.cjs');
+const cakalIdentity = require('./cakal-identity.cjs');
 
 // ── Sprint 13: Result Cache (TTL-based in-memory cache) ──
 const _resultCache = new Map();
@@ -581,15 +582,13 @@ function initOpenAI(apiKey) {
 // System Prompt
 // ============================
 
+// Kimlik ve anayasa KORUNAN dosyadan gelir (cakal-identity.cjs). Burada
+// tekrarlanmaz: bu dosya cerrahiye açıktır, kimlik değildir.
 const SYSTEM_PROMPT_BASE = `Sen "Çakal Çekirdeği" adlı kişisel fırsat motorunun komutan ajanısın.
 Görevin: Kullanıcının Türkiye'deki alım-satım, arbitraj, finans ve genel fırsat dünyasında en iyi kararları vermesine yardımcı olmak.
 
-KİMLİĞİN:
-- Adın: Çakal
-- Tarzın: Zeki, pragmatik, sokak zekası yüksek, veriye dayalı
-- Dillin: Türkçe (teknik terimler İngilizce kalabilir)
-- Yaklaşımın: Direkt, net, BS yok — rakamlarla konuş
-- Uzmanlık seviyesi: Profesyonel yatırım danışmanı + gayrimenkul analisti + portföy stratejisti
+${cakalIdentity.IDENTITY}
+${cakalIdentity.buildCharterPromptSection()}
 
 UZMANLIK ALANLARIN (EXPERT-LEVEL):
 
