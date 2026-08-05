@@ -211,6 +211,84 @@ function evaluateUngovernedRankingGate(message, response, events = []) {
   };
 }
 
+// ── Yönlendirilmemiş yetenek talebi kapısı ────────────────────────────
+// GERÇEK VAKA: "kaynak kodunda README'ye bir bölüm ekle" isteğinde ÇAKAL
+// write_project_file ile doğrudan yazmayı denedi, sandbox duvarına çarptı ve
+// "yapamıyorum, istersen sandbox'a yazayım" dedi. propose_surgical_change'i
+// HİÇ çağırmadı. Cerrahi hat elinin altındayken kullanıcıya ölü dosya teklif
+// etti.
+//
+// Kural: cevap bir kaynak-kod/yetenek işi üstlendiğini ya da reddettiğini
+// gösteriyorsa, arkasında bir YÖNLENDİRME olmalı:
+//   - propose_surgical_change  (Kademe 2 — cerrahi hat)
+//   - register_sandbox_plugin  (Kademe 1 — veri kaynağı)
+//   - run_sandbox_plugin       (zaten kurulu yetenek kullanıldı)
+// Hiçbiri yoksa istek boşa düşmüştür → blokla ve doğru yola çevir.
+
+// Çekirdek dosyaya yazma denemesinin duvara çarptığını gösteren imza.
+const CORE_WRITE_BLOCKED_RE = /GÜVENLİK:.*(yolu korumalı|korumalı alanda)/i;
+
+// Cevabın sandbox'a "çözüm" diye dosya yazmayı önerdiğini gösteren imza.
+const DEAD_SANDBOX_OFFER_RE = /\.cakal-sandbox\/(tools|skills|workflows|prompts)\//i;
+
+const SURGICAL_ROUTING_TOOLS = new Set([
+  'propose_surgical_change',
+  'register_sandbox_plugin',
+  'run_sandbox_plugin',
+  'apply_capability_plan',
+]);
+
+/** Cevap bir kaynak kod / yetenek işini üstleniyor ya da reddediyor mu? */
+function responseClaimsCapabilityWork(response = '') {
+  const text = String(response || '');
+  if (!text.trim()) return false;
+  return CORE_WRITE_BLOCKED_RE.test(text)
+    || DEAD_SANDBOX_OFFER_RE.test(text)
+    || /(kaynak kod|çekirdek dosya).{0,40}(yaz|değiştir|düzenle)/i.test(text)
+    || /(yazma yetkim yok|yazamıyorum|yazamam).{0,80}(sandbox|korumalı)/i.test(text);
+}
+
+/**
+ * ÇIKIŞ KAPISI — kaynak kod isteği boşa düşmesin.
+ * Aktivite log'u tool_call olaylarından okunur; cevap metnindeki iddia yetmez.
+ */
+function evaluateUnroutedCapabilityGate(message, response, events = []) {
+  if (isCommanderProductMarketplaceMessage(message)) return null;
+  if (!responseClaimsCapabilityWork(response)) return null;
+
+  const usedTools = extractCommanderToolNames(events);
+  if (usedTools.some((tool) => SURGICAL_ROUTING_TOOLS.has(tool))) return null;
+
+  const offeredDeadFile = DEAD_SANDBOX_OFFER_RE.test(String(response || ''));
+  const reason = offeredDeadFile
+    ? 'Kaynak kod isteği sandbox dosyasına yönlendirildi; o dosyaları çalışma zamanında hiçbir şey okumaz.'
+    : 'Kaynak kod isteği hiçbir yola yönlendirilmedi (ne cerrahi hat ne sandbox plugin).';
+
+  return {
+    status: 'BLOCKED_UNROUTED_CAPABILITY',
+    reason,
+    usedTools,
+    response: buildUnroutedCapabilityResponse(reason, usedTools),
+  };
+}
+
+function buildUnroutedCapabilityResponse(reason, usedTools) {
+  const toolNote = usedTools.length > 0 ? usedTools.join(', ') : 'yok';
+  return [
+    '## Bu istek cerrahi bakım gerektiriyor',
+    '',
+    `**Sebep:** ${reason}`,
+    `**Çalışan araçlar:** ${toolNote}`,
+    '',
+    'Kaynak kod değişikliğini ben yapmam — kodlama ajanı (GitHub Copilot) yapar.',
+    'Sandbox\'a dosya yazmak çözüm değildir: o dosyaları çalışma zamanında hiçbir şey okumaz.',
+    '',
+    '**Doğru yol:** `propose_surgical_change` ile talebi kaydet, sonra kullanıcı',
+    'sol menüdeki **Cerrahi Bakım** ekranından başlatsın. Orada değişikliğin diff\'ini',
+    'görüp onaylayacak.',
+  ].join('\n');
+}
+
 function buildUngovernedRankingResponse(reason, usedTools) {
   const toolNote = usedTools.length > 0 ? usedTools.join(', ') : 'yok';
   return [
@@ -630,7 +708,11 @@ module.exports = {
   evaluateCommanderDecisionGate,
   evaluateEarningsPricingGate,
   evaluateUngovernedRankingGate,
+  evaluateUnroutedCapabilityGate,
   evaluateRiskGate,
+  responseClaimsCapabilityWork,
+  buildUnroutedCapabilityResponse,
+  SURGICAL_ROUTING_TOOLS,
   responseContainsEquityRanking,
   buildUngovernedRankingResponse,
   COMMANDER_RANKING_REQUEST_RE,

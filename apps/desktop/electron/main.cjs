@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const cron = require('node-cron');
 const { initOpenAI, chat, multiSourceSearch, resetConversation, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
-const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
+const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
 const { runDeterministicAgent } = require('./deterministic-agents.cjs');
 const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
@@ -1015,10 +1015,17 @@ surgerySession.onEvent((event) => {
   }
 });
 
+// Son bilinen kimlik durumu. ÇAKAL'a her turda bildirilir; her sohbet turunda
+// CLI başlatıp sormak pahalı olurdu.
+let lastSurgeryAuth = false;
+
 ipcMain.handle('surgery:auth-status', async () => {
   try {
-    return { success: true, ...(await surgerySession.checkAuth()) };
+    const result = await surgerySession.checkAuth();
+    lastSurgeryAuth = Boolean(result.authenticated);
+    return { success: true, ...result };
   } catch (err) {
+    lastSurgeryAuth = false;
     return { success: false, authenticated: false, error: err.message };
   }
 });
@@ -1343,7 +1350,19 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
       commanderEmitActivity({ type: 'agent_start', agent: 'commander', message: payload.message, timestamp: Date.now() });
 
       // Build dynamic profile context for system prompt injection
-      let profileContext = {};
+      // Cerrahi hattın durumu her turda bildirilir: ÇAKAL bağlantı yokken
+      // kullanıcıyı önce bağlanmaya yönlendirebilsin, çalışan cerrahi varken
+      // ikinci başlatma vaadinde bulunmasın.
+      const surgeryContext = (() => {
+        try {
+          const s = surgerySession.getStatus();
+          return { status: s.status, pendingCount: s.pendingCount, authenticated: lastSurgeryAuth };
+        } catch {
+          return null;
+        }
+      })();
+
+      let profileContext = { surgery: surgeryContext };
       if (supabaseClient) {
         try {
           commanderEmitActivity({ type: 'db_fetch', detail: 'Profil ve strateji verileri alınıyor...', timestamp: Date.now() });
@@ -1420,6 +1439,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             openGaps,
             pendingProposals,
             pendingPromotions,
+            surgery: surgeryContext,
           };
 
           commanderEmitActivity({
@@ -1520,6 +1540,52 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         });
         response = gateResult.response;
       } else {
+        // Yönlendirilmemiş yetenek kilidi (ÇIKIŞ TARAFI):
+        // Kaynak kod isteği ne cerrahi hatta ne sandbox plugin'e yönlendirildiyse
+        // istek boşa düşmüştür. Gerçek vaka: README isteği duvara çarptı, ÇAKAL
+        // "sandbox'a yazayım mı" dedi — o dosyaları hiçbir şey okumaz.
+        let routingLock = evaluateUnroutedCapabilityGate(payload.message, response, commanderActivityLog);
+        if (routingLock) {
+          commanderEmitActivity({
+            type: 'decision_gate',
+            agent: 'commander',
+            detail: 'YÖNLENDİRİLMEMİŞ YETENEK: kaynak kod isteği boşa düştü. Cerrahi hatta devretme denemesi başlatılıyor (1 kez).',
+            timestamp: Date.now(),
+          });
+
+          const routingCompletionMessage = [
+            payload.message || '',
+            '',
+            '[ÇEKİRDEK ZORUNLULUK — KADEME 2 YÖNLENDİRME]',
+            'Önceki cevabında kaynak kod değişikliği gereken bir isteği hiçbir yola yönlendirmedin.',
+            'Kaynak koda YAZAMAZSIN; sandbox dosyası yazmak da çözüm değildir (o dosyaları hiçbir şey okumaz).',
+            'Şimdi propose_surgical_change çağır: original_user_request alanına kullanıcının talebini',
+            'DEĞİŞTİRMEDEN koy, kısa bir başlık ve gerekçe ver.',
+            'Sonra kullanıcıya Cerrahi Bakım ekranından başlatmasını söyle.',
+          ].join('\n');
+
+          response = await chat(routingCompletionMessage, {
+            perplexityKey: process.env.PERPLEXITY_API_KEY,
+            supabaseClient,
+            profileContext,
+            onActivity: commanderEmitActivity,
+            registerSurgicalRequest: surgerySession.registerRequest,
+            telegramService: telegram,
+            telegramReader: telegramReader,
+          });
+
+          routingLock = evaluateUnroutedCapabilityGate(payload.message, response, commanderActivityLog);
+          if (routingLock) {
+            commanderEmitActivity({
+              type: 'decision_gate',
+              agent: 'commander',
+              detail: `${routingLock.status}: ${routingLock.reason}`,
+              timestamp: Date.now(),
+            });
+            response = routingLock.response;
+          }
+        }
+
         // Yönetilmemiş sıralama kilidi (ÇIKIŞ TARAFI):
         // Giriş niyeti regex'i Türkçe'nin ifade çeşitliliğinde kaçabilir
         // ("ensağlam", "top 5 aday", "bunlardan hangileri?"). Bu kapı kullanıcı
