@@ -1263,6 +1263,23 @@ function buildDynamicSystemPrompt(profileContext = {}) {
     if (surgery.status === 'RUNNING') {
       prompt += `\n- Şu an bir cerrahi çalışıyor; yeni cerrahi talebi kaydedebilirsin ama başlatılamayacağını söyle.`;
     }
+
+    // Merge bekleyen cerrahi dallar.
+    // Bir dosyanın içeriği sorulduğunda diskteki hâli okunur — bekleyen daldaki
+    // değişiklik ORADA GÖRÜNMEZ. "Yok" demek teknik olarak doğru ama eksik
+    // cevaptır; bekleyen iş varsa mutlaka söylenmeli.
+    const awaiting = Array.isArray(surgery.awaitingMerge) ? surgery.awaitingMerge : [];
+    if (awaiting.length > 0) {
+      prompt += `\n\nMERGE BEKLEYEN CERRAHİ DALLAR (${awaiting.length}):`;
+      for (const b of awaiting) {
+        prompt += `\n- ${b.branch}: ${b.subject}`;
+      }
+      prompt += `\n- ÖNEMLİ: Bu dallardaki değişiklikler henüz ana koda İNMEDİ. Dosya okuduğunda`
+        + ` diskteki (merge edilmemiş) hâli görürsün.`
+        + `\n- Kullanıcı bir içeriğin var olup olmadığını sorarsa: dosyada ne gördüğünü söyle,`
+        + ` AMA ilgili bir dal merge bekliyorsa bunu da belirt ve Cerrahi Bakım'dan onaylayabileceğini ekle.`
+        + `\n- "Yok" deyip susma; eksik tablo yanıltıcıdır.`;
+    }
   }
 
   if (profile) {

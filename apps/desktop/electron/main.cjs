@@ -1379,7 +1379,25 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
       const surgeryContext = (() => {
         try {
           const s = surgerySession.getStatus();
-          return { status: s.status, pendingCount: s.pendingCount, authenticated: lastSurgeryAuth };
+          // Bekleyen cerrahi dallar da bildirilir.
+          // GEREKÇE (canlı test): kullanıcı "README'de hello çakal var mı?"
+          // diye sordu; ÇAKAL dosyayı okuyup doğru şekilde "yok" dedi — ama
+          // değişiklik bir cerrahi dalda merge bekliyordu. Cevap teknik olarak
+          // doğru, tablo olarak eksikti. ÇAKAL bekleyen işi bilmeli.
+          let branches = [];
+          try {
+            branches = surgeryReview.listSurgicalBranches().slice(0, 5).map((b) => ({
+              branch: b.branch,
+              subject: b.subject,
+            }));
+          } catch { /* git erişilemezse boş geç */ }
+
+          return {
+            status: s.status,
+            pendingCount: s.pendingCount,
+            authenticated: lastSurgeryAuth,
+            awaitingMerge: branches,
+          };
         } catch {
           return null;
         }
