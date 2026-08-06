@@ -8,7 +8,7 @@
 // açık onay verdiğinde merge eder ve BLOCK durumunda onayı bile kabul etmez.
 
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 
 const PREFLIGHT_SCRIPT = path.resolve(__dirname, '../../../../scripts/preflight.cjs');
 const MAX_DIFF_BYTES = 400 * 1024;
@@ -41,35 +41,75 @@ function listSurgicalBranches(cwd = repoRoot()) {
  * değiştiremez.
  * @returns {{verdict:string, exitCode:number, findings:object[], stats:object, ...}}
  */
-function runPreflight({ base = 'main', head, verify = false, cwd = repoRoot() } = {}) {
-  if (!head) throw new Error('head (cerrahi dal) zorunlu.');
+function preflightErrorResult(message) {
+  return {
+    verdict: 'ERROR',
+    exitCode: 3,
+    findings: [{ severity: 'BLOCK', code: 'PREFLIGHT_ERROR', message }],
+    stats: { filesChanged: 0, insertions: 0, deletions: 0 },
+    checks: {},
+    files: [],
+  };
+}
+
+/**
+ * Preflight'ı ASENKRON çalıştırır.
+ *
+ * NEDEN SENKRON DEĞİL: burası Electron main process'i. `--verify` ile
+ * `npm test` + `typecheck` çalışıyor ve bu 60+ saniye sürüyor. execFileSync
+ * kullanıldığında main process tamamen bloke oluyordu: pencere donuyor,
+ * render durmuyor, IPC cevap vermiyor. Kullanıcı bunu "Electron kasıyor"
+ * diye bildirdi — haklıydı.
+ *
+ * spawn + stream toplama ile main process yanıt vermeye devam eder.
+ */
+function runPreflight({ base = 'main', head, verify = false, cwd = repoRoot(), timeoutMs = 10 * 60 * 1000 } = {}) {
+  if (!head) return Promise.reject(new Error('head (cerrahi dal) zorunlu.'));
   const args = [PREFLIGHT_SCRIPT, '--base', base, '--head', head, '--json'];
   if (verify) args.push('--verify');
 
-  try {
-    const out = execFileSync(process.execPath, args, {
-      cwd,
-      encoding: 'utf-8',
-      windowsHide: true,
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    return JSON.parse(out);
-  } catch (err) {
-    // preflight BLOCK/REVIEW durumunda sıfır olmayan kod döner; çıktı yine JSON.
-    const stdout = err.stdout || '';
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    let child;
     try {
-      return JSON.parse(stdout);
-    } catch {
-      return {
-        verdict: 'ERROR',
-        exitCode: 3,
-        findings: [{ severity: 'BLOCK', code: 'PREFLIGHT_ERROR', message: err.message }],
-        stats: { filesChanged: 0, insertions: 0, deletions: 0 },
-        checks: {},
-        files: [],
-      };
+      child = spawn(process.execPath, args, { cwd, windowsHide: true });
+    } catch (err) {
+      finish(preflightErrorResult(`Preflight başlatılamadı: ${err.message}`));
+      return;
     }
-  }
+
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* yoksay */ }
+      finish(preflightErrorResult('Preflight zaman aşımına uğradı.'));
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk) => { stderr += chunk; });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      finish(preflightErrorResult(`Preflight hatası: ${err.message}`));
+    });
+
+    child.on('close', () => {
+      clearTimeout(timer);
+      // BLOCK/REVIEW durumunda çıkış kodu sıfır değildir ama çıktı yine JSON'dur.
+      try {
+        finish(JSON.parse(stdout));
+      } catch {
+        finish(preflightErrorResult(stderr.trim() || 'Preflight çıktısı okunamadı.'));
+      }
+    });
+  });
 }
 
 /** İnsan incelemesi için diff. Büyük diff'ler kırpılır (UI'yı boğmasın). */
@@ -100,13 +140,13 @@ function getFileDiff({ base = 'main', head, file, cwd = repoRoot() } = {}) {
  *   2. preflight BLOCK vermemiş olmalı
  * REVIEW durumunda kullanıcı onayı yeterlidir; BLOCK'ta onay bile geçersizdir.
  */
-function approveAndMerge({ base = 'main', head, approved, cwd = repoRoot(), verify = true } = {}) {
+async function approveAndMerge({ base = 'main', head, approved, cwd = repoRoot(), verify = true } = {}) {
   if (approved !== true) {
     return { merged: false, reason: 'NOT_APPROVED', message: 'Kullanıcı onayı olmadan merge yapılmaz.' };
   }
   if (!head) throw new Error('head zorunlu.');
 
-  const gate = runPreflight({ base, head, verify, cwd });
+  const gate = await runPreflight({ base, head, verify, cwd });
   if (gate.verdict === 'BLOCK' || gate.verdict === 'ERROR') {
     return {
       merged: false,

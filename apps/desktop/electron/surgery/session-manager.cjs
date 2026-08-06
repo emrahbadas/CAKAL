@@ -35,6 +35,11 @@ const STATUS = Object.freeze({
 
 const MAX_PENDING = 20;
 
+// Cerrahi için varsayılan model. "auto" bilinçli olarak SEÇİLMEDİ: kod
+// kalitesi cerrahi işin tamamını belirliyor, model kararı şansa bırakılmamalı.
+// Kullanıcı UI'dan değiştirebilir; liste hesabın aboneliğine göre gelir.
+const DEFAULT_SURGERY_MODEL = 'claude-sonnet-5';
+
 function createSessionManager(options = {}) {
   const repoRoot = options.repoRoot || path.resolve(__dirname, '../../../..');
   const surgeonFactory = typeof options.surgeonFactory === 'function'
@@ -106,6 +111,20 @@ function createSessionManager(options = {}) {
    * ham hâlleriyle akışta "bağlandı → koptu" gibi görünüp kullanıcıya bağlantı
    * düşüyormuş izlenimi veriyordu.
    */
+  /** Kullanılabilir model listesi (UI seçimi için). */
+  async function listModels() {
+    const surgeon = surgeonFactory({ onEvent: () => {} });
+    try {
+      await surgeon.connect();
+      const models = typeof surgeon.listModels === 'function' ? await surgeon.listModels() : [];
+      return { ok: true, models, defaultModel: DEFAULT_SURGERY_MODEL };
+    } catch (err) {
+      return { ok: false, models: [], defaultModel: DEFAULT_SURGERY_MODEL, error: err?.message || 'model listesi alınamadı' };
+    } finally {
+      try { await surgeon.disconnect(); } catch { /* yoksay */ }
+    }
+  }
+
   async function checkAuth() {
     emit({ type: 'auth_check_started' });
     const surgeon = surgeonFactory({
@@ -247,6 +266,7 @@ function createSessionManager(options = {}) {
         worktreePath: worktree.worktreePath,
         prompt: buildSurgeryPrompt(changeRequest),
         timeoutMs: opts.timeoutMs,
+        model: opts.model || DEFAULT_SURGERY_MODEL,
       });
 
       status = STATUS.AWAITING_REVIEW;
@@ -322,6 +342,8 @@ function createSessionManager(options = {}) {
     listRequests,
     getStatus,
     checkAuth,
+    listModels,
+    DEFAULT_SURGERY_MODEL,
     startLogin,
     cancelLogin,
     startSurgery,

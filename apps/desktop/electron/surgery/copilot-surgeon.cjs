@@ -159,11 +159,16 @@ class CopilotSurgeon {
       },
     });
 
-    this._session = await this._client.createSession({
+    // Model AÇIKÇA seçilir. Varsayılan "auto" idi; kod kalitesi cerrahi
+    // işin tamamını belirlediği için model kararı şansa bırakılmamalı.
+    const sessionConfig = {
       workingDirectory: worktreePath,
       onPermissionRequest: handler,
-    });
-    this._emit('surgeon_session', `oturum açıldı (${changeRequest?.changeRequestId || 'CR-?'})`);
+    };
+    if (params.model) sessionConfig.model = params.model;
+
+    this._session = await this._client.createSession(sessionConfig);
+    this._emit('surgeon_session', `oturum açıldı (${changeRequest?.changeRequestId || 'CR-?'}) · model: ${params.model || 'auto'}`);
 
     const unsubscribe = this._session.on((event) => {
       eventCounts[event.type] = (eventCounts[event.type] || 0) + 1;
@@ -186,6 +191,13 @@ class CopilotSurgeon {
     if (status === 'COMPLETED' && rejected > 0) status = 'COMPLETED_WITH_DENIALS';
 
     return { status, decisions: this._decisions.slice(), reply, eventCounts, rejectedCount: rejected };
+  }
+
+  /** Kullanılabilir modelleri listeler (UI seçimi için). */
+  async listModels() {
+    if (!this._client) throw new Error('Önce connect() çağrılmalı.');
+    const models = await this._client.listModels();
+    return (models || []).map((m) => ({ id: m.id || m.name, name: m.name || m.id }));
   }
 
   async abort() {

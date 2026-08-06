@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('cakalAPI', {
   surgeryLoginCancel: () => ipcRenderer.invoke('surgery:login-cancel'),
   surgeryOpenDevicePage: () => ipcRenderer.invoke('surgery:open-device-page'),
   surgerySessionStatus: () => ipcRenderer.invoke('surgery:session-status'),
+  surgeryListModels: () => ipcRenderer.invoke('surgery:list-models'),
   surgeryListRequests: () => ipcRenderer.invoke('surgery:list-requests'),
   surgeryStart: (payload) => ipcRenderer.invoke('surgery:start', payload),
   surgeryAbort: () => ipcRenderer.invoke('surgery:abort'),

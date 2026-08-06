@@ -60,7 +60,7 @@ afterAll(() => {
 });
 
 describe('cerrahi dal listesi', () => {
-  it('yalnız cakal/feature-* dallarını döner', () => {
+  it('yalnız cakal/feature-* dallarını döner', async () => {
     const dir = makeRepo();
     surgicalBranch(dir, 'CR-001', (d) => fs.writeFileSync(path.join(d, 'a.ts'), 'export const a = 1;\n'));
     git(['branch', 'alakasiz-dal'], dir);
@@ -71,34 +71,34 @@ describe('cerrahi dal listesi', () => {
 });
 
 describe('kapı çalıştırma', () => {
-  it('temiz pakette PASS döner', () => {
+  it('temiz pakette PASS döner', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-temiz', (d) =>
       fs.writeFileSync(path.join(d, 'src.ts'), 'export const x = 1;\n'));
 
-    const gate = review.runPreflight({ head: branch, cwd: dir });
+    const gate = await review.runPreflight({ head: branch, cwd: dir });
     expect(gate.verdict).toBe('PASS');
     expect(gate.exitCode).toBe(0);
     expect(gate.stats.filesChanged).toBe(1);
   });
 
-  it('korunan dosyaya dokunan pakette BLOCK döner', () => {
+  it('korunan dosyaya dokunan pakette BLOCK döner', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-kotu', (d) =>
       fs.writeFileSync(path.join(d, 'apps/desktop/electron/command-guard.cjs'), '// devre disi\n'));
 
-    const gate = review.runPreflight({ head: branch, cwd: dir });
+    const gate = await review.runPreflight({ head: branch, cwd: dir });
     expect(gate.verdict).toBe('BLOCK');
     expect(gate.findings.map((f) => f.code)).toContain('PROTECTED_PATH');
   });
 
-  it('head verilmezse hata verir', () => {
-    expect(() => review.runPreflight({ cwd: makeRepo() })).toThrow(/head/i);
+  it('head verilmezse hata verir', async () => {
+    await expect(review.runPreflight({ cwd: makeRepo() })).rejects.toThrow(/head/i);
   });
 });
 
 describe('diff getirme', () => {
-  it('değişiklikleri döner', () => {
+  it('değişiklikleri döner', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-diff', (d) =>
       fs.writeFileSync(path.join(d, 'yeni.ts'), 'export const y = 2;\n'));
@@ -123,30 +123,30 @@ describe('diff getirme', () => {
 });
 
 describe('onaylı merge — güvenlik güvenceleri', () => {
-  it('onay olmadan merge YAPMAZ', () => {
+  it('onay olmadan merge YAPMAZ', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-onaysiz', (d) =>
       fs.writeFileSync(path.join(d, 'x.ts'), 'export const x = 1;\n'));
 
-    const res = review.approveAndMerge({ head: branch, approved: false, cwd: dir, verify: false });
+    const res = await review.approveAndMerge({ head: branch, approved: false, cwd: dir, verify: false });
     expect(res.merged).toBe(false);
     expect(res.reason).toBe('NOT_APPROVED');
   });
 
-  it('approved alanı eksikse merge YAPMAZ', () => {
+  it('approved alanı eksikse merge YAPMAZ', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-eksik', (d) =>
       fs.writeFileSync(path.join(d, 'x.ts'), 'export const x = 1;\n'));
 
-    expect(review.approveAndMerge({ head: branch, cwd: dir, verify: false }).merged).toBe(false);
+    expect((await review.approveAndMerge({ head: branch, cwd: dir, verify: false })).merged).toBe(false);
   });
 
-  it('KAPI BLOKE ETTİYSE kullanıcı onayı bile merge açmaz', () => {
+  it('KAPI BLOKE ETTİYSE kullanıcı onayı bile merge açmaz', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-bloke', (d) =>
       fs.writeFileSync(path.join(d, 'apps/desktop/electron/command-guard.cjs'), '// devre disi\n'));
 
-    const res = review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
+    const res = await review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
     expect(res.merged).toBe(false);
     expect(res.reason).toBe('GATE_BLOCKED');
     expect(res.gate.verdict).toBe('BLOCK');
@@ -156,47 +156,47 @@ describe('onaylı merge — güvenlik güvenceleri', () => {
     expect(onMain).not.toContain('devre disi');
   });
 
-  it('kirli çalışma ağacında merge YAPMAZ', () => {
+  it('kirli çalışma ağacında merge YAPMAZ', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-kirli', (d) =>
       fs.writeFileSync(path.join(d, 'x.ts'), 'export const x = 1;\n'));
     fs.writeFileSync(path.join(dir, 'kirli.txt'), 'commit edilmemis\n', 'utf-8');
 
-    const res = review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
+    const res = await review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
     expect(res.merged).toBe(false);
     expect(res.reason).toBe('DIRTY_WORKTREE');
   });
 
-  it('yanlış dalda merge YAPMAZ', () => {
+  it('yanlış dalda merge YAPMAZ', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-yanlis', (d) =>
       fs.writeFileSync(path.join(d, 'x.ts'), 'export const x = 1;\n'));
     git(['checkout', '-b', 'baska-dal'], dir);
 
-    const res = review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
+    const res = await review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
     expect(res.merged).toBe(false);
     expect(res.reason).toBe('WRONG_BRANCH');
   });
 
-  it('temiz paketi onayla merge eder ve geri dönüş noktası verir', () => {
+  it('temiz paketi onayla merge eder ve geri dönüş noktası verir', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-iyi', (d) =>
       fs.writeFileSync(path.join(d, 'ozellik.ts'), 'export const ozellik = true;\n'));
     const beforeHead = git(['rev-parse', 'HEAD'], dir).trim();
 
-    const res = review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
+    const res = await review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
     expect(res.merged).toBe(true);
     expect(res.previousHead).toBe(beforeHead);
     expect(res.rollbackCommand).toContain(beforeHead);
     expect(fs.existsSync(path.join(dir, 'ozellik.ts'))).toBe(true);
   });
 
-  it('geri dönüş komutu gerçekten çalışır', () => {
+  it('geri dönüş komutu gerçekten çalışır', async () => {
     const dir = makeRepo();
     const branch = surgicalBranch(dir, 'CR-rollback', (d) =>
       fs.writeFileSync(path.join(d, 'gecici.ts'), 'export const g = 1;\n'));
 
-    const res = review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
+    const res = await review.approveAndMerge({ head: branch, approved: true, cwd: dir, verify: false });
     expect(res.merged).toBe(true);
     expect(fs.existsSync(path.join(dir, 'gecici.ts'))).toBe(true);
 

@@ -1060,9 +1060,31 @@ ipcMain.handle('surgery:open-device-page', async () => {
   }
 });
 
+ipcMain.handle('surgery:list-models', async () => {
+  try {
+    return { success: true, ...(await surgerySession.listModels()) };
+  } catch (err) {
+    return { success: false, models: [], error: err.message };
+  }
+});
+
+// Durum main'de yaşar: sekme değişince React bileşeni unmount olup state'ini
+// kaybediyordu ve kullanıcıya "süreç durdu" gibi görünüyordu. Ekran artık
+// açılışta buradan hidrasyon yapar. Olay tamponu da burada tutulur.
+const surgeryEventBuffer = [];
+surgerySession.onEvent((event) => {
+  surgeryEventBuffer.push(event);
+  if (surgeryEventBuffer.length > 200) surgeryEventBuffer.shift();
+});
+
 ipcMain.handle('surgery:session-status', async () => {
   try {
-    return { success: true, ...surgerySession.getStatus() };
+    return {
+      success: true,
+      ...surgerySession.getStatus(),
+      authenticated: lastSurgeryAuth,
+      events: surgeryEventBuffer.slice(-60),
+    };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1083,6 +1105,7 @@ ipcMain.handle('surgery:start', async (_event, payload = {}) => {
     }
     const result = await surgerySession.startSurgery(payload.changeRequestId, {
       timeoutMs: payload.timeoutMs,
+      model: payload.model,
     });
     return { success: result.ok !== false, ...result };
   } catch (err) {
@@ -1111,7 +1134,7 @@ ipcMain.handle('surgery:list-branches', async () => {
 
 ipcMain.handle('surgery:preflight', async (_event, payload = {}) => {
   try {
-    const gate = surgeryReview.runPreflight({
+    const gate = await surgeryReview.runPreflight({
       base: payload.base || 'main',
       head: payload.head,
       verify: payload.verify === true,
@@ -1138,7 +1161,7 @@ ipcMain.handle('surgery:diff', async (_event, payload = {}) => {
 
 ipcMain.handle('surgery:approve-merge', async (_event, payload = {}) => {
   try {
-    const result = surgeryReview.approveAndMerge({
+    const result = await surgeryReview.approveAndMerge({
       base: payload.base || 'main',
       head: payload.head,
       approved: payload.approved === true,

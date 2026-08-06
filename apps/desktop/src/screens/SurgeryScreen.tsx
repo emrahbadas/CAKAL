@@ -83,7 +83,10 @@ export default function SurgeryScreen() {
   const [diffNote, setDiffNote] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [verify, setVerify] = useState(true);
+  // Varsayılan KAPALI: açıkken dala tıklamak npm test + typecheck tetikliyor
+  // ve bu ~1 dakika sürüyor. Kullanıcı hızlı bakmak isteyebilmeli; ağır
+  // doğrulama merge anında zaten zorunlu olarak koşuyor.
+  const [verify, setVerify] = useState(false);
 
   // ── Cerrahi oturum durumu ──
   const [auth, setAuth] = useState<{ checked: boolean; authenticated: boolean; error?: string }>({ checked: false, authenticated: false });
@@ -92,7 +95,12 @@ export default function SurgeryScreen() {
   const [events, setEvents] = useState<SurgeryEvent[]>([]);
   const [loginCode, setLoginCode] = useState<{ code: string; url: string } | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
+  const [model, setModel] = useState<string>('');
 
+  // Durum main process'te yaşar; bileşen açılışta ORADAN hidrasyon yapar.
+  // Aksi halde sekme değiştirince state sıfırlanıyor ve kullanıcıya süreç
+  // durmuş gibi görünüyordu (gerçekte main'de çalışmaya devam ediyordu).
   const loadSession = useCallback(async () => {
     const [reqRes, statusRes] = await Promise.all([
       api()?.surgeryListRequests(),
@@ -100,6 +108,20 @@ export default function SurgeryScreen() {
     ]);
     setRequests(reqRes?.requests || []);
     setSessionStatus(statusRes?.status || 'IDLE');
+    if (statusRes?.authenticated !== undefined) {
+      setAuth({ checked: true, authenticated: Boolean(statusRes.authenticated) });
+    }
+    if (Array.isArray(statusRes?.events) && statusRes.events.length > 0) {
+      setEvents(statusRes.events);
+    }
+  }, []);
+
+  const loadModels = useCallback(async () => {
+    const res = await api()?.surgeryListModels();
+    if (res?.models?.length) {
+      setModels(res.models);
+      setModel((current) => current || res.defaultModel || res.models[0].id);
+    }
   }, []);
 
   const checkAuth = useCallback(async () => {
@@ -152,6 +174,7 @@ export default function SurgeryScreen() {
   }, [loadSession]);
 
   useEffect(() => { loadSession(); }, [loadSession]);
+  useEffect(() => { if (auth.authenticated && models.length === 0) loadModels(); }, [auth.authenticated, models.length, loadModels]);
 
   const abortSurgery = useCallback(async () => {
     await api()?.surgeryAbort();
@@ -187,7 +210,7 @@ export default function SurgeryScreen() {
     setEvents([]);
     setBusy('Cerrahi çalışıyor — bu birkaç dakika sürebilir...');
     try {
-      const res = await api()?.surgeryStart({ changeRequestId });
+      const res = await api()?.surgeryStart({ changeRequestId, model: model || undefined });
       if (res?.success) {
         setMessage(`Cerrahi tamamlandı: ${res.branch} — ${res.surgeonStatus} (${res.rejectedCount ?? 0} izin reddi). Aşağıdan incele.`);
         await loadBranches();
@@ -198,7 +221,7 @@ export default function SurgeryScreen() {
     } finally {
       setBusy(null);
     }
-  }, [loadSession, loadBranches]);
+  }, [loadSession, loadBranches, model]);
 
   const inspect = useCallback(async (branch: string) => {
     setSelected(branch);
@@ -308,6 +331,17 @@ export default function SurgeryScreen() {
               <button onClick={cancelLogin} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
                 Girişi İptal Et
               </button>
+            )}
+            {models.length > 0 && (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={sessionStatus === 'RUNNING'}
+                className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-300 disabled:opacity-50"
+                title="Cerrahın kullanacağı model"
+              >
+                {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
             )}
             <button onClick={checkAuth} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
               Bağlantıyı Kontrol Et
