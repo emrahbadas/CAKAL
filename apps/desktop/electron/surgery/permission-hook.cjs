@@ -24,8 +24,54 @@ const {
   toRepoRelative,
 } = require('./protected-paths.cjs');
 
+// isAllowedReadEscape aşağıda isSecretPath'i kullanır; import sırası önemli.
+
 const reject = (feedback) => ({ kind: 'reject', feedback });
 const approve = () => ({ kind: 'approve-once' });
+
+// ── Çalışma alanı dışı OKUMA istisnaları ────────────────────────────────
+// Git worktree'nin yapısal gerçeği: `.git` bir DOSYADIR ve ana repodaki
+// `.git/worktrees/<id>` dizinini gösterir. Yani her git işlemi worktree
+// DIŞINI okumak zorundadır. Bunu topyekûn reddetmek cerrahı commit
+// yapamaz hâle getirir — canlı testte 4 kez "out-of-workspace" reddi
+// alınmasının sebebi buydu.
+//
+// Bu yüzden dar bir OKUMA istisnası tanımlanır. Yazma istisnası YOKTUR:
+// worktree dışına yazma her koşulda reddedilir.
+//
+// .env ve secret dosyaları bu listeye girmez; onlar ayrıca ve her zaman
+// reddedilir (isSecretPath).
+const READ_ESCAPE_ALLOWLIST = [
+  /(^|[/\\])\.git([/\\]|$)/i,        // git plumbing (objects, refs, worktrees)
+  /(^|[/\\])node_modules([/\\]|$)/i, // bağımlılıklar (araç çalıştırma)
+];
+
+/**
+ * MUTLAK yol için secret kontrolü.
+ *
+ * DİKKAT: isSecretPath repo-GÖRELİ yollar için yazılmıştır; `.env` deseni
+ * `^` ile başa sabitlidir. Mutlak yol verildiğinde (`/repo/node_modules/.env`)
+ * eşleşmez ve secret sızabilir — bu açığı kendi testimiz yakaladı.
+ * Bu yüzden yolun her son-ek kombinasyonu ayrıca denenir.
+ */
+function looksSecretAbsolute(absolutePath) {
+  const p = String(absolutePath || '').replace(/\\/g, '/');
+  if (!p) return false;
+  if (isSecretPath(p)) return true;
+  const parts = p.split('/').filter(Boolean);
+  for (let i = 0; i < parts.length; i += 1) {
+    if (isSecretPath(parts.slice(i).join('/'))) return true;
+  }
+  return false;
+}
+
+function isAllowedReadEscape(absolutePath) {
+  const p = String(absolutePath || '').replace(/\\/g, '/');
+  if (!p) return false;
+  // Güvenlik: istisna listesi secret kontrolünü ASLA geçersiz kılmaz.
+  if (looksSecretAbsolute(p)) return false;
+  return READ_ESCAPE_ALLOWLIST.some((pattern) => pattern.test(p));
+}
 
 /**
  * @param {object} options
@@ -37,12 +83,14 @@ function buildPermissionHandler(options = {}) {
   const worktreeRoot = options.worktreeRoot;
   const onDecision = typeof options.onDecision === 'function' ? options.onDecision : () => {};
 
-  const decide = (request, verdict, reason) => {
+  const decide = (request, verdict, reason, target) => {
     onDecision({
       kind: request?.kind,
       decision: verdict.kind,
       reason,
-      target: request?.fileName || request?.path || request?.fullCommandText || request?.toolName || null,
+      // Hedef HER ZAMAN kaydedilir: "reject" görüp neyin reddedildiğini
+      // bilememek teşhisi imkânsız kılıyordu.
+      target: target || request?.fileName || request?.path || request?.fullCommandText || request?.toolName || null,
       ts: Date.now(),
     });
     return verdict;
@@ -75,10 +123,14 @@ function buildPermissionHandler(options = {}) {
       case 'read': {
         const rel = toRepoRelative(worktreeRoot, request.path);
         if (rel === null) {
-          return decide(request, reject('Çalışma alanı dışından okuma reddedildi.'), 'out-of-workspace');
+          // Worktree dışı okuma: yalnız git plumbing ve node_modules serbest.
+          if (isAllowedReadEscape(request.path)) {
+            return decide(request, approve(), 'read-escape-allowed', request.path);
+          }
+          return decide(request, reject('Çalışma alanı dışından okuma reddedildi.'), 'out-of-workspace', request.path);
         }
         if (isSecretPath(rel)) {
-          return decide(request, reject('Secret/kimlik dosyası okunamaz.'), 'secret-read');
+          return decide(request, reject('Secret/kimlik dosyası okunamaz.'), 'secret-read', rel);
         }
         // Korunan dosyaların OKUNMASI serbest (cerrahın uyum için görmesi gerekir);
         // yazma zaten yukarıda engelli. Yalnız secret okuma kapalı.
@@ -93,13 +145,16 @@ function buildPermissionHandler(options = {}) {
         for (const p of paths) {
           const rel = toRepoRelative(worktreeRoot, p);
           if (rel === null) {
-            return decide(request, reject('Komut çalışma alanı dışına dokunuyor.'), 'shell-out-of-workspace');
+            // git worktree'de `.git` ana repoyu gösterir; komutlar zorunlu
+            // olarak dışarı bakar. Dar istisna olmadan cerrah commit atamaz.
+            if (isAllowedReadEscape(p)) continue;
+            return decide(request, reject(`Komut çalışma alanı dışına dokunuyor: ${p}`), 'shell-out-of-workspace', p);
           }
           if (isSecretPath(rel)) {
-            return decide(request, reject('Komut secret dosyasına dokunuyor.'), 'shell-secret');
+            return decide(request, reject('Komut secret dosyasına dokunuyor.'), 'shell-secret', rel);
           }
           if (isProtectedPath(rel)) {
-            return decide(request, reject('Komut korunan çekirdek dosyaya dokunuyor.'), 'shell-protected');
+            return decide(request, reject('Komut korunan çekirdek dosyaya dokunuyor.'), 'shell-protected', rel);
           }
         }
         return decide(request, approve(), 'ok');

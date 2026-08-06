@@ -155,7 +155,10 @@ class CopilotSurgeon {
       worktreeRoot: worktreePath,
       onDecision: (d) => {
         this._decisions.push(d);
-        this._emit('surgeon_permission', `${d.decision}:${d.reason}`);
+        // Hedef de yayılır: "reject" görüp neyin reddedildiğini bilememek
+        // canlı testte teşhisi imkânsız kılmıştı.
+        const target = d.target ? ` — ${String(d.target).slice(0, 120)}` : '';
+        this._emit('surgeon_permission', `${d.decision}:${d.reason}${target}`);
       },
     });
 

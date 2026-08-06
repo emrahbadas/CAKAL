@@ -143,6 +143,57 @@ describe('izin kancası — shell', () => {
   });
 });
 
+describe('çalışma alanı dışı OKUMA istisnası', () => {
+  // GEREKÇE (canlı test): git worktree'de `.git` bir DOSYADIR ve ana repodaki
+  // .git/worktrees/<id> dizinini gösterir. Topyekûn red, cerrahı commit
+  // atamaz hâle getiriyordu — 4 kez "out-of-workspace" reddi alındı.
+  const outsideGit = path.resolve('/tmp/anarepo/.git/worktrees/CR-1/HEAD');
+  const outsideNodeModules = path.resolve('/tmp/anarepo/node_modules/vitest/package.json');
+
+  it('ana repodaki .git OKUNABİLİR', () => {
+    expect(handler()(read(outsideGit)).kind).toBe('approve-once');
+  });
+
+  it('node_modules OKUNABİLİR', () => {
+    expect(handler()(read(outsideNodeModules)).kind).toBe('approve-once');
+  });
+
+  it('İSTİSNA SECRET KONTROLÜNÜ GEÇERSİZ KILMAZ', () => {
+    // En kritik test: .git/node_modules yolu gibi görünse bile secret kazanır.
+    expect(handler()(read(path.resolve('/tmp/anarepo/.git/gizli.pem'))).kind).toBe('reject');
+    expect(handler()(read(path.resolve('/tmp/anarepo/node_modules/.env'))).kind).toBe('reject');
+    expect(handler()(read(path.resolve('/tmp/anarepo/.git/id_rsa'))).kind).toBe('reject');
+  });
+
+  it('istisna dışındaki dış okuma hâlâ REDDEDİLİR', () => {
+    expect(handler()(read(path.resolve('/tmp/baska/gizli.txt'))).kind).toBe('reject');
+    expect(handler()(read(path.resolve('/tmp/anarepo/apps/x.cjs'))).kind).toBe('reject');
+  });
+
+  it('istisna YAZMA için geçerli DEĞİLDİR', () => {
+    expect(handler()(write(outsideGit)).kind).toBe('reject');
+    expect(handler()(write(outsideNodeModules)).kind).toBe('reject');
+  });
+
+  it('shell komutu .git yoluna dokunabilir (git çalışabilsin)', () => {
+    const result = handler()(shell('git commit -m "x"', [abs('README.md'), outsideGit]));
+    expect(result.kind).toBe('approve-once');
+  });
+
+  it('shell komutu istisna dışı dış yola dokunamaz', () => {
+    const result = handler()(shell('cat /tmp/baska/gizli.txt', [path.resolve('/tmp/baska/gizli.txt')]));
+    expect(result.kind).toBe('reject');
+  });
+
+  it('reddedilen HEDEF denetim kaydına yazılır (teşhis için)', () => {
+    const seen = [];
+    const target = path.resolve('/tmp/baska/gizli.txt');
+    handler((d) => seen.push(d))(read(target));
+    expect(seen[0].decision).toBe('reject');
+    expect(seen[0].target).toBe(target);
+  });
+});
+
 describe('izin kancası — sandbox bypass', () => {
   it('her türde sandbox bypass talebini reddeder', () => {
     for (const req of [
