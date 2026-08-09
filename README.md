@@ -1,5 +1,9 @@
 # 🐺 ÇAKAL — Kişisel Fırsat ve Araştırma Motoru
 
+<p align="center">
+  <img src="docs/assets/cakal-logo.png" alt="ÇAKAL Finans Asistanım" width="720">
+</p>
+
 > Kurt gibi konuşur; sermayeye yaklaşırken liman başkanı gibi evrak ister.
 
 ÇAKAL, tek kullanıcı için tasarlanmış, Electron tabanlı bir **kişisel yapay zekâ araştırma ve fırsat asistanıdır**. BIST, döviz, altın, kripto, emlak ve e-ticaret fırsatlarını çoklu kaynaktan araştırır; teknik görünüm, bilanço, haber akışı ve riskleri birlikte değerlendirir — ama yatırım kararını asla kullanıcının yerine vermez.
