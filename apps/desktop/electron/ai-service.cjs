@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // Çakal Çekirdeği — AI Service (GPT-5.4 Dynamic Model Router)
 // Sprint 1-10: Commander Agent + Advanced Tools + Self-Dev + Model Router + Real Data Pipeline
 // Sprint 13: Parallel Tools + Result Cache + Self-Evaluation Loop
@@ -16,6 +16,8 @@ const {
 const { createSecretResolver, requestSecretInputs, listSecretRequests, hasSecret, ensureSecretHostAllowed } = require('./secret-broker.cjs');
 const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
+const researchContractLib = require('./research-contract.cjs');
+const { buildEvidenceLedger } = require('./decision-guards.cjs');
 const safePath = require('./safe-path.cjs');
 const { registerAnalysisArtifact } = require('./analysis-artifacts.cjs');
 const cakalIdentity = require('./cakal-identity.cjs');
@@ -33,6 +35,41 @@ function getCachedResult(key) {
   }
   console.log(`[Cache] HIT: ${key} (${((Date.now() - entry.timestamp) / 1000).toFixed(0)}s ago)`);
   return entry.data;
+}
+
+// ── Uçuştaki istek paylaşımı (in-flight dedup) ────────────────────────
+// GEÇMİŞ HATA: get_financial_statements ve get_valuation_multiples aynı
+// semboller için PARALEL çağrıldı. İkisi de cache'e baktı, ikisi de ıskaladı,
+// ikisi de İş Yatırım'a gitti. Eşzamanlı istekler boğuldu: 41,6 saniye ve
+// THYAO/KCHOL için "veri alınamadı". Veri erişilemez değildi — çağrılar
+// birbirini engelledi.
+//
+// Cache "sonuç var mı" sorar; bu katman "aynı istek ZATEN YOLDA mı" sorar.
+// İkisi ayrı problemdir ve sadece cache ile çözülmez.
+const _inflight = new Map();
+
+async function getOrFetch(cacheKey, fetcher) {
+  const cached = getCachedResult(cacheKey);
+  if (cached) return cached;
+
+  const pending = _inflight.get(cacheKey);
+  if (pending) {
+    console.log(`[Inflight] JOIN: ${cacheKey}`);
+    return pending;
+  }
+
+  const promise = (async () => {
+    try {
+      const result = await fetcher();
+      if (result && result.success) setCachedResult(cacheKey, result);
+      return result;
+    } finally {
+      _inflight.delete(cacheKey);
+    }
+  })();
+
+  _inflight.set(cacheKey, promise);
+  return promise;
 }
 
 function setCachedResult(key, data) {
@@ -245,6 +282,14 @@ async function fetchYahooOHLC(symbol, exchange) {
   const raw = String(symbol || '').trim().toUpperCase();
   if (!raw) return [];
 
+  // GEÇMİŞ HATA: bu fonksiyonun HİÇ önbelleği yoktu. analyze_earnings_pricing
+  // her çağrıda hem hisseyi hem XU100'ü çekiyor; 7 şirketlik bir analizde 14
+  // Yahoo isteği atılıyor ve bunların 7'si AYNI XU100 serisi oluyordu.
+  // Endeks serisi tüm sembollerde ortaktır, tekrar çekmek saf israftır.
+  const ohlcCacheKey = `yahoo:ohlc:${raw}:${String(exchange || '')}`;
+  const cachedBars = getCachedResult(ohlcCacheKey);
+  if (cachedBars) return cachedBars;
+
   const candidates = [];
   const normalized = normalizeYahooSymbol(raw, exchange);
   if (normalized) candidates.push(normalized);
@@ -327,6 +372,7 @@ async function fetchYahooOHLC(symbol, exchange) {
 
       if (out.length >= 3) {
         console.log(`[AI] Yahoo OHLC success: ${ticker} -> ${out.length} bars`);
+        setCachedResult(ohlcCacheKey, out);
         return out;
       }
     } catch (err) {
@@ -706,6 +752,7 @@ ARAÇLARIN (TOOLS):
 - analyze_earnings_pricing: Bilançonun piyasa tarafından ÖNCEDEN fiyatlanıp fiyatlanmadığını ölçer (bilanço öncesi getiri, XU100 göreceli getiri, hacim genişlemesi, bilanço sonrası tepki). Bilanço kaynaklı AL/fırsat hükmü öncesi ZORUNLU.
 - get_stock_price: BIST/döviz/emtia fiyat sorgulama — birden fazla sembol aynı anda (Yahoo Finance)
 - get_bist_gainers: Uzmanpara/Milliyet en çok artan BIST hisseleri — gün içi yükselenler, tavanlar ve % bandı filtreleri
+- get_bist_board: Mynet Finans canlı borsa panosunun TAMAMI tek istekte (600+ hisse) — fiyat, %değişim, gün içi yüksek/düşük, alış/satış, ağırlıklı ortalama, hacim (lot), işlem hacmi (TL) ve XU030/XU050/XU100 endeks üyeliği. Gecikmeli (≥15 dk). ÇOK SEMBOLLÜ karşılaştırma, likidite sıralaması, endeks üyeliği ve piyasa geneli taramada BİRİNCİL araç — get_stock_price'ı 3+ sembol için tekrar tekrar çağırma, bunu kullan. Teknik gösterge (MA/getiri serisi) İÇERMEZ.
 - run_investment_research_scan: BIST icin uzman workflow'una uygun fresh market scan on taramasi; evren, hard filter, soft ranking, policy eksikleri ve audit kaydi uretir
 - calculate_trip_budget: Seyahat bütçe hesaplama
 - calculate_landed_cost: İthalat maliyet hesabı (kargo+gümrük)
@@ -765,8 +812,8 @@ KAP FINANSAL VERI DISIPLINI:
 BILANCO-FIYATLANMA DISIPLINI (bilanço–beklenti–fiyat üçgeni):
 - Iyi bilanço ile iyi giriş zamanını EŞİTLEME. Borsa geçmiş rakamı değil beklenti farkını satın alır; mükemmel bilanço zaten önceden fiyatlanmış olabilir.
 - Bilanço kaynaklı AL, "güçlü fırsat", "alım fırsatı" benzeri zamanlama hükmü vermeden ÖNCE analyze_earnings_pricing çağır. Çağırmazsan deterministik Fiyatlanma Kilidi hükmü İNCELE seviyesine indirir.
-- Aracın kategorik sınıflandırmasını (LOW_EVIDENCE_OF_PRICING / PARTIALLY_PRICED / LARGELY_PRICED / OVEREXTENDED / INSUFFICIENT_DATA) ve kanıt satırlarını cevapta AYNEN aktar. Kendi başına yüzde skoru üretme; sahte kesinlik yaratma.
-- LARGELY_PRICED veya OVEREXTENDED ise: "güçlü alım fırsatı" deme; kovalamama, kâr realizasyonu riski ve kalan getiri alanının daraldığı uyarılarından en az birini açıkça yaz. Olumlu finansal görünüm sürse bile kalan getiri/risk oranını ayrı değerlendir.
+- Aracın kategorik sınıflandırmasını (NOT_EXTENDED / PARTIALLY_EXTENDED / PRICE_EXTENDED / PRICE_OVEREXTENDED / INSUFFICIENT_DATA) ve kanıt satırlarını cevapta AYNEN aktar. Kendi başına yüzde skoru üretme; sahte kesinlik yaratma.
+- PRICE_EXTENDED veya PRICE_OVEREXTENDED ise: "güçlü alım fırsatı" deme; kovalamama, kâr realizasyonu riski ve kalan getiri alanının daraldığı uyarılarından en az birini açıkça yaz. Olumlu finansal görünüm sürse bile kalan getiri/risk oranını ayrı değerlendir.
 - Beklenti sürprizi AYRI eksendir: gerçek konsensüs verisi görmeden bilançonun "beklentiden iyi" geldiğini iddia etme. Konsensüs yoksa beklenti sürprizi UNKNOWN'dur — bu fiyat verisi eksikliği DEĞİLDİR; fiyatlanma ihtimali yine ölçülebilir, ama kesin zamanlama hükmünün güvenini düşür ve belirsizliği yaz.
 - INSUFFICIENT_DATA veya fiyat serisi çekilemezse: bilanço kalitesini yorumlayabilirsin; giriş zamanlaması hükmü üretme, durumu açıkça belirt.
 - Zayıf bilanço + sert düşmüş hisse "tepki potansiyeli", güçlü bilanço + aşırı fiyatlanmış hisse "kâr satışı riski" olabilir — sınıflandırmayı bu çerçevede yorumla.
@@ -1246,6 +1293,18 @@ SELF-DEV GÜVENLİK KURALLARI (KRİTİK):
 
 function buildDynamicSystemPrompt(profileContext = {}) {
   let prompt = SYSTEM_PROMPT_BASE;
+
+  // ŞU AN — modelin kendi tarih bilgisi YOKTUR ve eğitim kesimi geçmişte kalır.
+  // GEÇMİŞ HATA: 9 Ağustos 2026 PAZAR günü "bugün alım için sırala" sorusuna
+  // sanki seans açıkmış gibi cevap verildi. Doğru bilgi yalnız get_bist_board
+  // çağrıldığında (marketSession/sessionNote ile) modele ulaşıyordu; o araç
+  // çalışmazsa model tarihsiz kalıyor ve rahatça "bugün" diyordu.
+  // Seans durumunun OTORİTESİ hâlâ araçtır; buradaki bilgi tabandır.
+  const now = new Date();
+  const session = describeBistSession(now);
+  prompt += `\n\nŞU AN: ${now.toLocaleString('tr-TR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+BIST seansı: ${session.marketSession}${session.marketSession === 'CLOSED' ? ` — ${session.sessionNote}` : ''}
+Tarih/gün bilgini kendi belleğinden ÜRETME; burada yazan ve araç çıktısındaki değerleri kullan.`;
 
   const { profile, indexEntries, recentPatterns, openGaps, pendingProposals, pendingPromotions, surgery } = profileContext;
 
@@ -3133,6 +3192,100 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'submit_research_plan',
+      description: 'Karmaşık finans araştırmalarında ZORUNLU İLK ADIM. Soruyu alt sorulara böler ve her birinin zorunlu kanıt sınıflarını KİLİTLER. Kilitlendikten sonra yeniden planlama yoktur — kaynak erişilemezse amend_research_plan ile fallback eklenir, çıta indirilemez. Alt soruları çıktı türüne göre AYIR: yapısal lider (endeks üyeliği+likidite), güncel lider (fiyat+teknik), bugün alınabilir (temel+değerleme+fiyat uzaması) farklı sorulardır, tek sıralamada birleştirilemez.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subQuestions: {
+            type: 'array',
+            description: 'Alt sorular. Her biri tek bir çıktı türü üretmeli.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Kısa kimlik, örn s1' },
+                question: { type: 'string', description: 'Alt sorunun kendisi' },
+                outputKind: { type: 'string', enum: ['structural_leader', 'current_leader', 'investable_candidate', 'single_fact', 'comparison', 'thesis'] },
+                requiredEvidence: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Bu alt soru için ZORUNLU kanıt sınıfları. Yalnız bir aracın gerçekten ürettiği sınıflar kabul edilir: CURRENT_EQUITY_PRICE, LIQUIDITY, INDEX_MEMBERSHIP, MARKET_MOVERS, TECHNICAL_SIGNAL, FUNDAMENTALS, EARNINGS_PRICE_REACTION, RESEARCH_EVIDENCE, WEB_CONTEXT, SENTIMENT_EVIDENCE, DECISION_CONFIRMATION, FX_RATE, CRYPTO_PRICE. Üretilemeyen sınıf (ör. INDEX_WEIGHT) yazma — plan reddedilir.',
+                },
+                entities: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Bu alt sorunun ilgilendiği BIST sembolleri. current_leader, investable_candidate ve comparison için ZORUNLUDUR — boş bırakırsan plan reddedilir, çünkü başka şirketlerin kanıtı bu soruyu yanlışlıkla kapatır.',
+                },
+                coverage: {
+                  type: 'string',
+                  enum: ['ALL', 'ANY'],
+                  description: 'ALL (varsayılan): her sembol için kanıt şart. ANY: en az biri yeterli. Üç hisselik karşılaştırmada ALL kullan.',
+                },
+                optionalEvidence: { type: 'array', items: { type: 'string' }, description: 'Varsa iyi olan, yoksa engellemeyen kanıtlar.' },
+                preferredTools: { type: 'array', items: { type: 'string' }, description: 'Tercih edilen araçlar (yol bilgisi, değişebilir).' },
+                fallbackTools: { type: 'array', items: { type: 'string' }, description: 'Birincil kaynak çalışmazsa denenecek araçlar.' },
+              },
+              required: ['id', 'question', 'outputKind', 'requiredEvidence'],
+            },
+          },
+          successCriteria: { type: 'array', items: { type: 'string' }, description: 'Araştırmanın başarılı sayılma koşulları.' },
+        },
+        required: ['subQuestions'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'amend_research_plan',
+      description: 'Kilitli araştırma planında KONTROLLÜ değişiklik. Kaynak erişilemediğinde fallback ekler veya keşif yeni soru doğurduğunda alt soru ekler. Zorunlu kanıt sınıfını KALDIRAMAZ — eksik veri görünce çıta indirmek yasaktır; aynı kanıta başka yoldan ulaş.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subQuestionId: { type: 'string', description: 'Değiştirilecek alt sorunun kimliği.' },
+          reason: { type: 'string', description: 'ZORUNLU. Neden değiştiği (ör. "KAP erişilemedi").' },
+          fallbackTools: { type: 'array', items: { type: 'string' }, description: 'Eklenecek yedek araçlar.' },
+          requiredEvidence: { type: 'array', items: { type: 'string' }, description: 'Yalnız GENİŞLETMEK için. Mevcut bir sınıfı çıkarırsan reddedilir.' },
+          addSubQuestions: { type: 'array', items: { type: 'object' }, description: 'Keşifle doğan yeni alt sorular (submit_research_plan ile aynı şema).' },
+        },
+        required: ['reason'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_valuation_multiples',
+      description: 'BIST şirketi için değerleme girdilerini üretir (net kâr, özkaynak, güncel fiyat, dönem). VALUATION kanıt sınıfının TEK üreticisidir. DİKKAT: get_financial_statements ham mali tablo verir (FUNDAMENTALS) — bu değerleme DEĞİLDİR. "Bugün alınabilir mi / pahalı mı ucuz mu" sorularında bu aracı ayrıca çağır.',
+      parameters: {
+        type: 'object',
+        properties: { symbol: { type: 'string', description: 'BIST sembolü, örn THYAO' } },
+        required: ['symbol'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_bist_board',
+      description: 'Mynet Finans Canlı Borsa panosunun TAMAMINI tek istekte çeker (600+ BIST hissesi): son fiyat, günlük %değişim, gün içi yüksek/düşük, alış/satış, ağırlıklı ortalama, hacim (lot) ve işlem hacmi (TL), ayrıca XU030/XU050/XU100 endeks ÜYELİĞİ. Çok sembollü karşılaştırma, likidite/işlem hacmi sıralaması, "endekste yer alıyor mu", piyasa geneli tarama ve BIST100 listesi için BİRİNCİL araçtır — get_stock_price yerine bunu kullan (o sembol başına ayrı istek atar). Veri en az 15 dakika gecikmelidir. Hareketli ortalama, çok dönemli getiri gibi TEKNİK göstergeler içermez.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbols: { type: 'string', description: 'Opsiyonel virgülle ayrılmış semboller, örn: "THYAO,KCHOL,ASELS". Boş bırakılırsa tüm pano döner.' },
+          index: { type: 'string', enum: ['XU030', 'XU050', 'XU100'], description: 'Sadece bu endekse üye hisseleri döndür.' },
+          minChangePercent: { type: 'number', description: 'Minimum günlük değişim yüzdesi.' },
+          maxChangePercent: { type: 'number', description: 'Maksimum günlük değişim yüzdesi.' },
+          minTurnoverTRY: { type: 'number', description: 'Minimum günlük işlem hacmi (TL). Likidite filtresi için, örn: 100000000' },
+          sortBy: { type: 'string', enum: ['turnover', 'change', 'volume', 'symbol'], description: 'Sıralama ölçütü. Varsayılan turnover (TL işlem hacmi — likidite göstergesi).' },
+          limit: { type: 'number', description: 'Dönecek maksimum hisse sayısı (varsayılan 25, max 200).' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'run_investment_research_scan',
       description: 'BIST hisseleri için yatırım uzmanı workflowuna uygun canlı ön tarama yapar. Evreni oluşturur, Yahoo Finance ve Uzmanpara verisiyle hard filter/soft ranking uygular, recent-gainers kısa yolunu engeller, eksik araştırma adımlarını ve audit kaydını raporlar. Nihai AL/SAT değil, araştırılabilir ön aday üretir.',
       parameters: {
@@ -3614,7 +3767,7 @@ KURALLAR:
     type: 'function',
     function: {
       name: 'analyze_earnings_pricing',
-      description: 'Bilanço önceden fiyatlanma analizi (bilanço–beklenti–fiyat üçgeni). BIST hissesi için bilanço tarihi etrafındaki fiyat/hacim serisinden deterministik kanıt üretir: 5/20/60 gün getiri, XU100 göreceli getiri, hacim genişlemesi, MA50 uzaklığı, bilanço sonrası ilk gün tepkisi. Çıktı kategorik sınıflandırmadır (INSUFFICIENT_DATA / LOW_EVIDENCE_OF_PRICING / PARTIALLY_PRICED / LARGELY_PRICED / OVEREXTENDED) — sayısal skor uydurma. Bilanço kaynaklı AL veya fırsat hükmü vermeden önce bu aracı çağırmak ZORUNLUDUR; çağrılmazsa karar kilidi hükmü İNCELE seviyesine indirir.',
+      description: 'Bilanço önceden fiyatlanma analizi (bilanço–beklenti–fiyat üçgeni). BIST hissesi için bilanço tarihi etrafındaki fiyat/hacim serisinden deterministik kanıt üretir: 5/20/60 gün getiri, XU100 göreceli getiri, hacim genişlemesi, MA50 uzaklığı, bilanço sonrası ilk gün tepkisi. Çıktı kategorik sınıflandırmadır (INSUFFICIENT_DATA / NOT_EXTENDED / PARTIALLY_EXTENDED / PRICE_EXTENDED / PRICE_OVEREXTENDED) — sayısal skor uydurma. Bilanço kaynaklı AL veya fırsat hükmü vermeden önce bu aracı çağırmak ZORUNLUDUR; çağrılmazsa karar kilidi hükmü İNCELE seviyesine indirir.',
       parameters: {
         type: 'object',
         properties: {
@@ -3642,8 +3795,93 @@ async function handleToolCall(name, args, options = {}) {
     }
   };
 
+  // ── ARAŞTIRMA SÖZLEŞMESİ KAPISI ──────────────────────────────────────
+  // Bu kapı dispatcher seviyesindedir, tool listesinde DEĞİL.
+  // GEÇMİŞ HATA: runInvestmentResearchWorkflowPolicy bir tool olarak sunuldu;
+  // model onu hiç çağırmayınca politika hiç çalışmadı. Aynı hatayı tekrar
+  // etmemek için sözleşme kontrolü çağrı noktasında zorunlu: karmaşık bir
+  // araştırma isteğinde plan yoksa kanıt üreten araçlar hiç çalışmaz.
+  const researchContract = options.researchContract || null;
+  const contractGate = researchContractLib.checkContractGate(
+    name,
+    researchContract ? researchContract.get() : null,
+    options.researchComplexity || null,
+  );
+  if (contractGate) {
+    emit(`Araştırma sözleşmesi gerekli (skor ${options.researchComplexity?.score}): ${name} bekletildi.`);
+    return {
+      tool: name,
+      success: false,
+      status: contractGate.status,
+      allowedNextAction: contractGate.allowedNextAction,
+      message: contractGate.reason,
+      producibleEvidenceClasses: contractGate.producibleEvidenceClasses,
+      outputKinds: contractGate.outputKinds,
+    };
+  }
+
   try {
     switch (name) {
+      // ── Araştırma Sözleşmesi: planı kilitle ──
+      case 'submit_research_plan': {
+        if (!researchContract) {
+          return { tool: name, success: false, message: 'Araştırma sözleşmesi bu oturumda kullanılabilir değil.' };
+        }
+        const result = researchContractLib.submitPlan(researchContract.get(), {
+          subQuestions: args.subQuestions,
+          successCriteria: args.successCriteria,
+        });
+        if (!result.ok) {
+          emit(`Plan reddedildi: ${result.errors.length} hata`);
+          return {
+            tool: name,
+            success: false,
+            message: `Araştırma planı kabul edilmedi:\n- ${result.errors.join('\n- ')}`,
+            producibleEvidenceClasses: researchContractLib.PRODUCIBLE_EVIDENCE_CLASSES,
+            outputKinds: researchContractLib.OUTPUT_KINDS,
+          };
+        }
+        researchContract.set(result.contract);
+        emit(`plan kilitlendi: ${result.contract.subQuestions.length} alt soru (v${result.contract.planVersion})`);
+        return {
+          tool: name,
+          success: true,
+          data: {
+            planVersion: result.contract.planVersion,
+            subQuestions: result.contract.subQuestions,
+            successCriteria: result.contract.successCriteria,
+          },
+          sourceLabel: 'Plan kilitlendi. Bundan sonra yeniden planlama YOK; kaynak değişirse amend_research_plan kullan. '
+            + 'Her alt sorunun zorunlu kanıtı toplanmadan o alt soruya dair hüküm verme.',
+        };
+      }
+
+      // ── Araştırma Sözleşmesi: kontrollü değişiklik ──
+      case 'amend_research_plan': {
+        if (!researchContract) {
+          return { tool: name, success: false, message: 'Araştırma sözleşmesi bu oturumda kullanılabilir değil.' };
+        }
+        const result = researchContractLib.amendPlan(researchContract.get(), {
+          subQuestionId: args.subQuestionId,
+          reason: args.reason,
+          requiredEvidence: args.requiredEvidence,
+          fallbackTools: args.fallbackTools,
+          addSubQuestions: args.addSubQuestions,
+        });
+        if (!result.ok) {
+          emit(`Değişiklik reddedildi: ${result.errors.length} hata`);
+          return { tool: name, success: false, message: `Plan değişikliği kabul edilmedi:\n- ${result.errors.join('\n- ')}` };
+        }
+        researchContract.set(result.contract);
+        emit(`plan güncellendi: v${result.contract.planVersion} (${args.reason})`);
+        return {
+          tool: name,
+          success: true,
+          data: { planVersion: result.contract.planVersion, subQuestions: result.contract.subQuestions },
+          sourceLabel: 'Yol değişti, çıta değişmedi. Zorunlu kanıt sınıfları hâlâ toplanmalı.',
+        };
+      }
+
       // ── Yürütme Sözleşmesi (plan → uygula → doğrula döngüsü) ──
       // ── Kademe 2: kaynak kod değişikliği talebini cerrahi hatta devret ──
       case 'propose_surgical_change': {
@@ -3934,7 +4172,13 @@ async function handleToolCall(name, args, options = {}) {
             ...(counterResult?.citations || []),
             ...(expertResult?.citations || []),
           ];
-          const uniqueSources = [...new Set(allCitations)].length;
+          // GEÇMİŞ HATA: `[...new Set(allCitations)].length` yalnız URL
+          // tekilleştirmesi yapıyordu ve bu sayı "42 kaynak bulundu" diye
+          // kapsam/güven göstergesi gibi modele veriliyordu. Aynı ajans
+          // haberini kopyalayan 20 site burada 20 bağımsız kanıt sayılıyordu.
+          // Artık ALAN ADI bazında tekilleştirilir ve otorite katmanına ayrılır.
+          const sourceBreakdown = summarizeClaimSources(allCitations);
+          const uniqueSources = sourceBreakdown.uniqueDomains;
 
           const result = {
             tool: name,
@@ -3950,7 +4194,23 @@ async function handleToolCall(name, args, options = {}) {
               expert_opinion: expertResult?.success ? expertResult.content : (depth === 'quick' ? 'Hızlı modda uzman görüşü aranmadı.' : 'Uzman görüşü bulunamadı.'),
               expert_sources: expertResult?.citations || [],
               unique_source_count: uniqueSources,
-              analysis_note: `Bu iddia ${depth === 'detailed' ? '3 farklı açıdan (destekleyici, çürütücü, uzman)' : 'tek açıdan (destekleyici)'} araştırıldı. ${uniqueSources} farklı kaynak bulundu. Lütfen bu verileri analiz ederek kullanıcıya yapılandırılmış bir plausibility raporu sun: olasılık skoru (0-100), güven seviyesi (düşük/orta/yüksek), destekleyenler, zayıflatanlar ve net yorum.`,
+              source_breakdown: sourceBreakdown,
+              // İKİ AYRI SKOR — karıştırma:
+              //   source_confidence = kaynakların OTORİTESİ ve bağımsızlığı
+              //   claim_confidence  = iddianın DOĞRULANMIŞLIĞI
+              // Çok sayıda düşük otoriteli kaynak, yüksek claim_confidence
+              // üretmez. Karşıt kanıt yokluğu da doğrulama sayılmaz.
+              source_confidence: sourceBreakdown.sourceConfidence,
+              analysis_note: [
+                `Bu iddia ${depth === 'detailed' ? '3 farklı açıdan (destekleyici, çürütücü, uzman)' : 'tek açıdan (destekleyici)'} araştırıldı.`,
+                `${sourceBreakdown.totalCitations} atıf, ${uniqueSources} FARKLI ALAN ADI (tier: resmi ${sourceBreakdown.tiers.official}, birincil-finans ${sourceBreakdown.tiers.primaryFinance}, ana-medya ${sourceBreakdown.tiers.majorMedia}, diğer ${sourceBreakdown.tiers.other}, sosyal/forum ${sourceBreakdown.tiers.social}).`,
+                'ATIF SAYISI DOĞRULAMA DEĞİLDİR: aynı haberi tekrar eden çok sayıda site bağımsız kanıt sayılmaz; bu yüzden alan adı bazında tekilleştirildi.',
+                'Yapılandırılmış plausibility raporu üret ve İKİ SKORU AYRI VER:',
+                '1) source_confidence (kaynak otoritesi/bağımsızlığı) — yukarıdaki tier dağılımından türet.',
+                '2) claim_confidence (0-100, iddianın doğrulanmışlığı) — yalnız birincil/resmi kaynak ve karşıt kanıt değerlendirmesiyle belirlenir.',
+                'Ayrıca: destekleyenler, zayıflatanlar, karşıt kanıt bulunup bulunmadığı ve net yorum.',
+                sourceBreakdown.dominantDomainWarning || '',
+              ].filter(Boolean).join(' '),
             },
           };
           setCachedResult(cacheKey, result);
@@ -4391,11 +4651,7 @@ async function handleToolCall(name, args, options = {}) {
         emit(`Finansal tablolar çekiliyor: ${bistCode} (İş Yatırım MaliTablo)`);
 
         const cacheKey = `isyatirim:financials:${bistCode}`;
-        let fin = getCachedResult(cacheKey);
-        if (!fin) {
-          fin = await fetchCompanyFinancials(bistCode);
-          if (fin.success) setCachedResult(cacheKey, fin);
-        }
+        const fin = await getOrFetch(cacheKey, () => fetchCompanyFinancials(bistCode));
         if (!fin.success) {
           return {
             tool: name,
@@ -4405,10 +4661,23 @@ async function handleToolCall(name, args, options = {}) {
         }
 
         const periods = fin.quarters.map((q) => `${q.year}/${q.period}`);
-        const { keyItems, netDebt } = extractFinancialKeyItems(fin.rows, fin.group);
+        const sectorInfo = detectFinancialSector(fin.rows, fin.group, bistCode);
+        const { keyItems, netDebt } = extractFinancialKeyItems(fin.rows, fin.group, sectorInfo.sector);
+        const sectorKeys = new Set((SECTOR_ADAPTERS[sectorInfo.sector]?.extra || []).map((p) => p.key));
+        const sectorItemsFound = keyItems.filter((item) => sectorKeys.has(item.key)).length;
         const data = {
           symbol: bistCode,
           financialGroup: fin.group,
+          sector: sectorInfo.sector,
+          sectorLabel: SECTOR_ADAPTERS[sectorInfo.sector]?.label || 'bilinmiyor',
+          sectorDetectionBasis: sectorInfo.basis,
+          // Eksik sektör adaptörü şirketi ELEMEZ; yalnız güveni düşürür.
+          sectorConfidence: sectorKeys.size === 0
+            ? sectorInfo.confidence
+            : (sectorItemsFound === 0 ? 'low' : sectorInfo.confidence),
+          sectorNote: sectorKeys.size > 0 && sectorItemsFound === 0
+            ? `${SECTOR_ADAPTERS[sectorInfo.sector]?.label} sektörüne özgü kalemler bu tabloda bulunamadı; genel kalemlerle analiz yapıldı. Sektöre özgü oranlar (ör. birleşik oran, NAD iskontosu) bu veriyle hesaplanamaz — hesaplanmış gibi sunma.`
+            : null,
           periods,
           periodNote: 'values dizisi periods ile aynı sıradadır (en güncel önce). Gelir tablosu kalemleri kümülatif dönemdir: period 12 = tam yıl, 6 = ilk yarı.',
           currency: 'TL',
@@ -4496,11 +4765,7 @@ async function handleToolCall(name, args, options = {}) {
             continue;
           }
           const cacheKey = `yahoo:${resolved}:3mo`;
-          let yf = getCachedResult(cacheKey);
-          if (!yf) {
-            yf = await fetchYahooFinance(resolved, '3mo');
-            if (yf.success) setCachedResult(cacheKey, yf);
-          }
+          const yf = await getOrFetch(cacheKey, () => fetchYahooFinance(resolved, '3mo'));
           if (yf.success) {
             const d = yf.data;
             results.push({
@@ -4525,17 +4790,38 @@ async function handleToolCall(name, args, options = {}) {
               avgVolume: d.avgVolume,
               lastVolume: d.lastVolume,
               recentCloses: d.recentCloses,
+              // Zaman/pencere kimliği olmadan bu sayılar başka bir aracın
+              // sayılarıyla karşılaştırılamaz.
+              asOf: d.asOf,
+              priceType: d.priceType,
+              priceTypeNote: d.priceTypeNote,
+              marketState: d.marketState,
+              windowDefinition: d.windowDefinition,
+              barCount: d.barCount,
+              carriedBars: d.carriedBars,
+              dataQualityNote: d.dataQualityNote,
               success: true,
             });
           } else {
             results.push({ symbol: sym, success: false, message: yf.message });
           }
         }
+        const anyIntraday = results.some((r) => r.success && r.priceType === 'intraday_live');
         return {
           tool: name,
           success: true,
-          data: { stocks: results, count: results.filter(r => r.success).length },
+          data: {
+            stocks: results,
+            count: results.filter(r => r.success).length,
+            metadata: {
+              retrievedAt: new Date().toISOString(),
+              source: 'yahoo_finance',
+              priceBasis: anyIntraday ? 'mixed_or_intraday_live' : 'close',
+              comparabilityNote: 'Bu araçtaki fiyat seans içinde CANLI olabilir; analyze_earnings_pricing ise KAPANIŞ referansı kullanır. İki aracın sayıları farklı çıkarsa bu bir çelişki değil, farklı referans noktasıdır — cevapta hangi sayının hangi ana ait olduğunu yaz.',
+            },
+          },
           source: 'yahoo_finance',
+          sourceLabel: 'Yahoo Finance. Fiyat/getiri/MA rakamlarını aktarırken asOf zaman damgasını ve priceType (intraday_live|close) bilgisini MUTLAKA belirt.',
         };
       }
 
@@ -4581,6 +4867,172 @@ async function handleToolCall(name, args, options = {}) {
             fetchedAt: new Date().toISOString(),
           },
           source: 'uzmanpara_milliyet',
+        };
+      }
+
+      // ── Değerleme Çarpanları (mali tablo + fiyattan türetilir) ──
+      // FUNDAMENTALS ile VALUATION farklı kanıt sınıflarıdır: ham mali tablo
+      // gelmesi değerleme yapıldığı anlamına gelmez. Bu araç ikisi arasındaki
+      // köprüdür ve VALUATION sınıfının TEK üreticisidir.
+      case 'get_valuation_multiples': {
+        const rawSymbol = (args.symbol || '').trim();
+        if (!rawSymbol) return { tool: name, success: false, message: 'Sembol gerekli.' };
+        const resolved = resolveBistSymbol(rawSymbol);
+        if (!resolved || !/\.IS$/i.test(resolved)) {
+          return { tool: name, success: false, message: `${rawSymbol} bir BIST şirketi değil; değerleme çarpanı hesaplanamaz.` };
+        }
+        const bistCode = resolved.replace(/\.IS$/i, '');
+        emit(`Değerleme çarpanları: ${bistCode}`);
+
+        // Aynı anahtarla get_financial_statements paralel çalışıyor olabilir;
+        // getOrFetch uçuştaki isteğe KATILIR, ikinci kez İş Yatırım'a gitmez.
+        const finKey = `isyatirim:financials:${bistCode}`;
+        const fin = await getOrFetch(finKey, () => fetchCompanyFinancials(bistCode));
+        if (!fin.success) {
+          return { tool: name, success: false, message: `Mali tablo alınamadı: ${fin.message}. Değerleme çarpanı üretilemez.` };
+        }
+
+        const priceKey = `yahoo:${resolved}:3mo`;
+        const yf = await getOrFetch(priceKey, () => fetchYahooFinance(resolved, '3mo'));
+        if (!yf.success) {
+          return { tool: name, success: false, message: `Fiyat alınamadı: ${yf.message}. Değerleme çarpanı fiyatsız hesaplanamaz.` };
+        }
+
+        const { keyItems } = extractFinancialKeyItems(fin.rows, fin.group);
+        const pick = (key) => keyItems.find((k) => k.key === key)?.values?.[0] ?? null;
+        const netKar = pick('netKar');
+        const ozkaynak = pick('ozkaynak');
+        const price = yf.data.price;
+        const periods = fin.quarters.map((q) => `${q.year}/${q.period}`);
+
+        // Hisse sayısı bilinmeden mutlak çarpan kurulamaz; oran bazlı
+        // yaklaşımla piyasa değeri gerekir. Bunu uydurmak yerine AÇIKÇA
+        // eksik bildiriyoruz — sahte kesinlik üretmek en kötü seçenek.
+        const missing = [];
+        if (netKar === null) missing.push('net kâr');
+        if (ozkaynak === null) missing.push('özkaynak');
+
+        return {
+          tool: name,
+          success: true,
+          data: {
+            symbol: bistCode,
+            price,
+            priceAsOf: new Date().toISOString(),
+            latestPeriod: periods[0] || null,
+            periods,
+            netKar,
+            ozkaynak,
+            // Hisse başına değerler ancak ödenmiş sermaye/hisse adedi ile
+            // kurulabilir; İş Yatırım ham setinde bu güvenilir gelmiyor.
+            derivable: missing.length === 0,
+            missingInputs: missing,
+            multiples: missing.length === 0
+              ? { note: 'F/K ve PD/DD için hisse adedi gerekir; oransal karşılaştırma sektör içi yapılmalı.', netKarTL: netKar, ozkaynakTL: ozkaynak }
+              : null,
+          },
+          source: 'is_yatirim_malitablo+yahoo_finance',
+          sourceLabel: 'Değerleme girdileri (net kâr, özkaynak, güncel fiyat). Hisse adedi olmadan mutlak F/K verme; '
+            + 'karşılaştırmayı sektör içi ve aynı dönemde kur. Dönem ve fiyat zamanını cevapta MUTLAKA yaz.',
+        };
+      }
+
+      // ── Mynet Canlı Borsa: tüm BIST panosu (tek istek, 600+ hisse) ──
+      case 'get_bist_board': {
+        const rawSymbols = String(args.symbols || '').split(/[,;\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+        const indexFilter = String(args.index || '').trim().toUpperCase();
+        const sortBy = ['turnover', 'change', 'volume', 'symbol'].includes(String(args.sortBy)) ? String(args.sortBy) : 'turnover';
+        const limit = Math.min(Math.max(parseInt(args.limit ?? 25, 10) || 25, 1), 200);
+
+        emit(`Mynet canlı borsa panosu çekiliyor${indexFilter ? ` (${indexFilter})` : ''}${rawSymbols.length ? ` [${rawSymbols.slice(0, 8).join(', ')}]` : ''}`);
+
+        const cacheKey = 'mynet:bist:board';
+        let fetched = getCachedResult(cacheKey);
+        if (!fetched) {
+          fetched = await fetchMynetLiveBoard();
+          if (fetched.success) setCachedResult(cacheKey, fetched);
+        }
+        if (!fetched.success) {
+          return {
+            tool: name,
+            success: false,
+            message: `${fetched.message || 'Mynet panosu alınamadı.'} — Bu kaynak çalışmadıysa fiyat için get_stock_price (Yahoo) kullan; web_search sonucunu fiyat kanıtı sayma.`,
+          };
+        }
+
+        let items = fetched.items;
+        if (indexFilter) {
+          if (!/^XU\d{2,3}$/.test(indexFilter)) {
+            return { tool: name, success: false, message: `Geçersiz endeks: ${indexFilter}. Desteklenen: XU030, XU050, XU100.` };
+          }
+          items = items.filter((item) => item.indices.includes(indexFilter));
+        }
+        if (rawSymbols.length > 0) {
+          const wanted = new Set(rawSymbols.map((s) => s.replace(/\.IS$/i, '')));
+          items = items.filter((item) => wanted.has(item.symbol));
+        }
+        if (Number.isFinite(Number(args.minChangePercent))) {
+          items = items.filter((item) => item.changePercent !== null && item.changePercent >= Number(args.minChangePercent));
+        }
+        if (Number.isFinite(Number(args.maxChangePercent))) {
+          items = items.filter((item) => item.changePercent !== null && item.changePercent <= Number(args.maxChangePercent));
+        }
+        if (Number.isFinite(Number(args.minTurnoverTRY))) {
+          items = items.filter((item) => item.turnoverTRY !== null && item.turnoverTRY >= Number(args.minTurnoverTRY));
+        }
+
+        const sorters = {
+          turnover: (a, b) => (b.turnoverTRY ?? -1) - (a.turnoverTRY ?? -1),
+          change: (a, b) => (b.changePercent ?? -Infinity) - (a.changePercent ?? -Infinity),
+          volume: (a, b) => (b.volumeLot ?? -1) - (a.volumeLot ?? -1),
+          symbol: (a, b) => a.symbol.localeCompare(b.symbol, 'tr'),
+        };
+        const matched = items.length;
+        const sorted = [...items].sort(sorters[sortBy]).slice(0, limit);
+        const missing = rawSymbols.length > 0
+          ? rawSymbols.map((s) => s.replace(/\.IS$/i, '')).filter((s) => !fetched.items.some((item) => item.symbol === s))
+          : [];
+        const outOfRange = sorted.filter((item) => item.priceInDayRange === false).map((item) => item.symbol);
+
+        return {
+          tool: name,
+          success: true,
+          data: {
+            items: sorted,
+            count: sorted.length,
+            matchedCount: matched,
+            boardSize: fetched.items.length,
+            notFound: missing,
+            filters: {
+              index: indexFilter || null,
+              symbols: rawSymbols.length > 0 ? rawSymbols : null,
+              minChangePercent: Number.isFinite(Number(args.minChangePercent)) ? Number(args.minChangePercent) : null,
+              maxChangePercent: Number.isFinite(Number(args.maxChangePercent)) ? Number(args.maxChangePercent) : null,
+              minTurnoverTRY: Number.isFinite(Number(args.minTurnoverTRY)) ? Number(args.minTurnoverTRY) : null,
+              sortBy,
+              limit,
+            },
+            indexCounts: {
+              XU030: fetched.items.filter((item) => item.inXu030).length,
+              XU050: fetched.items.filter((item) => item.inXu050).length,
+              XU100: fetched.items.filter((item) => item.inXu100).length,
+            },
+            // Denetlenebilirlik: her sayının hangi ana ait olduğu cevapta yazılmalı.
+            metadata: {
+              sourceUrl: MYNET_LIVE_BOARD_URL,
+              fetchedAt: new Date().toISOString(),
+              lastTradeTime: sorted[0]?.lastTradeTime || fetched.items[0]?.lastTradeTime || null,
+              priceType: 'last_trade_delayed',
+              ...describeBistSession(),
+              delayedNote: 'Mynet BIST verisi en az 15 dakika gecikmelidir; seans kapalıyken son kapanışı gösterir. Cevapta "gecikmeli veri" ve lastTradeTime saatini MUTLAKA belirt.',
+              previousCloseNote: 'previousClose Mynet tarafından verilmez; son fiyat ve değişim yüzdesinden geri hesaplanmıştır (türetilmiş değer).',
+              indexNote: 'indices alanı endeks ÜYELİĞİDİR, endeks AĞIRLIĞI değildir. "Endekste en ağırlıklı" iddiası bu veriyle kurulamaz.',
+              malformedRecords: fetched.malformed ?? 0,
+              outOfDayRange: outOfRange.length > 0 ? outOfRange : null,
+            },
+          },
+          source: 'mynet_finans_canli_borsa',
+          sourceLabel: 'Mynet Finans Canlı Borsa panosu (gecikmeli BIST verisi). Fiyat/hacim/işlem hacmi ve XU030/XU050/XU100 endeks üyeliği içerir. Teknik gösterge (MA, getiri serisi) İÇERMEZ — onlar için get_stock_price veya analyze_earnings_pricing kullan. Cevapta kaynağı "Mynet Finans (gecikmeli)" olarak etiketle.',
         };
       }
 
@@ -5898,15 +6350,10 @@ async function handleToolCall(name, args, options = {}) {
     console.error(`[Tool:${name}] Error:`, err.message);
     return { tool: name, success: false, message: `Araç hatası: ${err.message}` };
   }
-
-  if (pendingPromotions && pendingPromotions.length > 0) {
-    const compactPromotions = pendingPromotions
-      .slice(0, 5)
-      .map((promotion) => `${String(promotion.target_path || '').replace('CORE_PROMOTION::', '')}: ${promotion.title}`)
-      .join(' | ');
-    prompt += `\n\nBEKLEYEN ÇEKİRDEK PROMOTION TALEPLERİ: ${compactPromotions}`;
-    prompt += `\nKullanıcı "çekirdeğe geçir", "ikinci onay", "core'a al" derse respond_core_promotion çağır; aksi halde otomatik promotion yapma.`;
-  }
+  // NOT: burada bir zamanlar promotion prompt bloğunun ölü bir kopyası duruyordu.
+  // Erişilemezdi (üstteki try/catch her yolda return ediyor) ve bu fonksiyonda
+  // olmayan `prompt`/`pendingPromotions` değişkenlerine bakıyordu. Canlı sürüm
+  // sistem promptu üreticisinde (buildSystemPrompt) duruyor; kopya silindi.
 }
 
 // ============================
@@ -7238,7 +7685,7 @@ async function multiSourceSearch(query, options = {}) {
 
   for (const src of sources) {
     switch (src) {
-      case 'trendyol':
+      case 'trendyol': {
         const trendyolOptions = {
           ...options,
           campaignOnly: isTrendyolCampaignQuery(query, options),
@@ -7271,6 +7718,7 @@ async function multiSourceSearch(query, options = {}) {
           }
         }));
         break;
+      }
       case 'letgo':
       case 'dolap':
         if (scraper?.scrapeSecondHand) {
@@ -7656,13 +8104,81 @@ async function fetchYahooFinance(symbol, range = '1mo') {
 
     const meta = result.meta || {};
     const quotes = result.indicators?.quote?.[0] || {};
-    const closes = (quotes.close || []).filter(v => v != null);
+    const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
+    const rawCloses = Array.isArray(quotes.close) ? quotes.close : [];
+
+    // TAKVİM HİZALI KAPANIŞ SERİSİ
+    //
+    // GEÇMİŞ HATA: `closes = (quotes.close||[]).filter(v => v != null)` yazılıyordu.
+    // Yahoo her İŞLEM GÜNÜ için bir bar döndürür; işlem görmeyen ya da
+    // durdurulan günlerde close null gelir. Null'ları filtrelemek diziyi
+    // çökertir ve indeks ↔ gün eşlemesini bozar. Sonuçta
+    // `closes[len - 21]` "20 işlem günü önce" değil "21 DOLU bar önce"
+    // demektir; az likit veya işlem durdurulmuş hisselerde ret20d ve MA50
+    // sessizce yanlış pencereden hesaplanır. Hata görünmez, sayı makul durur.
+    //
+    // Çözüm: null barı atmak yerine son geçerli kapanışla taşı (forward-fill).
+    // İndeks gün eşlemesi korunur; kaç barın taşındığı missingBars olarak
+    // raporlanır ki güven skoru buna bakabilsin.
+    const closes = [];
+    const closeDates = [];
+    let carriedBars = 0;
+    let lastValidClose = null;
+    for (let i = 0; i < rawCloses.length; i += 1) {
+      const value = rawCloses[i];
+      if (value != null) {
+        lastValidClose = value;
+        closes.push(value);
+        closeDates.push(timestamps[i] ?? null);
+      } else if (lastValidClose !== null) {
+        carriedBars += 1;
+        closes.push(lastValidClose);
+        closeDates.push(timestamps[i] ?? null);
+      }
+      // Serinin BAŞINDAKİ null'lar atlanır: taşınacak önceki kapanış yok.
+    }
+
     const highs = (quotes.high || []).filter(v => v != null);
     const lows = (quotes.low || []).filter(v => v != null);
     const volumes = (quotes.volume || []).filter(v => v != null);
 
     const price = meta.regularMarketPrice || closes[closes.length - 1] || 0;
-    const prevClose = meta.chartPreviousClose || closes[0] || price;
+
+    // GÜNLÜK DEĞİŞİM — kritik tanım hatası düzeltildi (2026-08-09).
+    // Eski kod: `meta.chartPreviousClose || closes[0]`. Yahoo'da
+    // chartPreviousClose İSTENEN ARALIKTAN ÖNCEKİ kapanıştır; range='6mo' ile
+    // çağrıldığında 6 ay önceki kapanışı verir. Sonuç: aynı hisse için
+    // get_stock_price ('3mo') 3 aylık, run_investment_research_scan ('6mo')
+    // 6 aylık getiriyi "günlük değişim" diye raporluyordu. Canlı testte KCHOL
+    // aynı fiyatla bir cevapta +%1,33 diğerinde -%3,27 göründü.
+    // Günlük değişim SON İKİ KAPANIŞTAN hesaplanır, pencereden bağımsız.
+    const dailyPrevClose = closes.length >= 2 ? closes[closes.length - 2] : (meta.chartPreviousClose || price);
+    const dailyChangePercent = dailyPrevClose ? +((((price - dailyPrevClose) / dailyPrevClose) * 100).toFixed(2)) : null;
+
+    // Pencere getirisi AYRI bir metriktir ve adı penceresini taşır.
+    const periodBaseClose = meta.chartPreviousClose || closes[0] || price;
+    const periodReturnPercent = periodBaseClose ? +((((price - periodBaseClose) / periodBaseClose) * 100).toFixed(2)) : null;
+
+    const prevClose = dailyPrevClose;
+
+    // Gerçek volatilite: günlük getirilerin standart sapması. Son 20 işlem
+    // gününü kullanır (yoksa eldeki kadarını), böylece istenen pencereden
+    // BAĞIMSIZDIR — 3mo ve 6mo çağrıları aynı sayıyı üretir.
+    const dailyReturns = [];
+    for (let i = 1; i < closes.length; i += 1) {
+      const prev = closes[i - 1];
+      if (prev) dailyReturns.push(((closes[i] - prev) / prev) * 100);
+    }
+    const volWindow = dailyReturns.slice(-20);
+    const volatilitySampleSize = volWindow.length;
+    let dailyVolatilityPercent = null;
+    let annualizedVolatilityPercent = null;
+    if (volatilitySampleSize >= 5) {
+      const mean = volWindow.reduce((a, b) => a + b, 0) / volatilitySampleSize;
+      const variance = volWindow.reduce((a, b) => a + (b - mean) ** 2, 0) / (volatilitySampleSize - 1);
+      dailyVolatilityPercent = +Math.sqrt(variance).toFixed(2);
+      annualizedVolatilityPercent = +(dailyVolatilityPercent * Math.sqrt(252)).toFixed(1);
+    }
     const periodHigh = highs.length > 0 ? Math.max(...highs) : price;
     const periodLow = lows.length > 0 ? Math.min(...lows) : price;
     const avgVolume = volumes.length > 0 ? Math.round(volumes.reduce((a, b) => a + b, 0) / volumes.length) : 0;
@@ -7726,13 +8242,29 @@ async function fetchYahooFinance(symbol, range = '1mo') {
         price: +price.toFixed(2),
         prevClose: +prevClose.toFixed(2),
         change: +((price - prevClose).toFixed(2)),
-        changePercent: +((((price - prevClose) / prevClose) * 100).toFixed(2)),
+        // changePercent ARTIK gerçekten günlüktür (son iki kapanış).
+        changePercent: dailyChangePercent,
+        dailyChangePercent,
+        // Pencere getirisi ayrı alan; adı hangi pencereye ait olduğunu taşır.
+        periodReturnPercent,
+        periodReturnWindow: range,
         periodHigh: +periodHigh.toFixed(2),
         periodLow: +periodLow.toFixed(2),
         rangePosition: Math.round(((price - periodLow) / (periodHigh - periodLow || 1)) * 100),
         rangePeriod: range,
         rangePositionNote: `rangePosition son ${range} dönemindeki en düşük-en yüksek bandına göredir; güçlü trend hisseleri uzun süre 100 civarında kalabilir, tek başına kaçınma sinyali değildir.`,
-        volatility: +(((periodHigh - periodLow) / price * 100).toFixed(2)),
+        // VOLATİLİTE — tanım hatası düzeltildi (2026-08-09).
+        // Eski kod `(periodHigh - periodLow) / price` yazıyordu; bu volatilite
+        // DEĞİL, aralık genişliğidir ve pencere büyüdükçe mekanik olarak büyür
+        // (3mo'da %12, 6mo'da %25 — aynı hisse, aynı gün). Üstelik bu sayı
+        // evaluateRiskGate'e "volatilite" diye giriyordu; hisse eşikleri
+        // (4,5 / 7 / 10) GÜNLÜK volatilite için tasarlanmış olduğundan kapı
+        // uzun süredir gereğinden fazla bloke ediyordu.
+        volatility: dailyVolatilityPercent,          // günlük getiri std sapması (%)
+        dailyVolatilityPercent,
+        annualizedVolatilityPercent,
+        rangeWidthPercent: +(((periodHigh - periodLow) / price * 100).toFixed(2)),
+        volatilityBasis: `Son ${volatilitySampleSize} günlük getirinin standart sapması. annualized = daily × √252. rangeWidthPercent AYRI bir ölçüdür (pencere genişliği), volatilite ile karıştırma.`,
         ma20,
         ma50,
         distanceToMa20,
@@ -7753,6 +8285,33 @@ async function fetchYahooFinance(symbol, range = '1mo') {
         recentCloses: recentCloses.map(c => +c.toFixed(2)),
         range,
         retrievedAt: new Date().toISOString(),
+
+        // ── Denetlenebilirlik metadata'sı ──────────────────────────────
+        // Bu araç ile analyze_earnings_pricing farklı referans noktaları
+        // kullanır: burada fiyat SEANS İÇİ CANLI olabilir, orada bir
+        // KAPANIŞ'tır. İki hattın sayıları ancak bu alanlar cevaba yazıldığında
+        // karşılaştırılabilir. "KCHOL %7,88 mi %3 mü" tartışması buradan doğdu.
+        asOf: Number.isFinite(Number(meta.regularMarketTime))
+          ? new Date(Number(meta.regularMarketTime) * 1000).toISOString()
+          : (closeDates[closeDates.length - 1] ? new Date(Number(closeDates[closeDates.length - 1]) * 1000).toISOString() : null),
+        marketState: meta.marketState || null,
+        priceType: meta.marketState === 'REGULAR' ? 'intraday_live' : 'close',
+        priceTypeNote: meta.marketState === 'REGULAR'
+          ? 'price SEANS İÇİ CANLI fiyattır; kapanış değildir. MA uzaklığı ve getiriler canlı fiyata göre hesaplanmıştır, gün içinde değişir.'
+          : 'price son KAPANIŞ fiyatıdır.',
+        windowDefinition: {
+          ret5d: '5_trading_days_calendar_aligned',
+          ret20d: '20_trading_days_calendar_aligned',
+          ma20: '20_trading_days_calendar_aligned',
+          ma50: '50_trading_days_calendar_aligned',
+          adjustment: 'unadjusted_close',
+          note: 'Pencereler takvim hizalıdır: işlem görmeyen günler atılmaz, son geçerli kapanışla taşınır.',
+        },
+        barCount: closes.length,
+        carriedBars,
+        dataQualityNote: carriedBars > 0
+          ? `${carriedBars} işlem gününde kapanış verisi yoktu ve önceki kapanışla taşındı; bu sembolde getiri/MA hesapları için güven düşürülmeli.`
+          : null,
       },
       source: 'yahoo_finance',
     };
@@ -7876,6 +8435,262 @@ async function fetchUzmanparaBistGainers() {
     return { success: true, items };
   } catch (err) {
     console.error('[Uzmanpara] BIST gainers error:', err.message);
+    return { success: false, message: err.message };
+  }
+}
+
+// ── Kaynak otoritesi katmanlaması ─────────────────────────────────────
+// Kaynak sayısı kapsamı ölçmez. Aynı ajans haberini yayınlayan 20 site 20
+// bağımsız kanıt değildir; bu yüzden tekilleştirme URL değil ALAN ADI
+// üzerinden yapılır ve alan adları otorite katmanına ayrılır.
+const SOURCE_TIER_PATTERNS = Object.freeze({
+  official: /(^|\.)(kap\.org\.tr|spk\.gov\.tr|tcmb\.gov\.tr|tuik\.gov\.tr|resmigazete\.gov\.tr|borsaistanbul\.com|mkk\.com\.tr|hmb\.gov\.tr)$/i,
+  primaryFinance: /(^|\.)(isyatirim\.com\.tr|isyatirim\.com|matriksdata\.com|foreks\.com|reuters\.com|bloomberg\.com|bloomberght\.com|finnet\.com\.tr|tradingview\.com)$/i,
+  majorMedia: /(^|\.)(aa\.com\.tr|dunya\.com|ekonomim\.com|patronlardunyasi\.com|hurriyet\.com\.tr|milliyet\.com\.tr|sabah\.com\.tr|ntv\.com\.tr|cnnturk\.com|bbc\.com|ft\.com|wsj\.com)$/i,
+  social: /(^|\.)(youtube\.com|youtu\.be|twitter\.com|x\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|eksisozluk\.com|forum\.|blogspot\.|medium\.com)/i,
+});
+
+function extractDomain(url) {
+  try {
+    const host = new URL(String(url)).hostname.toLowerCase();
+    return host.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+function classifySourceTier(domain) {
+  if (!domain) return 'other';
+  if (SOURCE_TIER_PATTERNS.official.test(domain)) return 'official';
+  if (SOURCE_TIER_PATTERNS.primaryFinance.test(domain)) return 'primaryFinance';
+  if (SOURCE_TIER_PATTERNS.social.test(domain)) return 'social';
+  if (SOURCE_TIER_PATTERNS.majorMedia.test(domain)) return 'majorMedia';
+  return 'other';
+}
+
+function summarizeClaimSources(citations = []) {
+  const list = (Array.isArray(citations) ? citations : []).filter(Boolean);
+  const byDomain = new Map();
+  for (const url of list) {
+    const domain = extractDomain(url);
+    const key = domain || String(url);
+    if (!byDomain.has(key)) byDomain.set(key, { domain: key, tier: classifySourceTier(domain), count: 0, urls: [] });
+    const entry = byDomain.get(key);
+    entry.count += 1;
+    if (entry.urls.length < 3) entry.urls.push(url);
+  }
+
+  const domains = [...byDomain.values()].sort((a, b) => b.count - a.count);
+  const tiers = { official: 0, primaryFinance: 0, majorMedia: 0, other: 0, social: 0 };
+  for (const entry of domains) tiers[entry.tier] += 1;
+
+  // Kaynak güveni katmanla belirlenir, sayıyla değil.
+  const sourceConfidence = tiers.official > 0
+    ? 'high'
+    : tiers.primaryFinance > 0
+      ? 'medium-high'
+      : tiers.majorMedia >= 2
+        ? 'medium'
+        : (tiers.social > 0 && tiers.majorMedia + tiers.other === 0)
+          ? 'low'
+          : 'low-medium';
+
+  const top = domains[0];
+  const dominantDomainWarning = top && list.length >= 4 && top.count / list.length >= 0.5
+    ? `UYARI: atıfların %${Math.round((top.count / list.length) * 100)}'i tek alan adından (${top.domain}) geliyor; bu bağımsız doğrulama değildir.`
+    : null;
+
+  return {
+    totalCitations: list.length,
+    uniqueDomains: domains.length,
+    tiers,
+    sourceConfidence,
+    domains: domains.slice(0, 15),
+    hasOfficialSource: tiers.official > 0,
+    dominantDomainWarning,
+  };
+}
+
+// ── Mynet Canlı Borsa: TÜM BIST panosu tek istekte ─────────────────────
+// Neden bu kaynak: Yahoo sembol başına bir istek ister; 600+ hisselik bir
+// evren için bu dakikalarca sürer ve rate-limit yer. Mynet aynı veriyi tek
+// sayfada, sunucu tarafında render edilmiş halde verir.
+//
+// Sayfada <table> YOKTUR. Veri, `<script type="text/x-handlebars-template"
+// id="stocksData">` içinde boru (|) ile ayrılmış düz bir dizidir ve dizinin
+// SONUNDA kendi şema açıklaması bulunur:
+//   |_id|l|h|L|C|t|dd|d|b|a|wa|tV|tT|code|index|url
+// Yani sayısal alanlar sembol kodundan ÖNCE gelir. Konumu tahmin etme —
+// parser bu legend'i okuyup alan sırasını ondan kurar; Mynet kolon eklerse
+// sessizce kaymak yerine parse başarısız olur.
+const MYNET_LIVE_BOARD_URL = 'https://finans.mynet.com/borsa/canliborsa/';
+const MYNET_BOARD_LEGEND_RE = /\|_id\|([a-zA-Z|]+)$/;
+// Legend dahil kayıt başına alan sayısı: 16 alan + '_' sonlandırıcı.
+const MYNET_BOARD_FIELD_TERMINATOR = '_';
+
+// BIST seans durumu. Piyasa kapalıyken "bugün alınabilir mi" sorusu yanlış
+// kurulmuş bir sorudur; cevap bir sonraki seansa ait olmalıdır. Canlı testte
+// 9 Ağustos 2026 PAZAR günü sistem "bugün alım" diye hüküm verdi — veri
+// Cuma kapanışıydı ve bunu söylemedi.
+function describeBistSession(now = new Date()) {
+  // BORSA SAATİ ≠ MAKİNE SAATİ. Seans Europe/Istanbul'a göre hesaplanır;
+  // makine başka bir saat diliminde olabilir (kullanıcı için Pazar akşamıyken
+  // İstanbul'da Pazartesi başlamış olabilir).
+  const istanbul = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
+  const day = istanbul.getDay(); // 0=Pazar, 6=Cumartesi
+  const minutes = istanbul.getHours() * 60 + istanbul.getMinutes();
+  const OPEN = 10 * 60;       // 10:00
+  const CLOSE = 18 * 60 + 10; // 18:10
+  const isWeekend = day === 0 || day === 6;
+  const isOpen = !isWeekend && minutes >= OPEN && minutes <= CLOSE;
+
+  // RESMÎ TATİL TAKVİMİ YOK. "Pazartesi açılır" demek varsayımdır — yarım gün,
+  // resmî tatil veya özel kapanış olabilir. Takvim doğrulanmadan gün adı
+  // vermek yerine "bir sonraki açık seans" denir.
+  const nextSession = 'bir sonraki açık BIST seansı';
+
+  return {
+    marketSession: isOpen ? 'OPEN' : 'CLOSED',
+    exchangeTimeZone: 'Europe/Istanbul',
+    exchangeLocalTime: istanbul.toISOString(),
+    nowUtc: now.toISOString(),
+    holidayCalendarChecked: false,
+    sessionNote: isOpen
+      ? 'BIST seansı açık (Europe/Istanbul); veriler gün içi ve gecikmelidir.'
+      : `BIST seansı KAPALI (${isWeekend ? 'hafta sonu' : 'seans dışı'}, Europe/Istanbul). Gösterilen fiyatlar SON KAPANIŞTIR. `
+        + `"Bugün al/sat" hükmü kurma — hüküm ${nextSession} için "izleme/plan" olarak ifade edilmeli. `
+        + 'Resmî tatil takvimi DOĞRULANMADI; belirli bir gün adı verme.',
+    nextSession,
+  };
+}
+
+function parseMynetNumber(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text || text === '-' || text === MYNET_BOARD_FIELD_TERMINATOR) return null;
+  // Mynet formatı: binlik ayıracı '.', ondalık ',' → 19.898.773.703,25
+  const parsed = Number(text.replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseMynetIndexMembership(value) {
+  const text = String(value || '');
+  if (!text || /^\*?null\*?$/i.test(text)) return [];
+  return [...new Set(text.split('*').map((part) => part.trim().toUpperCase()).filter((part) => /^XU\d{2,3}$/.test(part)))];
+}
+
+function parseMynetLiveBoardHtml(html = '') {
+  const blobMatch = String(html || '').match(/<script[^>]*id=["']stocksData["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!blobMatch) {
+    return { success: false, message: 'Mynet stocksData bloğu bulunamadı (sayfa yapısı değişmiş olabilir).' };
+  }
+
+  const blob = blobMatch[1].trim();
+  const legendStart = blob.lastIndexOf('|_id|');
+  if (legendStart < 0) {
+    return { success: false, message: 'Mynet stocksData şema legend\'i (|_id|...) bulunamadı; alan sırası doğrulanamadığı için parse edilmedi.' };
+  }
+
+  // Legend'i alan adlarına çevir: "_id|l|h|L|C|t|dd|d|b|a|wa|tV|tT|code|index|url"
+  const fields = blob.slice(legendStart + 1).split('|').map((f) => f.trim()).filter(Boolean);
+  const required = ['_id', 'l', 'h', 'L', 'C', 't', 'b', 'a', 'wa', 'tV', 'tT', 'code', 'index', 'url'];
+  const missing = required.filter((f) => !fields.includes(f));
+  if (missing.length > 0) {
+    return { success: false, message: `Mynet şeması beklenen alanları içermiyor (eksik: ${missing.join(', ')}). Parser güncellenmeli.` };
+  }
+
+  const at = Object.fromEntries(fields.map((f, i) => [f, i]));
+  const stride = fields.length + 1; // +1: kayıt sonundaki '_' sonlandırıcı
+  const tokens = blob.slice(0, legendStart).split('|');
+
+  const items = [];
+  const seen = new Set();
+  let malformed = 0;
+
+  for (let i = 0; i + fields.length <= tokens.length; i += stride) {
+    const record = tokens.slice(i, i + fields.length);
+    const code = String(record[at.code] || '').trim().toUpperCase();
+    const url = String(record[at.url] || '').trim();
+
+    // Hizalama denetimi: url her zaman "hisseler/<kod>-..." biçimindedir.
+    // Tutmuyorsa dizi kaymıştır; sessizce yanlış fiyat üretmektense atla.
+    //
+    // DİKKAT — iki tuzak:
+    // 1) Kod uzunluğu 5 DEĞİL: panoda ALTINS1 (Darphane Altın Sertifikası)
+    //    gibi 7 karakterli enstrümanlar var. {3,6} yazarsan sessizce düşerler.
+    // 2) `toLowerCase()` yerel-bağımsız olmalı. `toLocaleLowerCase('tr-TR')`
+    //    yazarsan 'I' → 'ı' olur ve içinde I geçen ~100 sembol (BIMAS, SISE,
+    //    ISCTR, ALKIM...) url karşılaştırmasında eşleşmez, hepsi elenir.
+    //    Bu dosyanın başka yerinde tr-TR lowercase kullanılıyor; buraya taşıma.
+    if (!code || !/^[A-Z0-9]{3,8}$/.test(code) || !url.toLowerCase().startsWith(`hisseler/${code.toLowerCase()}-`)) {
+      malformed += 1;
+      continue;
+    }
+    if (seen.has(code)) continue;
+    seen.add(code);
+
+    const last = parseMynetNumber(record[at.l]);
+    const high = parseMynetNumber(record[at.h]);
+    const low = parseMynetNumber(record[at.L]);
+    const turnover = parseMynetNumber(record[at.tT]);
+    const changePercent = parseMynetNumber(record[at.C]);
+    const indices = parseMynetIndexMembership(record[at.index]);
+
+    items.push({
+      symbol: code,
+      price: last,
+      // Mynet önceki kapanışı vermez; değişim yüzdesinden geri hesaplanır.
+      previousClose: last !== null && changePercent !== null && changePercent !== -100
+        ? +(last / (1 + changePercent / 100)).toFixed(4)
+        : null,
+      changePercent,
+      high,
+      low,
+      bid: parseMynetNumber(record[at.b]),
+      ask: parseMynetNumber(record[at.a]),
+      weightedAverage: parseMynetNumber(record[at.wa]),
+      volumeLot: parseMynetNumber(record[at.tV]),
+      turnoverTRY: turnover,
+      lastTradeTime: String(record[at.t] || '').trim() || null,
+      indices,
+      inXu030: indices.includes('XU030'),
+      inXu050: indices.includes('XU050'),
+      inXu100: indices.includes('XU100'),
+      // Fiyat aralık tutarlılığı: işlem görmeyen/durdurulan hissede last,
+      // günün [low, high] aralığı dışında kalabilir. Sessiz geçme, işaretle.
+      priceInDayRange: last !== null && high !== null && low !== null ? last >= low && last <= high : null,
+      sourceUrl: `https://finans.mynet.com/${url.replace(/^\/+/, '')}`,
+    });
+  }
+
+  if (items.length === 0) {
+    return { success: false, message: 'Mynet canlı borsa panosu parse edilemedi (0 geçerli kayıt).' };
+  }
+
+  return { success: true, items, malformed, fieldOrder: fields };
+}
+
+async function fetchMynetLiveBoard() {
+  try {
+    let html = '';
+    if (typeof fetch === 'function') {
+      const res = await fetch(MYNET_LIVE_BOARD_URL, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) return { success: false, message: `Mynet HTTP ${res.status}` };
+      html = await res.text();
+    } else {
+      html = await fetchURLFollowRedirects(MYNET_LIVE_BOARD_URL);
+    }
+
+    const parsed = parseMynetLiveBoardHtml(html);
+    if (!parsed.success) return parsed;
+    return { success: true, items: parsed.items, malformed: parsed.malformed };
+  } catch (err) {
+    console.error('[Mynet] Canlı borsa hatası:', err.message);
     return { success: false, message: err.message };
   }
 }
@@ -8046,12 +8861,121 @@ const FINANCIAL_KEY_ITEM_PATTERNS_BANK = [
   { key: 'krediler', label: 'Krediler', re: /(^|\d )krediler$/, pickLargest: true },
 ];
 
-function extractFinancialKeyItems(rows, group = 'XI_29') {
+// ── Sektör adaptörleri ────────────────────────────────────────────────
+// GEÇMİŞ HATA: seçim `group === 'XI_29' ? SANAYİ : BANKA` şeklinde İKİLİYDİ.
+// İş Yatırım'da yalnız üç grup kodu var (XI_29, UFRS, UFRS_K) ve sigorta
+// şirketleri de UFRS altındadır — dolayısıyla sigorta tabloları BANKA
+// kalıplarıyla taranıyor, hiçbir kalem eşleşmiyor ve şirket "veri formata
+// uymadı" diye analiz dışına düşüyordu. Holding ve GYO ise XI_29 içinde
+// jenerik kalıplarla okunuyor, sektöre özgü hiçbir kalem çıkmıyordu.
+//
+// Kural: sektör adaptörü ELEME sebebi değildir. Taban set her zaman çalışır;
+// sektör seti onu ZENGİNLEŞTİRİR. Adaptör bulunamazsa analiz yine yapılır,
+// yalnız sectorConfidence düşürülür ve bu cevapta raporlanır.
+const FINANCIAL_KEY_ITEM_PATTERNS_INSURANCE = [
+  { key: 'yazilanPrim', label: 'Yazılan Primler (Brüt)', re: /yazılan primler/ },
+  { key: 'kazanilmisPrim', label: 'Kazanılmış Primler', re: /kazanılmış primler/ },
+  { key: 'gerceklesenHasar', label: 'Gerçekleşen Hasarlar', re: /gerçekleşen hasarlar/ },
+  { key: 'teknikBolumDengesi', label: 'Teknik Bölüm Dengesi', re: /teknik bölüm dengesi/ },
+  { key: 'teknikKar', label: 'Teknik Kar/Zarar', re: /teknik (kar|bölüm kar)/ },
+  { key: 'yatirimGelirleri', label: 'Yatırım Gelirleri', re: /^yatırım gelirleri/ },
+];
+
+const FINANCIAL_KEY_ITEM_PATTERNS_REIT = [
+  { key: 'yatirimAmacliGayrimenkul', label: 'Yatırım Amaçlı Gayrimenkuller', re: /^yatırım amaçlı gayrimenkul/ },
+  { key: 'kiraGeliri', label: 'Kira Gelirleri', re: /kira gelir/ },
+  { key: 'gercegeUygunDegerKazanci', label: 'Yatırım Amaçlı Gayrimenkul Değer Artışı', re: /yatırım amaçlı gayrimenkul.*(değer artış|gerçeğe uygun)/ },
+];
+
+const FINANCIAL_KEY_ITEM_PATTERNS_HOLDING = [
+  { key: 'ozkaynakYontemiYatirimlar', label: 'Özkaynak Yöntemiyle Değerlenen Yatırımlar', re: /özkaynak yöntemiyle değerlenen yatırımlar/ },
+  { key: 'yatirimFaaliyetGelirleri', label: 'Yatırım Faaliyetlerinden Gelirler', re: /^yatırım faaliyetlerinden gelirler/ },
+  { key: 'finansalYatirimlar', label: 'Finansal Yatırımlar', re: /^finansal yatırımlar/ },
+];
+
+const SECTOR_ADAPTERS = Object.freeze({
+  BANK: { label: 'Banka / finansal kurum', base: FINANCIAL_KEY_ITEM_PATTERNS_BANK, extra: [] },
+  INSURANCE: { label: 'Sigorta', base: FINANCIAL_KEY_ITEM_PATTERNS_BANK, extra: FINANCIAL_KEY_ITEM_PATTERNS_INSURANCE },
+  REIT: { label: 'Gayrimenkul yatırım ortaklığı', base: FINANCIAL_KEY_ITEM_PATTERNS, extra: FINANCIAL_KEY_ITEM_PATTERNS_REIT },
+  HOLDING: { label: 'Holding', base: FINANCIAL_KEY_ITEM_PATTERNS, extra: FINANCIAL_KEY_ITEM_PATTERNS_HOLDING },
+  INDUSTRIAL: { label: 'Sanayi / ticaret / hizmet', base: FINANCIAL_KEY_ITEM_PATTERNS, extra: [] },
+});
+
+/**
+ * Sektörü GRUP KODUNDAN DEĞİL tablo satırlarının içeriğinden tespit eder.
+ * Grup kodu üç değerlidir ve sigortayı bankadan ayırmaz; satır adları ayırır.
+ */
+function detectFinancialSector(rows = [], group = 'XI_29', symbol = '') {
+  const text = rows.map((r) => String(r?.itemDescTr || '').toLocaleLowerCase('tr-TR')).join('\n');
+
+  // SATIRIN VARLIĞI ≠ SEKTÖR.
+  // GEÇMİŞ HATA: "yatırım amaçlı gayrimenkul" düz metin araması THYAO'yu
+  // REIT/GYO sanıyordu — o satır standart bir TFRS kalemidir ve değeri sıfıra
+  // yakın olsa bile tabloda bulunur. Havayolu şirketi GYO olarak etiketlendi.
+  // Aynısı "özkaynak yöntemiyle değerlenen yatırımlar" için de geçerli:
+  // iştiraki olan her şirkette vardır, holding olmasını gerektirmez.
+  //
+  // Ayırt edici olan ÖNEMLİLİK: kalemin toplam varlıklara oranı.
+  const norm = (s) => String(s || '').toLocaleLowerCase('tr-TR');
+  const firstValue = (re) => {
+    const row = rows.find((r) => re.test(norm(r?.itemDescTr)));
+    const v = row ? Number(row.value1) : NaN;
+    return Number.isFinite(v) ? Math.abs(v) : null;
+  };
+  const totalAssets = firstValue(/^toplam varlıklar$|^aktif toplamı$/) || firstValue(/toplam varlıklar/);
+  const shareOf = (re) => {
+    const v = firstValue(re);
+    if (!totalAssets || !v) return 0;
+    return v / totalAssets;
+  };
+  const MATERIALITY = 0.20; // toplam varlıkların %20'si
+
+  const investmentPropertyShare = shareOf(/yatırım amaçlı gayrimenkul/);
+  const equityMethodShare = shareOf(/özkaynak yöntemiyle değerlenen yatırımlar/);
+
+  const hits = {
+    insurance: /yazılan primler|kazanılmış primler|teknik bölüm dengesi|gerçekleşen hasarlar/.test(text),
+    bank: /net faiz geliri|mevduat|faaliyet gelirleri\/giderleri toplamı/.test(text),
+    // Sembol eki güçlü sinyaldir (GYO/GMYO ünvanda zorunlu); metin tek başına değil.
+    reit: /gmyo|gyo$/i.test(String(symbol || '')) || investmentPropertyShare >= MATERIALITY,
+    holding: /hol$|holding/i.test(String(symbol || '')) || equityMethodShare >= MATERIALITY,
+  };
+
+  if (hits.insurance) return { sector: 'INSURANCE', confidence: 'high', basis: 'teknik bölüm/prim kalemleri tabloda bulundu' };
+  if (hits.bank) return { sector: 'BANK', confidence: 'high', basis: 'net faiz geliri/mevduat kalemleri tabloda bulundu' };
+  if (hits.reit) {
+    return {
+      sector: 'REIT',
+      confidence: investmentPropertyShare >= MATERIALITY ? 'high' : 'medium',
+      basis: investmentPropertyShare >= MATERIALITY
+        ? `yatırım amaçlı gayrimenkul toplam varlıkların %${Math.round(investmentPropertyShare * 100)}'i`
+        : 'sembol eki (GYO/GMYO)',
+    };
+  }
+  if (hits.holding) {
+    return {
+      sector: 'HOLDING',
+      confidence: equityMethodShare >= MATERIALITY ? 'high' : 'medium',
+      basis: equityMethodShare >= MATERIALITY
+        ? `özkaynak yöntemi yatırımları toplam varlıkların %${Math.round(equityMethodShare * 100)}'i`
+        : 'sembol eki (HOL/HOLDING)',
+    };
+  }
+  if (group !== 'XI_29') {
+    return { sector: 'BANK', confidence: 'low', basis: `grup kodu ${group} finansal kurum tablosuna işaret ediyor ama sektöre özgü kalem bulunamadı` };
+  }
+  return { sector: 'INDUSTRIAL', confidence: 'medium', basis: 'XI_29 genel sanayi/ticaret tablosu' };
+}
+
+function extractFinancialKeyItems(rows, group = 'XI_29', sector = null) {
   const norm = (s) => String(s || '').toLocaleLowerCase('tr-TR').trim();
   const rowValues = (r) => [r.value1, r.value2, r.value3, r.value4].map((v) => (Number.isFinite(Number(v)) && v !== null ? Number(v) : null));
   const keyItems = [];
   const taken = new Set();
-  const patterns = group === 'XI_29' ? FINANCIAL_KEY_ITEM_PATTERNS : FINANCIAL_KEY_ITEM_PATTERNS_BANK;
+  const adapter = SECTOR_ADAPTERS[sector] || (group === 'XI_29' ? SECTOR_ADAPTERS.INDUSTRIAL : SECTOR_ADAPTERS.BANK);
+  // Taban + sektör kalıpları birlikte taranır; sektör kalemi bulunamazsa taban
+  // sonuçlar yine döner (şirket elenmez).
+  const patterns = [...adapter.base, ...adapter.extra];
   for (const pattern of patterns) {
     let row;
     if (pattern.pickLargest) {
@@ -8131,8 +9055,31 @@ async function fetchKapBistUniverseSymbols() {
   }
 }
 
-async function buildDynamicBistResearchUniverse(extraSymbols = [], limit = 45, fullUniverse = false) {
+async function buildDynamicBistResearchUniverse(extraSymbols = [], limit = 45, fullUniverse = false, board = null) {
   const extras = extraSymbols.map(resolveBistSymbol).filter(Boolean).filter((symbol) => /\.IS$/i.test(symbol));
+
+  // BİRİNCİL EVREN: Mynet canlı borsa panosu.
+  // KAP şirket listesinden üstündür çünkü panoda BUGÜN İŞLEM GÖREN enstrümanlar
+  // vardır ve her biri işlem hacmiyle (TL) gelir. Bu sayede tarama sırası
+  // gerçek likiditeye göre kurulur; "45 sembollük statik geliştirici listesi"
+  // yanlılığı ortadan kalkar. Tek HTTP isteğiyle 600+ sembol gelir, dolayısıyla
+  // ön eleme Yahoo'ya hiç dokunmadan yapılabilir.
+  if (board && board.success && Array.isArray(board.items) && board.items.length > 0) {
+    const tradable = board.items
+      .filter((item) => item.price !== null && item.price > 0)
+      .sort((a, b) => (b.turnoverTRY ?? -1) - (a.turnoverTRY ?? -1))
+      .map((item) => `${item.symbol}.IS`);
+    const ordered = [...new Set([...extras, ...tradable])];
+    const cap = fullUniverse ? ordered.length : Math.max(1, Math.min(limit, ordered.length));
+    return {
+      source: 'MYNET_LIVE_BOARD',
+      sourceDetail: `Mynet canli borsa panosu (${board.items.length} enstruman, islem hacmi sirali) + kullanici sembolleri`,
+      totalCount: ordered.length,
+      symbols: ordered.slice(0, cap),
+      warning: null,
+    };
+  }
+
   const kapResult = await fetchKapBistUniverseSymbols();
   if (!kapResult.success) {
     return {
@@ -8196,7 +9143,34 @@ function scoreResearchTrendQuality(trend, rangePosition, volumeRatio) {
   return clampResearchScore(score);
 }
 
-function buildLiveResearchCandidate(symbol, marketData, discoveryTags, config) {
+// ── Çapraz kaynak tutarlılık kontrolü ─────────────────────────────────
+// Aynı taramada iki BAĞIMSIZ fiyat kaynağı var: Mynet panosu (gecikmeli son
+// işlem) ve Yahoo (regularMarketPrice). İkisi uyuşmuyorsa bunu cevaba taşımak
+// şart — aksi halde iki araç aynı hisse için farklı sayı üretir ve hangisinin
+// doğru olduğu belirsiz kalır. Sapma toleransı geniş tutulur: kaynaklar farklı
+// gecikmelerle çalışır, küçük fark normaldir.
+const CROSS_SOURCE_PRICE_TOLERANCE_PERCENT = 3;
+
+function buildCrossSourcePriceCheck(mynetItem, yahooPrice) {
+  if (!mynetItem || mynetItem.price === null || !Number.isFinite(Number(yahooPrice)) || Number(yahooPrice) <= 0) {
+    return { status: 'SINGLE_SOURCE', mynetPrice: mynetItem ? mynetItem.price : null, yahooPrice: Number.isFinite(Number(yahooPrice)) ? Number(yahooPrice) : null, deviationPercent: null };
+  }
+  const mynetPrice = Number(mynetItem.price);
+  const deviation = ((Number(yahooPrice) - mynetPrice) / mynetPrice) * 100;
+  const rounded = +deviation.toFixed(2);
+  return {
+    status: Math.abs(rounded) <= CROSS_SOURCE_PRICE_TOLERANCE_PERCENT ? 'AGREE' : 'DIVERGENT',
+    mynetPrice,
+    yahooPrice: Number(yahooPrice),
+    deviationPercent: rounded,
+    tolerancePercent: CROSS_SOURCE_PRICE_TOLERANCE_PERCENT,
+    note: Math.abs(rounded) <= CROSS_SOURCE_PRICE_TOLERANCE_PERCENT
+      ? null
+      : `Mynet ${mynetPrice} ile Yahoo ${Number(yahooPrice)} arasinda %${rounded} sapma var. Fiyat iddiasi kurmadan once hangi kaynagin ve hangi zamanin kullanildigi belirtilmeli.`,
+  };
+}
+
+function buildLiveResearchCandidate(symbol, marketData, discoveryTags, config, mynetItem = null) {
   const data = marketData.data;
   const avgVolume = Number(data.avgVolume || 0);
   const volatility = Number(data.volatility || 0);
@@ -8250,6 +9224,16 @@ function buildLiveResearchCandidate(symbol, marketData, discoveryTags, config) {
       sampleSize,
       dataAsOf: new Date().toISOString(),
       sourceEvidenceId: `ev-yahoo-${symbol.replace(/[^A-Z0-9]/gi, '-')}`,
+      // Mynet panosundan gelen bağımsız ölçüler. turnoverTRY gerçek likidite
+      // göstergesidir (lot sayısı fiyat farkını gizler); indices ise endeks
+      // ÜYELİĞİDİR, ağırlık değildir.
+      turnoverTRY: mynetItem ? mynetItem.turnoverTRY : null,
+      indices: mynetItem ? mynetItem.indices : [],
+      inXu030: mynetItem ? mynetItem.inXu030 : null,
+      inXu100: mynetItem ? mynetItem.inXu100 : null,
+      boardPrice: mynetItem ? mynetItem.price : null,
+      boardLastTradeTime: mynetItem ? mynetItem.lastTradeTime : null,
+      crossSourcePriceCheck: buildCrossSourcePriceCheck(mynetItem, data.price),
     },
     softScores: {
       liquidity,
@@ -8344,14 +9328,27 @@ async function runLiveInvestmentResearchScan(args = {}, options = {}) {
   const defaultScanLimit = fullUniverse ? DEFAULT_BIST_EQUITY_UNIVERSE.length : 45;
   const scanLimit = Math.max(10, Math.min(parseInt(args.scanLimit ?? defaultScanLimit, 10) || defaultScanLimit, DEFAULT_BIST_EQUITY_UNIVERSE.length));
   const extraSymbols = String(args.symbols || '').split(/[,;]+/).map((symbol) => symbol.trim()).filter(Boolean);
-  const universeBuild = await buildDynamicBistResearchUniverse(extraSymbols, scanLimit, fullUniverse);
+
+  // KADEME 1 — tek istekte tüm pano. Evren, likidite sıralaması ve endeks
+  // üyeliği buradan gelir; Yahoo'ya yalnızca ön elemeyi geçen semboller için
+  // gidilir. Önceki sürüm evrenin her sembolüne Yahoo isteği atıyordu.
+  const board = await fetchMynetLiveBoard();
+  const boardBySymbol = board.success
+    ? new Map(board.items.map((item) => [item.symbol, item]))
+    : new Map();
+
+  const universeBuild = await buildDynamicBistResearchUniverse(extraSymbols, scanLimit, fullUniverse, board);
   const universeSymbols = universeBuild.symbols;
   const mandateGuidance = buildRuntimeResearchMandate(args);
+  // BİRİM DEĞİŞTİ (2026-08-09): eski eşikler (24/35/45) aralık genişliği
+  // içindi. Artık `volatility` günlük getiri standart sapmasıdır; BIST'te
+  // tipik günlük volatilite %2-4, yükselen rejimde %5-8. Eşikler bu birime
+  // göre yeniden konuldu — eskisi kalsaydı filtre hiçbir şeyi elemezdi.
   const riskVolatilityCap = mandateGuidance.mandate.riskTolerance === 'low'
-    ? 24
+    ? 3
     : mandateGuidance.mandate.riskTolerance === 'high'
-      ? 45
-      : 35;
+      ? 8
+      : 5;
   const config = {
     minimumAverageDailyVolume: Number.isFinite(Number(args.minimumAverageDailyVolume)) ? Number(args.minimumAverageDailyVolume) : 100000,
     minimumSampleSize: 20,
@@ -8383,6 +9380,24 @@ async function runLiveInvestmentResearchScan(args = {}, options = {}) {
   const candidates = [];
   const evidence = gainerEvidence ? [gainerEvidence] : [];
 
+  if (board.success) {
+    evidence.push({
+      evidenceId: 'ev-mynet-canli-borsa',
+      sourceTier: 'TIER_C_REPUTABLE_SECONDARY',
+      sourceType: 'market_board_snapshot',
+      publisher: 'Mynet Finans',
+      title: 'BIST canli borsa panosu',
+      url: MYNET_LIVE_BOARD_URL,
+      retrievedAt: fetchedAt,
+      supportsClaimIds: [],
+      contradictsClaimIds: [],
+      freshnessStatus: 'DELAYED_15MIN',
+      itemCount: board.items.length,
+      lastTradeTime: board.items[0]?.lastTradeTime || null,
+      note: 'Fiyat/hacim/islem hacmi ve XU030-XU050-XU100 uyeligi. Uyelik agirlik degildir.',
+    });
+  }
+
   // Sıralı tarama 45 sembolde dakikalar sürüyordu; 5'li eşzamanlılık tipik
   // taramayı ~2 dk'dan ~20-30 sn'ye indirir. Daha yüksek eşzamanlılık Yahoo
   // throttle riskini artırır.
@@ -8405,8 +9420,12 @@ async function runLiveInvestmentResearchScan(args = {}, options = {}) {
       continue;
     }
 
+    const bareSymbol = symbol.replace(/\.IS$/i, '');
+    const mynetItem = boardBySymbol.get(bareSymbol) || null;
     const discoveryTags = gainerSymbols.has(symbol) ? ['recent_gainer'] : [];
-    const candidate = buildLiveResearchCandidate(symbol, yf, discoveryTags, config);
+    if (mynetItem?.inXu030) discoveryTags.push('xu030_member');
+    else if (mynetItem?.inXu100) discoveryTags.push('xu100_member');
+    const candidate = buildLiveResearchCandidate(symbol, yf, discoveryTags, config, mynetItem);
     candidates.push(candidate);
     evidence.push({
       evidenceId: candidate.metrics.sourceEvidenceId,
@@ -8437,6 +9456,19 @@ async function runLiveInvestmentResearchScan(args = {}, options = {}) {
   if (onlyRecentGainers) policyWarnings.push('Fresh market scan sadece recent_gainer evreninden olusamaz.');
   if (universeSymbols.length < 10) policyWarnings.push('Evren dar; genis piyasa taramasi icin daha fazla sembol gerekir.');
   if (universeBuild.warning) policyWarnings.push(universeBuild.warning);
+  if (!board.success) {
+    policyWarnings.push(`Mynet canli borsa panosu alinamadi (${board.message}); evren ikincil kaynaktan kuruldu ve islem hacmi (TL) likidite olcusu bu taramada yok.`);
+  }
+  // Çapraz kaynak çelişkisi sessiz kalmamalı: aynı hisse için iki kaynak farklı
+  // fiyat veriyorsa cevapta hangi sayının kullanıldığı belirtilmeli.
+  const divergent = researchable.filter((candidate) => candidate.metrics.crossSourcePriceCheck?.status === 'DIVERGENT');
+  if (divergent.length > 0) {
+    policyWarnings.push(
+      `Capraz kaynak fiyat celiskisi (${divergent.length} sembol): ${divergent
+        .map((candidate) => `${candidate.candidateId} Mynet ${candidate.metrics.crossSourcePriceCheck.mynetPrice} vs Yahoo ${candidate.metrics.crossSourcePriceCheck.yahooPrice} (%${candidate.metrics.crossSourcePriceCheck.deviationPercent})`)
+        .join('; ')}. Bu sembollerde fiyat iddiasi kurarken kaynak ve zaman damgasi acikca yazilmali.`,
+    );
+  }
   if (universeBuild.source === 'STATIC_FALLBACK') {
     policyWarnings.push('Evren statik gelistirici listesinden kuruldu; yeni halka arzlar ve liste disi sirketler taramada yoktur. Sonuclar tam piyasa taramasi olarak sunulamaz.');
   } else if (universeBuild.totalCount && universeSymbols.length < universeBuild.totalCount) {
@@ -8463,6 +9495,9 @@ async function runLiveInvestmentResearchScan(args = {}, options = {}) {
       sourceDetail: universeBuild.sourceDetail,
       universeTotalCount: universeBuild.totalCount,
       scannedCount: universeSymbols.length,
+      boardSize: board.success ? board.items.length : null,
+      boardLastTradeTime: board.success ? board.items[0]?.lastTradeTime || null : null,
+      liquidityOrdering: board.success ? 'turnover_try_desc' : 'static_priority',
     },
     excludedReasons: eliminated.flatMap((candidate) => candidate.hardFilterFailures),
   };
@@ -9552,6 +10587,49 @@ async function chat(message, options = {}) {
   const strategyInsights = getStrategyInsights();
   if (strategyInsights) systemPrompt += strategyInsights;
 
+  // ── Araştırma Sözleşmesi (plan → kanıt topla → defteri oku → karşılaştır) ──
+  // Sözleşme yalnız karmaşık isteklerde zorunlu; "THYAO kaç TL" sorusuna plan
+  // kurmak saf israftır. Karar deterministik bir karmaşıklık skoruyla verilir
+  // ve gerekçesi aktivite log'una yazılır.
+  // KOŞU KAPSAMI: main.cjs bir kullanıcı isteği için chat()'i birden çok kez
+  // çağırır (onarım, tamamlama turları). Koşu dışarıdan verilirse plan ve
+  // kanıt defteri o turlar boyunca YAŞAR; verilmezse bu çağrıya özgü olur.
+  const researchContract = options.researchRun
+    || researchContractLib.createResearchRun({ userQuestion: message });
+  // Karmaşıklık koşuya SABİTLENİR — onarım turunun metni yeniden puanlanmaz.
+  const researchComplexity = researchContract.complexity
+    || researchContractLib.requiresResearchContract(message);
+
+  // Plan kilitliyken submit_research_plan modele HİÇ gösterilmez.
+  // Dispatcher zaten reddediyordu ama model onu çağırıp bir iterasyon
+  // harcıyordu; reddedileceği kesin olan bir aracı listede tutmak israf.
+  const availableTools = () => (
+    researchContract.get().planned
+      ? TOOLS.filter((t) => t.function.name !== 'submit_research_plan')
+      : TOOLS
+  );
+  if (researchComplexity.required) {
+    if (onActivity) {
+      onActivity({
+        type: 'research_contract',
+        detail: `Araştırma sözleşmesi zorunlu (skor ${researchComplexity.score}/${researchComplexity.threshold}: ${researchComplexity.signals.join(', ')})`,
+        timestamp: Date.now(),
+      });
+    }
+    systemPrompt += `
+
+## ARAŞTIRMA SÖZLEŞMESİ ZORUNLU
+Bu istek çok parçalı/karar seviyesi bir araştırma (karmaşıklık ${researchComplexity.score}/${researchComplexity.threshold}: ${researchComplexity.signals.join(', ')}).
+İLK çağıracağın araç **submit_research_plan** olmalı. Plan kilitlenmeden kanıt üreten hiçbir araç çalışmaz.
+Soruyu çıktı türüne göre AYIR — bunlar farklı sorulardır, tek sıralamada birleştirilemez:
+- structural_leader: endeks üyeliği + likidite (yapısal büyüklük)
+- current_leader: fiyat + teknik (güncel relatif güç)
+- investable_candidate: temel + fiyat uzaması (bugün alınabilirlik)
+Bir şirket birinci listede olup üçüncüde olmayabilir; bu çelişki DEĞİLDİR.
+requiredEvidence yalnız şu üretilebilir sınıflardan seçilir: ${researchContractLib.PRODUCIBLE_EVIDENCE_CLASSES.join(', ')}.
+Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallback ekle; zorunlu kanıtı düşürme.`;
+  }
+
   // ── Yürütme Sözleşmesi (plan → uygula → geri oku → karşılaştır → sınırlı düzelt) ──
   const executionContract = executionContractLib.createExecutionContract();
   systemPrompt += `
@@ -9594,7 +10672,7 @@ async function chat(message, options = {}) {
     let completion = await createChatCompletionWithFallback(openai, {
       model: activeModel,
       messages,
-      tools: TOOLS,
+      tools: availableTools(),
       tool_choice: 'auto',
       temperature: 0.7,
       max_completion_tokens: 4096,
@@ -9639,8 +10717,15 @@ async function chat(message, options = {}) {
           telegramReader,
           executionContract,
           registerSurgicalRequest,
+          researchContract,
+          researchComplexity,
         });
         const toolDuration = Date.now() - toolStart;
+
+        // Kanıt kaydı (epistemik) — timing kaydından (performans) AYRI tutulur.
+        // Hangi araç, hangi sembol için, hangi kanıt sınıfını, hangi veri
+        // zamanıyla üretti. Başarısız çağrı kanıt yazmaz.
+        researchContract.record(fnName, fnArgs, result);
 
         // Timing kaydet
         _toolTimings.push({ tool: fnName, args: fnArgs, duration: toolDuration, success: result?.success !== false, cached: toolDuration < 50 });
@@ -9715,7 +10800,7 @@ async function chat(message, options = {}) {
       completion = await createChatCompletionWithFallback(openai, {
         model: activeModel,
         messages: nextMessages,
-        tools: TOOLS,
+        tools: availableTools(),
         tool_choice: 'auto',
         temperature: 0.7,
         max_completion_tokens: 4096,
@@ -9781,7 +10866,7 @@ async function chat(message, options = {}) {
         completion = await createChatCompletionWithFallback(openai, {
           model: activeModel,
           messages: [{ role: 'system', content: systemPrompt }, ...workingHistory],
-          tools: TOOLS,
+          tools: availableTools(),
           tool_choice: 'auto',
           temperature: 0.3,
           max_completion_tokens: 4096,
@@ -9856,7 +10941,7 @@ async function chat(message, options = {}) {
         completion = await createChatCompletionWithFallback(openai, {
           model: activeModel,
           messages: forceMessages,
-          tools: TOOLS,
+          tools: availableTools(),
           tool_choice: 'none',
           temperature: 0.6,
           max_completion_tokens: 2048,
@@ -9967,6 +11052,58 @@ async function chat(message, options = {}) {
           duration: totalRequestDuration,
           timestamp: Date.now(),
         });
+      }
+    }
+
+    // ── Araştırma sözleşmesi kapanışı ────────────────────────────────
+    // Tamamlanma modelin beyanından DEĞİL, gerçekte çalışan araçlardan
+    // türetilen kanıt defterinden hesaplanır. "Yaptım" demek kanıt değildir.
+    const finalContract = researchContract.get();
+    if (finalContract.planned) {
+      // Kanıt defteri _toolTimings'ten DEĞİL, araçlar çalışırken tutulan
+      // yapılandırılmış kayıttan kurulur. _toolTimings performans ölçümüdür;
+      // ondan türetmek her olaya "şimdi" damgası basıp TTL'i devre dışı
+      // bırakıyordu ve sembol bilgisi hiç yoktu.
+      const ledger = buildEvidenceLedger(researchContract.events(), Date.now());
+      const coverage = researchContractLib.evaluateContract(finalContract, ledger, Date.now());
+
+      if (onActivity) {
+        onActivity({
+          type: 'research_contract',
+          detail: `Sözleşme kapanışı: ${coverage.status} — cevaplanabilir: ${coverage.answerableIds.join(', ') || 'yok'}; bloke: ${coverage.blockedIds.join(', ') || 'yok'}`,
+          timestamp: Date.now(),
+        });
+      }
+
+      const lines = coverage.subQuestions.map((sq) => {
+        const mark = sq.status === 'COMPLETE' ? '✓' : sq.status === 'PARTIAL' ? '◐' : '✗';
+        // Eksik kanıtı HANGİ SEMBOL için eksik olduğuyla birlikte yaz.
+        // "eksik: TECHNICAL_SIGNAL" tek başına gizemliydi; asıl bilgi
+        // hangi sembolün ölçülmediğidir (canlı vakada XU100).
+        const byEntity = new Map((sq.missingByEntity || []).map((m) => [m.evidenceClass, m.entities]));
+        const miss = sq.missingEvidence.length > 0
+          ? ` — eksik: ${sq.missingEvidence.map((k) => {
+            const ents = byEntity.get(k);
+            return ents && ents.length > 0 ? `${k} (${ents.join(', ')})` : k;
+          }).join(', ')}`
+          : '';
+        return `${mark} [${sq.id}] ${sq.question} (${sq.outputKind}): ${sq.status}${miss}`;
+      });
+
+      finalContent += [
+        '',
+        '',
+        '---',
+        `📋 ARAŞTIRMA SÖZLEŞMESİ KAPSAMI (deterministik, plan v${finalContract.planVersion}): ${coverage.status}`,
+        ...lines,
+      ].join('\n');
+
+      if (coverage.blockedIds.length > 0) {
+        finalContent += [
+          '',
+          `Bloke alt sorular için hüküm verilmedi. Eksik kanıtı toplayacak araçlar: ${coverage.repairPlan.join(', ') || 'yok'}.`,
+          'Kapsanan alt sorulardaki bulgular geçerlidir; eksik katman yüzünden tüm araştırma geçersiz sayılmaz.',
+        ].join('\n');
       }
     }
 

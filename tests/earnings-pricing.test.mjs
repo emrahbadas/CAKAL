@@ -55,13 +55,13 @@ describe('earnings-pricing (deterministik fiyatlanma motoru)', () => {
   it('exposes the honest categorical classification set', () => {
     expect(PRICING_CLASSIFICATIONS).toContain('NOT_ASSESSED');
     expect(PRICING_CLASSIFICATIONS).toContain('INSUFFICIENT_DATA');
-    expect(PRICING_CLASSIFICATIONS).toContain('LOW_EVIDENCE_OF_PRICING');
-    expect(PRICING_CLASSIFICATIONS).toContain('PARTIALLY_PRICED');
-    expect(PRICING_CLASSIFICATIONS).toContain('LARGELY_PRICED');
-    expect(PRICING_CLASSIFICATIONS).toContain('OVEREXTENDED');
+    expect(PRICING_CLASSIFICATIONS).toContain('NOT_EXTENDED');
+    expect(PRICING_CLASSIFICATIONS).toContain('PARTIALLY_EXTENDED');
+    expect(PRICING_CLASSIFICATIONS).toContain('PRICE_EXTENDED');
+    expect(PRICING_CLASSIFICATIONS).toContain('PRICE_OVEREXTENDED');
   });
 
-  it('senaryo: güçlü fakat önceden fiyatlanmış bilanço → LARGELY_PRICED/OVEREXTENDED + dil güvenliği', () => {
+  it('senaryo: güçlü fakat önceden fiyatlanmış bilanço → PRICE_EXTENDED/PRICE_OVEREXTENDED + dil güvenliği', () => {
     const result = assessEarningsPricing({
       symbol: 'TEST',
       bars: pricedInBars(),
@@ -69,7 +69,7 @@ describe('earnings-pricing (deterministik fiyatlanma motoru)', () => {
       announcementDate: ANNOUNCEMENT,
     });
 
-    expect(['LARGELY_PRICED', 'OVEREXTENDED']).toContain(result.classification);
+    expect(['PRICE_EXTENDED', 'PRICE_OVEREXTENDED']).toContain(result.classification);
     expect(result.mode).toBe('ANNOUNCEMENT_ANCHORED');
     expect(result.profitTakingRisk).toBe('high');
     expect(result.evidence.return20d).toBeGreaterThan(25);
@@ -85,7 +85,7 @@ describe('earnings-pricing (deterministik fiyatlanma motoru)', () => {
     expect(result.constraints.timingVerdictAllowed).toBe(true);
   });
 
-  it('senaryo: güçlü ve fiyatlanmamış bilanço → LOW_EVIDENCE_OF_PRICING, kısıt yok', () => {
+  it('senaryo: güçlü ve fiyatlanmamış bilanço → NOT_EXTENDED, kısıt yok', () => {
     const result = assessEarningsPricing({
       symbol: 'TEST',
       bars: buildBars(120, () => 100, () => 1_000_000),
@@ -93,7 +93,7 @@ describe('earnings-pricing (deterministik fiyatlanma motoru)', () => {
       announcementDate: ANNOUNCEMENT,
     });
 
-    expect(result.classification).toBe('LOW_EVIDENCE_OF_PRICING');
+    expect(result.classification).toBe('NOT_EXTENDED');
     expect(result.profitTakingRisk).toBe('low');
     expect(result.verdictPolicy).toBe('FRESH_CATALYST_POSSIBLE');
     expect(result.constraints.forbiddenPhrases).toHaveLength(0);
@@ -185,7 +185,7 @@ describe('evaluateEarningsPricingGate (provenance tabanlı fiyatlanma kilidi)', 
   const completedEvent = {
     type: 'tool_call',
     tool: EARNINGS_PRICING_TOOL,
-    detail: 'sınıflandırma: LARGELY_PRICED (veri güveni: high, beklenti sürprizi: UNKNOWN)',
+    detail: 'sınıflandırma: PRICE_EXTENDED (veri güveni: high, beklenti sürprizi: UNKNOWN)',
     timestamp: Date.now(),
   };
 

@@ -412,10 +412,60 @@ function getInvestmentResearchForbiddenShortcuts(mode) {
     : ['select_only_recent_gainers', 'use_search_snippet_as_evidence', 'recommend_from_single_source', 'skip_counter_thesis', 'use_memory_as_evidence', 'use_watchlist_as_seed'];
 }
 
+// ── State provenance ──────────────────────────────────────────────────
+// GEÇMİŞ SORUN: bu kapı `payload.completedStates`'i MODELİN BEYANINDAN
+// okuyordu. Model "VALUATION_ANALYSIS tamamlandı" derse kapı onaylıyordu;
+// yani deterministik görünen bir kapı aslında şeref sistemiydi.
+//
+// Artık iki sınıf ayrılıyor:
+//   - KANITLANABİLİR state: bir aracın çalışmış olması gerekir. Beyan var
+//     ama araç yoksa bu bir İHLALDİR ve bloklar.
+//   - ANLATISAL state: hiçbir araçla kanıtlanamaz (charter yazmak, red team
+//     yapmak). Bunlar "self-declared" olarak işaretlenir; doğrulanmış gibi
+//     sunulmaz ama tek başına blok sebebi de değildir.
+const STATE_PROVENANCE_TOOLS = Object.freeze({
+  UNIVERSE_FROZEN: ['run_investment_research_scan', 'get_bist_board'],
+  DISCOVERY_RESEARCH: ['run_investment_research_scan', 'get_bist_gainers', 'get_bist_board', 'web_search'],
+  CANDIDATE_SCREENING: ['run_investment_research_scan'],
+  DEEP_DIVE_RESEARCH: ['get_financial_statements', 'verify_claim'],
+  VALUATION_ANALYSIS: ['get_financial_statements'],
+  EVIDENCE_VALIDATION: ['verify_claim'],
+  RISK_ANALYSIS: ['analyze_finance_signal', 'judge_opportunity'],
+});
+
+function extractProvenanceToolNames(events = []) {
+  return new Set(
+    (Array.isArray(events) ? events : [])
+      .filter((event) => event && event.type === 'tool_call' && event.tool)
+      .map((event) => String(event.tool)),
+  );
+}
+
+function buildStateProvenance(claimedStates = [], events = []) {
+  const usedTools = extractProvenanceToolNames(events);
+  const attested = [];
+  const unverified = [];
+  const selfDeclared = [];
+
+  for (const state of claimedStates) {
+    const requiredTools = STATE_PROVENANCE_TOOLS[state];
+    if (!requiredTools) {
+      selfDeclared.push(state);
+      continue;
+    }
+    if (requiredTools.some((tool) => usedTools.has(tool))) attested.push(state);
+    else unverified.push({ state, expectedAnyOf: requiredTools });
+  }
+
+  return { usedTools: [...usedTools], attestedStates: attested, unverifiedStates: unverified, selfDeclaredStates: selfDeclared };
+}
+
 function runInvestmentResearchWorkflowPolicy(payload) {
   const mode = payload.mode || detectInvestmentResearchMode(payload.message);
   const requiredPlan = getInvestmentResearchPlanForMode(mode);
-  const completed = new Set(Array.isArray(payload.completedStates) ? payload.completedStates : []);
+  const claimedStates = Array.isArray(payload.completedStates) ? payload.completedStates : [];
+  const provenance = buildStateProvenance(claimedStates, payload.activityEvents || payload.events || []);
+  const completed = new Set(claimedStates);
   const usedShortcuts = new Set(Array.isArray(payload.usedShortcuts) ? payload.usedShortcuts : []);
   if (payload.memoryCandidatesUsed) usedShortcuts.add('use_memory_as_evidence');
   if (payload.watchlistSeedUsed) usedShortcuts.add('use_watchlist_as_seed');
@@ -453,14 +503,30 @@ function runInvestmentResearchWorkflowPolicy(payload) {
     }
   }
 
+  // Beyan edilen ama araç kanıtı olmayan state'ler ihlaldir: kapı modelin
+  // sözüne değil, çalışmış araca bakar.
+  for (const item of provenance.unverifiedStates) {
+    blockingReasons.push(
+      `State beyan edildi fakat arac kaniti yok: ${item.state} (beklenen araclardan biri: ${item.expectedAnyOf.join(', ')})`,
+    );
+  }
+
+  const warnings = payload.mandate ? [] : ['Mandate eksik: kisisellestirilmis AL/SAT ve pozisyon buyuklugu uretilemez.'];
+  if (provenance.selfDeclaredStates.length > 0) {
+    warnings.push(
+      `Su state'ler hicbir aracla dogrulanamaz, yalnizca beyandir: ${provenance.selfDeclaredStates.join(', ')}. Cevapta bunlari "dogrulandi" diye sunma.`,
+    );
+  }
+
   return {
     action: 'research_workflow_policy',
     mode,
     requiredPlan,
+    provenance,
     validation: {
       passed: blockingReasons.length === 0,
       blockingReasons,
-      warnings: payload.mandate ? [] : ['Mandate eksik: kisisellestirilmis AL/SAT ve pozisyon buyuklugu uretilemez.'],
+      warnings,
     },
     message: blockingReasons.length === 0
       ? 'Yatirim arastirma workflow gate kontrolden gecti.'

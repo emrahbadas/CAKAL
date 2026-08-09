@@ -16,6 +16,29 @@
 //   2. BU kanca (oturum anında)
 //   3. preflight merge kapısı (ajanın erişemediği yerde)
 // Bu katman düşse bile 3. katman ayakta kalır.
+//
+// ── ETKİLEŞİMLİ MOD (askUser) ───────────────────────────────────────────
+// `askUser` verildiğinde kanca ikiye ayrılır:
+//
+//   SERT RED KATMANI (asla sorulmaz, asla aşılamaz):
+//     sandbox bypass · secret oku/yaz · korunan çekirdek dosyaya yazma ·
+//     çalışma alanı dışı · yasak komut · eklenti yönetimi
+//   Bu kararlar deterministiktir. Kullanıcıya SORULMAZ, çünkü sorulan her
+//   şey er ya da geç onaylanır; güvenlik sınırı pazarlık konusu değildir.
+//
+//   ONAY KATMANI (kullanıcıya sorulur):
+//     sert katmanı geçen write · shell · url · bilinmeyen tür
+//   Bunlar etkileşimsiz modda sessizce ONAYLANIYORDU. Etkileşimli modda
+//   VS Code Copilot davranışı uygulanır: kullanıcı diff'i/komutu görür,
+//   Onayla veya Reddet der.
+//
+//   OKUMA hiçbir modda sorulmaz: cerrahın kodu görmesi işin ön koşulu ve
+//   her okuma için onay istemek arayüzü kullanılamaz hâle getirir. Secret
+//   okuma zaten sert katmanda reddedilir.
+//
+// DÖNÜŞ TÜRÜ: askUser YOKSA handler senkron nesne döndürür (mevcut davranış
+// birebir korunur). askUser VARSA onay katmanına düşen istekler Promise
+// döndürür; sert red kararları o modda da senkron döner.
 
 const {
   isProtectedPath,
@@ -73,15 +96,46 @@ function isAllowedReadEscape(absolutePath) {
   return READ_ESCAPE_ALLOWLIST.some((pattern) => pattern.test(p));
 }
 
+/** askUser yanıtı gelmezse bekleyen istek sonsuza kadar asılı kalmasın. */
+const DEFAULT_ASK_TIMEOUT_MS = 20 * 60 * 1000;
+
+/** UI'a taşınan diff sınırı; dev diff'ler arayüzü boğmasın. */
+const MAX_ASK_DIFF_CHARS = 20000;
+
+function clip(text, max = MAX_ASK_DIFF_CHARS) {
+  const s = String(text ?? '');
+  return s.length > max ? `${s.slice(0, max)}\n… (${s.length - max} karakter kırpıldı)` : s;
+}
+
+/**
+ * askUser sözünü zaman aşımına bağlar. Zaman aşımı REDDE düşer, onaya değil:
+ * cevapsızlık onay sayılamaz.
+ */
+function withTimeout(promise, ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve(promise);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('ASK_TIMEOUT')), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 /**
  * @param {object} options
  * @param {string} options.worktreeRoot Cerrahın çalışma alanı (mutlak yol)
  * @param {(decision:object)=>void} [options.onDecision] Denetim kaydı callback'i
- * @returns {(request:object, invocation?:object)=>object} onPermissionRequest handler
+ * @param {(ask:object)=>Promise<{approved:boolean, feedback?:string}>} [options.askUser]
+ *        Verilirse etkileşimli mod açılır: onay katmanı kullanıcıya sorulur.
+ * @param {number} [options.askTimeoutMs] Yanıtsız kalan istek için üst sınır (varsayılan 20 dk)
+ * @returns {(request:object, invocation?:object)=>object|Promise<object>} onPermissionRequest handler
  */
 function buildPermissionHandler(options = {}) {
   const worktreeRoot = options.worktreeRoot;
   const onDecision = typeof options.onDecision === 'function' ? options.onDecision : () => {};
+  const askUser = typeof options.askUser === 'function' ? options.askUser : null;
+  const askTimeoutMs = options.askTimeoutMs === undefined ? DEFAULT_ASK_TIMEOUT_MS : options.askTimeoutMs;
 
   const decide = (request, verdict, reason, target) => {
     onDecision({
@@ -94,6 +148,49 @@ function buildPermissionHandler(options = {}) {
       ts: Date.now(),
     });
     return verdict;
+  };
+
+  /**
+   * Sert katmanı geçmiş bir isteği kullanıcıya sorar.
+   * askUser yoksa mevcut (sessiz onay) davranış aynen sürer.
+   * @returns {object|Promise<object>}
+   */
+  const gate = (request, reason, target, summary) => {
+    if (!askUser) return decide(request, approve(), reason, target);
+
+    const ask = {
+      kind: request?.kind || 'unknown',
+      reason,                       // hangi deterministik kontrolleri geçtiği
+      target: target ?? null,
+      // SDK her izin isteğine "neden" metni koyar (PermissionRequest.intention).
+      // Onay kartında en değerli alan bu: kullanıcı diff'i okumadan niyeti görür.
+      intention: request?.intention ? clip(String(request.intention), 500) : null,
+      ...summary,
+    };
+
+    return withTimeout(askUser(ask), askTimeoutMs).then(
+      (answer) => {
+        if (answer && answer.approved === true) {
+          return decide(request, approve(), `user-approved:${reason}`, target);
+        }
+        const feedback = (answer && typeof answer.feedback === 'string' && answer.feedback.trim())
+          ? answer.feedback.trim()
+          : 'Kullanıcı bu işlemi reddetti. Kapsamı daralt veya farklı bir yol öner.';
+        return decide(request, reject(feedback), `user-rejected:${reason}`, target);
+      },
+      (err) => {
+        // Zaman aşımı ve kanal hatası REDDE düşer. Cevapsızlık onay değildir.
+        const timedOut = err?.message === 'ASK_TIMEOUT';
+        return decide(
+          request,
+          reject(timedOut
+            ? 'Kullanıcı süresi içinde yanıt vermedi; işlem reddedildi.'
+            : 'Onay kanalı kapalı; işlem reddedildi.'),
+          timedOut ? 'ask-timeout' : 'ask-failed',
+          target,
+        );
+      },
+    );
   };
 
   return function onPermissionRequest(request) {
@@ -117,7 +214,8 @@ function buildPermissionHandler(options = {}) {
         if (isProtectedPath(rel)) {
           return decide(request, reject('Korunan çekirdek dosyaya yazma mimari inceleme gerektirir.'), 'protected-write');
         }
-        return decide(request, approve(), 'ok');
+        // Sert katman temiz: karar kullanıcınındır.
+        return gate(request, 'ok', rel, { file: rel, diff: clip(request.diff) });
       }
 
       case 'read': {
@@ -157,13 +255,18 @@ function buildPermissionHandler(options = {}) {
             return decide(request, reject('Komut korunan çekirdek dosyaya dokunuyor.'), 'shell-protected', rel);
           }
         }
-        return decide(request, approve(), 'ok');
+        return gate(request, 'ok', request.fullCommandText, {
+          command: clip(request.fullCommandText, 4000),
+          paths: paths.slice(0, 20),
+        });
       }
 
-      case 'url':
-        // Ağ erişimi cerrahi sırasında istisnadır; şimdilik izinli ama kaydedilir
-        // (ileride allowlist ile daraltılabilir).
-        return decide(request, approve(), 'url-allowed');
+      case 'url': {
+        // Ağ erişimi cerrahi sırasında istisnadır. Etkileşimsiz modda izinli
+        // (kaydedilir); etkileşimli modda kullanıcıya sorulur.
+        const url = request.url || request.uri || request.host || null;
+        return gate(request, 'url-allowed', url, { url });
+      }
 
       case 'extension-management':
       case 'extension-permission-access':
@@ -173,9 +276,17 @@ function buildPermissionHandler(options = {}) {
       default:
         // mcp / memory / custom-tool / hook / bilinmeyen: kaydet ve izin ver.
         // Bilinmeyen türde fail-open DEĞİL fail-observed: kararı denetime yaz.
-        return decide(request, approve(), `default-allow:${kind || 'unknown'}`);
+        // Etkileşimli modda bir adım ileri gidilir — bilinmeyen tür kullanıcıya
+        // sorulur (fail-asked): tanımadığımız bir yeteneği sessizce açmayalım.
+        return gate(request, `default-allow:${kind || 'unknown'}`, request?.toolName || null, {
+          toolName: request?.toolName || null,
+        });
     }
   };
 }
 
-module.exports = { buildPermissionHandler };
+module.exports = {
+  buildPermissionHandler,
+  DEFAULT_ASK_TIMEOUT_MS,
+  MAX_ASK_DIFF_CHARS,
+};

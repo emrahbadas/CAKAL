@@ -80,6 +80,31 @@ function createWorktree(repoRoot, changeRequestId, options = {}) {
 }
 
 /**
+ * Worktree'de kalan tüm değişiklikleri commit eder.
+ *
+ * NEDEN GEREKLİ: merge, commit'lenmiş işi taşır. Cerraha "işin bitince commit
+ * et" denir ama sohbet oturumunda kullanıcı konuşmayı her an bitirebilir ve
+ * onaylanmış dosya yazmaları commit'siz kalabilir. Commit'siz iş merge'de
+ * sessizce KAYBOLUR — kullanıcı "onayladım ama hiçbir şey olmadı" görürdü.
+ *
+ * @returns {{committed:boolean, reason?:string, files?:number}}
+ */
+function commitAll(worktreePath, message) {
+  const dirty = git(['status', '--porcelain'], worktreePath).trim();
+  if (!dirty) return { committed: false, reason: 'CLEAN' };
+  git(['add', '-A'], worktreePath);
+  git(['commit', '-m', message || 'cerrahi: sohbet oturumu değişiklikleri'], worktreePath);
+  return { committed: true, files: dirty.split('\n').filter(Boolean).length };
+}
+
+/** Dalın base'e göre kaç commit ilerde olduğu. 0 ise merge edilecek iş yok. */
+function commitsAhead(worktreePath, base = 'main') {
+  const out = git(['rev-list', '--count', `${base}..HEAD`], worktreePath).trim();
+  const n = Number.parseInt(out, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
  * Worktree'yi kaldırır. Dal (ve commit'leri) korunur — merge kararı sonrası
  * silinebilir. force: kirli çalışma alanını da kaldırır.
  */
@@ -113,6 +138,8 @@ module.exports = {
   buildChangeRequest,
   branchNameFor,
   createWorktree,
+  commitAll,
+  commitsAhead,
   removeWorktree,
   deleteBranch,
   listSurgicalWorktrees,

@@ -1,5 +1,9 @@
 const COMMANDER_FINANCE_DOMAIN_RE = /borsa|hisse|xu100|bist|kripto|bitcoin|ethereum|döviz|usd|eur|altın|ons|emtia|trade|trading|pozisyon|portföy|al\s*sat/i;
-const COMMANDER_ACTIONABLE_FINANCE_RE = /\bal\s*sat\b|(?:^|[\s,.;:!?])alım(?:$|[\s,.;:!?])|(?:^|[\s,.;:!?])satış(?:$|[\s,.;:!?])|almalı mıyım|satmalı mıyım|alınır mı|satılır mı|giriş|entry|stop|hedef|target|trade plan|trade edilecek|hangi hisse\s*(alınır|satılır)|kaç lot|işlem aç|işlem kapat|pozisyon aç|pozisyon kapat|al\/sat sinyali|trade sinyali|izleme listesi/i;
+// DİKKAT: bu listedeki kalıplar DAR olmalı. Çıplak "giriş" / "hedef" yazmak,
+// önceki analizi eleştiren ("iyi giriş fırsatı demişsin ama...") ya da
+// piyasayı anlatan her mesajı işlem talebi saydırıyordu. Bu kelimeler ancak
+// işlem bağlamıyla birlikte geçtiğinde niyet göstergesidir.
+const COMMANDER_ACTIONABLE_FINANCE_RE = /\bal\s*sat\b|(?:^|[\s,.;:!?])alım(?:$|[\s,.;:!?])|(?:^|[\s,.;:!?])satış(?:$|[\s,.;:!?])|almalı mıyım|satmalı mıyım|alınır mı|satılır mı|giriş\s*(fırsat|firsat|nokta|seviye|fiyat|zaman|yap)|girmeli miyim|entry|\bstop\b|hedef\s*(fiyat|seviye)|price target|trade plan|trade edilecek|hangi hisse\s*(alınır|satılır)|kaç lot|işlem aç|işlem kapat|pozisyon aç|pozisyon kapat|al\/sat sinyali|trade sinyali|izleme listesi/i;
 const COMMANDER_INFORMATIONAL_FINANCE_RE = /durum|durumlar|özet|karşılaştır|tablo|listele|neler konuşuluyor|haber|yorum|analiz|grafik|teknik|genel görünüm|ortalama|trend/i;
 const COMMANDER_ACTIONABLE_RESPONSE_RE = /\bAL\b|\bSAT\b|\bBEKLE\b|\bDİKKAT\b|\bDIKKAT\b|giriş|stop|hedef|trade plan|pozisyon/i;
 // DİKKAT: "ilan" kelime başında aranmalı — düz substring araması "b-ilan-ço"
@@ -48,18 +52,178 @@ const RANKING_RESPONSE_MARKERS = [
 // Bir sıralamanın "yönetilmiş" sayılması için gereken kanıt araçları.
 const GOVERNED_RANKING_TOOLS = new Set(['run_investment_research_scan', 'verify_claim']);
 
-const COMMANDER_MARKET_DATA_TOOLS = new Set([
-  'get_stock_price',
-  'get_bist_gainers',
-  'run_investment_research_scan',
-  'get_market_signal',
-  'analyze_finance_signal',
-  'analyze_earnings_pricing',
-  'generate_stock_chart',
-  'get_tcmb_rates',
-  'get_forex_rates',
-  'get_crypto_prices',
+// ── Kanıt sözleşmesi ──────────────────────────────────────────────────
+// Kapı "hangi ARAÇ çalıştı" değil "hangi KANIT var ve ne kadar taze" sorusunu
+// sormalıdır. Araçlar değişir, yenisi eklenir, adı değişir; kanıt sınıfı sabit
+// kalır. Bu tablo tek doğruluk kaynağıdır — araç kümeleri buradan TÜRETİLİR,
+// elle ikinci bir liste tutulmaz.
+//
+// Aynı desen dosyada zaten var: hasCompletedEarningsPricingRun aracın adına
+// değil, ürettiği "sınıflandırma:" imzasına bakar. Burada genelleştiriliyor.
+const TOOL_EVIDENCE_CLASSES = Object.freeze({
+  get_stock_price: ['CURRENT_EQUITY_PRICE'],
+  // MARKET_SESSION_STATUS: piyasa açık mı, gösterilen fiyat gün içi mi son
+  // kapanış mı. 9 Ağustos 2026 PAZAR günü sistem "bugün alım" hükmü kurdu;
+  // veri Cuma kapanışıydı ve bunu söylemedi. Seans durumu artık bir KANIT
+  // sınıfıdır ve "bugün alınabilir mi" sorusunun zorunlu girdisidir.
+  get_bist_board: ['CURRENT_EQUITY_PRICE', 'LIQUIDITY', 'INDEX_MEMBERSHIP', 'MARKET_SESSION_STATUS'],
+  get_bist_gainers: ['MARKET_MOVERS'],
+  get_market_signal: ['CURRENT_EQUITY_PRICE', 'TECHNICAL_SIGNAL'],
+  analyze_finance_signal: ['TECHNICAL_SIGNAL', 'DECISION_CONFIRMATION'],
+  // XU100 serisini de çeker ve göreceli getiri üretir → benchmark kanıtı.
+  analyze_earnings_pricing: ['EARNINGS_PRICE_REACTION', 'BENCHMARK_PRICE_SERIES'],
+  generate_stock_chart: ['CURRENT_EQUITY_PRICE'],
+  // Benchmark serisi AYRI bir kanıt sınıfıdır. XU100 şirket entity'si değil
+  // (likidite/bilanço istenmez) ama "XU100'e göre +%6,7" iddiası benchmark
+  // serisi olmadan kurulamaz. Benchmark'ı tamamen kanıtsız bırakmak, relatif
+  // güç hükmünü ölçümsüz bırakır.
+  get_tcmb_rates: ['FX_RATE'],
+  get_forex_rates: ['FX_RATE'],
+  get_crypto_prices: ['CRYPTO_PRICE'],
+  run_investment_research_scan: ['CURRENT_EQUITY_PRICE', 'LIQUIDITY', 'RESEARCH_EVIDENCE'],
+  verify_claim: ['RESEARCH_EVIDENCE'],
+  web_search: ['WEB_CONTEXT'],
+  search_youtube_insights: ['SENTIMENT_EVIDENCE'],
+  judge_opportunity: ['DECISION_CONFIRMATION'],
+  // FUNDAMENTALS ≠ VALUATION. Ham mali tablo gelmesi "değerleme yapıldı"
+  // demek DEĞİLDİR. Canlı testte alt soru "temel değerleme" istiyordu, kanıt
+  // olarak FUNDAMENTALS yazılmıştı ve mali tablo gelince COMPLETE sayıldı —
+  // oysa cevabın kendisi "değerleme katmanı tam değil" diyordu.
+  // get_valuation_multiples mali tablo + fiyattan F/K, PD/DD, FD/FAVÖK türetir.
+  get_financial_statements: ['FUNDAMENTALS'],
+  get_valuation_multiples: ['VALUATION'],
+});
+
+// Kanıt sınıfına göre tazelik. Tek bir 5 dakikalık TTL her kanıta uygulanamaz:
+// fiyat dakikalar içinde bayatlar, bilanço bir çeyrek boyunca geçerlidir.
+const EVIDENCE_TTL_MS = Object.freeze({
+  CURRENT_EQUITY_PRICE: 15 * 60 * 1000,
+  FX_RATE: 15 * 60 * 1000,
+  CRYPTO_PRICE: 5 * 60 * 1000,
+  MARKET_MOVERS: 15 * 60 * 1000,
+  TECHNICAL_SIGNAL: 60 * 60 * 1000,
+  LIQUIDITY: 60 * 60 * 1000,
+  INDEX_MEMBERSHIP: 24 * 60 * 60 * 1000,
+  // Seans durumu gün içinde değişir (açılış/kapanış); kısa tutulur.
+  MARKET_SESSION_STATUS: 30 * 60 * 1000,
+  BENCHMARK_PRICE_SERIES: 60 * 60 * 1000,
+  EARNINGS_PRICE_REACTION: 24 * 60 * 60 * 1000,
+  FUNDAMENTALS: 90 * 24 * 60 * 60 * 1000,
+  // Değerleme fiyata bağlıdır; bilanço kadar uzun yaşayamaz.
+  VALUATION: 6 * 60 * 60 * 1000,
+  RESEARCH_EVIDENCE: 6 * 60 * 60 * 1000,
+  WEB_CONTEXT: 6 * 60 * 60 * 1000,
+  SENTIMENT_EVIDENCE: 24 * 60 * 60 * 1000,
+  DECISION_CONFIRMATION: 60 * 60 * 1000,
+});
+const DEFAULT_EVIDENCE_TTL_MS = 60 * 60 * 1000;
+
+const MARKET_DATA_EVIDENCE_CLASSES = Object.freeze([
+  'CURRENT_EQUITY_PRICE', 'FX_RATE', 'CRYPTO_PRICE', 'MARKET_MOVERS', 'TECHNICAL_SIGNAL', 'EARNINGS_PRICE_REACTION',
 ]);
+
+function toolsProviding(classes) {
+  const wanted = new Set(classes);
+  return new Set(
+    Object.entries(TOOL_EVIDENCE_CLASSES)
+      .filter(([, provided]) => provided.some((klass) => wanted.has(klass)))
+      .map(([tool]) => tool),
+  );
+}
+
+const COMMANDER_MARKET_DATA_TOOLS = toolsProviding(MARKET_DATA_EVIDENCE_CLASSES);
+
+/**
+ * Aktivite olaylarından kanıt defteri kurar.
+ * Olaylar ÖNCEKİ TURLARDAN da gelebilir; her kanıt sınıfı için en taze kayıt
+ * tutulur ve TTL'ine göre taze/bayat işaretlenir.
+ */
+function normalizeEntity(value) {
+  return String(value || '').trim().toUpperCase().replace(/\.IS$/i, '');
+}
+
+function buildEvidenceLedger(events = [], now = Date.now()) {
+  const ledger = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event || event.type !== 'tool_call' || !event.tool) continue;
+    const classes = TOOL_EVIDENCE_CLASSES[String(event.tool)];
+    if (!classes) continue;
+
+    // TTL "ne zaman baktık" üzerinden ölçülür (retrievedAt). asOf ise verinin
+    // ne zamana ait olduğudur ve raporlama içindir — ikisini karıştırma:
+    // piyasa kapalıyken asOf Cuma kapanışıdır ama veri o an için günceldir.
+    const at = Number.isFinite(Number(event.timestamp)) ? Number(event.timestamp) : now;
+    const asOf = event.asOf || null;
+    const entities = (Array.isArray(event.entities) ? event.entities : [])
+      .map(normalizeEntity)
+      .filter(Boolean);
+
+    for (const klass of classes) {
+      let entry = ledger.get(klass);
+      if (!entry) {
+        entry = { at: -Infinity, asOf: null, tool: null, tools: [], entities: new Map() };
+        ledger.set(klass, entry);
+      }
+      if (at > entry.at) {
+        entry.at = at;
+        entry.asOf = asOf;
+        entry.tool = String(event.tool);
+      }
+      entry.tools = [...new Set([...entry.tools, String(event.tool)])];
+
+      // Entity boyutu ZORUNLU ayrım: KCHOL hakkındaki bir alt soru THYAO için
+      // çekilmiş fiyatla tatmin olmamalı. Entity'siz olaylar (piyasa geneli
+      // tarama gibi) sınıf düzeyinde sayılır, entity düzeyinde saymaz.
+      for (const entity of entities) {
+        const prior = entry.entities.get(entity);
+        if (!prior || at > prior.at) {
+          entry.entities.set(entity, { at, asOf, tool: String(event.tool) });
+        }
+      }
+    }
+  }
+  return ledger;
+}
+
+function ttlFor(klass) {
+  return EVIDENCE_TTL_MS[klass] ?? DEFAULT_EVIDENCE_TTL_MS;
+}
+
+function hasFreshEvidence(ledger, klass, now = Date.now()) {
+  const entry = ledger instanceof Map ? ledger.get(klass) : null;
+  if (!entry) return false;
+  return now - entry.at <= ttlFor(klass);
+}
+
+/**
+ * Bu kanıt sınıfı BU VARLIK için taze mi?
+ * Sınıf düzeyinde taze olması yetmez — hangi sembol için çekildiği önemlidir.
+ */
+function hasFreshEvidenceForEntity(ledger, klass, entity, now = Date.now()) {
+  const entry = ledger instanceof Map ? ledger.get(klass) : null;
+  if (!entry) return false;
+  const key = normalizeEntity(entity);
+  if (!key) return hasFreshEvidence(ledger, klass, now);
+  const hit = entry.entities.get(key);
+  if (!hit) return false;
+  return now - hit.at <= ttlFor(klass);
+}
+
+/** Kanıt defterinde kayıtlı varlıklar (raporlama ve denetim için). */
+function entitiesWithEvidence(ledger, klass) {
+  const entry = ledger instanceof Map ? ledger.get(klass) : null;
+  return entry ? [...entry.entities.keys()] : [];
+}
+
+function hasAnyFreshEvidence(ledger, classes, now = Date.now()) {
+  return classes.some((klass) => hasFreshEvidence(ledger, klass, now));
+}
+
+function describeStaleEvidence(ledger, classes, now = Date.now()) {
+  return classes
+    .filter((klass) => ledger instanceof Map && ledger.has(klass) && !hasFreshEvidence(ledger, klass, now))
+    .map((klass) => `${klass} (${Math.round((now - ledger.get(klass).at) / 60000)} dk önce, TTL ${Math.round((EVIDENCE_TTL_MS[klass] ?? DEFAULT_EVIDENCE_TTL_MS) / 60000)} dk)`);
+}
 const COMMANDER_DECISION_TOOLS = new Set(['analyze_finance_signal', 'judge_opportunity']);
 const COMMANDER_RESEARCH_EVIDENCE_TOOLS = new Set(['web_search', 'verify_claim', 'search_youtube_insights', 'run_investment_research_scan']);
 
@@ -146,12 +310,55 @@ function extractCommanderToolNames(events = []) {
   )];
 }
 
-function isCommanderFinanceMessage(message = '') {
-  return COMMANDER_FINANCE_DOMAIN_RE.test(String(message || ''));
+// HİSSE KODU DA FİNANS BAĞLAMIDIR.
+// GEÇMİŞ HATA: "THYAO bugün alınır mı?" mesajında borsa/hisse gibi bir alan
+// kelimesi geçmediği için isCommanderFinanceMessage FALSE dönüyordu. Sonuç:
+// karar kapısı, işlem niyeti kontrolü ve araştırma sözleşmesi HİÇBİRİ
+// çalışmadı — açıkça bir alım sorusu olmasına rağmen. Cevabın iyi çıkması
+// modelin kendi disiplinine kalmıştı, sisteme değil.
+const BIST_TICKER_RE = /(^|[^A-ZÇĞİÖŞÜ0-9])([A-Z]{4,6})(?![A-ZÇĞİÖŞÜ])/g;
+const TICKER_FALSE_POSITIVES = new Set([
+  'BIST', 'BORSA', 'VIOP', 'TEFAS', 'TCMB', 'BDDK', 'TUIK', 'IMKB', 'ENDEKS',
+  'TAMAM', 'MERHABA', 'SELAM', 'LUTFEN', 'TESEKKUR', 'EVET', 'HAYIR', 'PEKI',
+  'ANCAK', 'FAKAT', 'VERI', 'ANALIZ', 'RAPOR', 'TOPLAM', 'ORTALAMA', 'HISSE',
+]);
+
+function containsBistTicker(message = '') {
+  const text = String(message || '');
+  BIST_TICKER_RE.lastIndex = 0;
+  let m;
+  while ((m = BIST_TICKER_RE.exec(text)) !== null) {
+    if (!TICKER_FALSE_POSITIVES.has(m[2])) return true;
+  }
+  return false;
 }
 
+/**
+ * @param {object} opts
+ * @param {boolean} opts.tickerAware - Hisse kodunu finans sinyali say.
+ *   KULLANICI MESAJI için true (varsayılan): "THYAO alınır mı" finanstır.
+ *   ÜRETİLEN CEVAP için FALSE olmalı — serbest metinde her büyük harfli
+ *   sözcük kod gibi görünür ("1) MATRIX, 2) INCEPTION" film sıralaması
+ *   finans sanılıyordu.
+ */
+function isCommanderFinanceMessage(message = '', opts = {}) {
+  const text = String(message || '');
+  if (COMMANDER_FINANCE_DOMAIN_RE.test(text)) return true;
+  return opts.tickerAware === false ? false : containsBistTicker(text);
+}
+
+// PAZARYERİ İSTİSNASI FİNANS BAĞLAMINI EZEMEZ.
+// GEÇMİŞ HATA: "BIST'te fırsat ara" → COMMANDER_PRODUCT_MARKETPLACE_RE'deki
+// "fırsat ara" kalıbına düşüp TÜM finans karar kapılarını atlatıyordu; sistem
+// sekiz hisselik sıralama üretti ve hiçbir kapı bakmadı. İstisna, ikinci el
+// eşya/ilan aramaları içindir — mesajda açık borsa bağlamı varsa geçersizdir.
+const EXPLICIT_FINANCE_CONTEXT_RE = /\b(bist|borsa|hisse|xu\d{2,3}|endeks|kap|temett[üu]|portf[öo]y)\b/i;
+
 function isCommanderProductMarketplaceMessage(message = '') {
-  return COMMANDER_PRODUCT_MARKETPLACE_RE.test(String(message || ''));
+  const text = String(message || '');
+  if (!COMMANDER_PRODUCT_MARKETPLACE_RE.test(text)) return false;
+  if (EXPLICIT_FINANCE_CONTEXT_RE.test(text) || containsBistTicker(text)) return false;
+  return true;
 }
 
 function isCommanderActionableFinanceRequest(message = '') {
@@ -193,7 +400,10 @@ function evaluateUngovernedRankingGate(message, response, events = []) {
   // içermiyor — bağlam önceki turdan geliyordu. Yalnız mesaja bakan bir kapı
   // tam da yakalaması gereken vakayı kaçırırdı. Cevap hisse sıralaması
   // içeriyorsa finans bağlamı zaten kanıtlanmıştır.
-  const financeContext = isCommanderFinanceMessage(message) || isCommanderFinanceMessage(response);
+  // Cevap tarafında kod tespiti KAPALI: üretilen metindeki büyük harfli
+  // sözcükler (film adı, kısaltma) hisse kodu sanılmamalı.
+  const financeContext = isCommanderFinanceMessage(message)
+    || isCommanderFinanceMessage(response, { tickerAware: false });
   if (!financeContext) return null;
 
   const usedTools = extractCommanderToolNames(events);
@@ -316,48 +526,90 @@ function hasCommanderActionableResponse(response = '') {
   return COMMANDER_ACTIONABLE_RESPONSE_RE.test(String(response || ''));
 }
 
-function buildCommanderGateResponse(status, reason, usedTools) {
-  const toolNote = usedTools.length > 0
-    ? `Kanıt araçları: ${usedTools.join(', ')}`
-    : 'Kanıt araçları: yok';
-
-  if (status === 'veri_yetersiz') {
-    return [
-      'VERI_YETERSIZ',
-      '',
-      'Bu istek işlem/sinyal niteliği taşıyor ama zorunlu piyasa verisi yeterince toplanmadan nihai AL/SAT üretmiyorum.',
-      `Neden: ${reason}`,
-      toolNote,
-      '',
-      'Devam etmek için fiyat/veri araçlarıyla yeniden analiz çalıştırılmalı: get_stock_price, get_market_signal, analyze_finance_signal, get_forex_rates, get_crypto_prices, get_tcmb_rates veya generate_stock_chart.',
-    ].join('\n');
-  }
-
+// Kapı çıktısı iki eksenlidir: ANALİZ ayrı, EYLEM İZNİ ayrı.
+//
+// GEÇMİŞ HATA: kapı tek boolean gibi çalışıp cevabın TAMAMINI kısa bir
+// VERI_YETERSIZ bloğuyla değiştiriyordu. Bir kanıt sınıfı eksik diye 40+
+// kaynakla üretilmiş bütün araştırma çöpe gidiyordu. Doğru davranış, aynı
+// dosyada verdict lock'ta zaten uygulanan desendir: metni koru, yalnız AL/SAT
+// hükmünü nötrle ve neyin bloke edildiğini altına yaz. Analiz kullanıcıya
+// ulaşır, eylem hükmü ulaşmaz.
+//
+// originalResponse boşsa (ya da nötrleme sonrası anlamlı içerik kalmıyorsa)
+// eski tam-blok davranışına düşer — geriye dönük uyumluluk korunur.
+function buildGateFooter(headline, summary, reason, toolNote, remedyLines) {
   return [
-    'NO_SIGNAL',
     '',
-    'Piyasa verisi var ama karar kapısı yeterli deterministik teyit üretmediği için nihai sinyal vermiyorum.',
+    '',
+    '---',
+    `⚖️ KARAR KAPISI — ${headline} (deterministik)`,
+    summary,
     `Neden: ${reason}`,
     toolNote,
-    '',
-    'İşlem sinyali için analyze_finance_signal ve/veya judge_opportunity tabanlı teyit gerekli.',
+    ...remedyLines,
   ].join('\n');
 }
 
-function buildFreshMarketScanGateResponse(reason, usedTools) {
+function hasMeaningfulContent(response = '') {
+  return String(response || '').trim().length >= 40;
+}
+
+function buildCommanderGateResponse(status, reason, usedTools, originalResponse = '') {
   const toolNote = usedTools.length > 0
     ? `Kanıt araçları: ${usedTools.join(', ')}`
     : 'Kanıt araçları: yok';
 
-  return [
-    'VERI_YETERSIZ',
-    '',
-    'Fresh market scan politikasi tamamlanmadan hisse sepeti veya AL/SAT benzeri nihai sonuc uretmiyorum.',
-    `Neden: ${reason}`,
-    toolNote,
-    '',
-    'Zorunlu disiplin: evreni dondur, genis tarama yap, resmi/guvenilir kaynaklarla claim dogrula, degerleme-risk-ters tez adimlarini tamamla. En cok artanlar listesi tek basina aday tavsiyesi degildir.',
-  ].join('\n');
+  const isVeriYetersiz = status === 'veri_yetersiz';
+  const headline = isVeriYetersiz ? 'VERI_YETERSIZ' : 'NO_SIGNAL';
+  const summary = isVeriYetersiz
+    ? 'Bu istek işlem/sinyal niteliği taşıyor ama zorunlu piyasa verisi yeterince toplanmadan nihai AL/SAT üretmiyorum.'
+    : 'Piyasa verisi var ama karar kapısı yeterli deterministik teyit üretmediği için nihai sinyal vermiyorum.';
+  const remedyLines = isVeriYetersiz
+    ? ['', 'Devam etmek için fiyat/veri araçlarıyla yeniden analiz çalıştırılmalı: get_bist_board (çok sembollü BIST panosu), get_stock_price, get_market_signal, analyze_finance_signal, get_forex_rates, get_crypto_prices, get_tcmb_rates veya generate_stock_chart.']
+    : ['', 'İşlem sinyali için analyze_finance_signal ve/veya judge_opportunity tabanlı teyit gerekli.'];
+
+  if (hasMeaningfulContent(originalResponse)) {
+    return [
+      neutralizeEquityVerdicts(originalResponse),
+      buildGateFooter(
+        headline,
+        summary,
+        reason,
+        toolNote,
+        [
+          '',
+          'Yukarıdaki analiz KORUNMUŞTUR; yalnız AL/SAT hükmü İNCELE/RİSKLİ seviyesine indirilmiştir.',
+          'Bu bir bilgi bloğudur, işlem tavsiyesi değildir.',
+          ...remedyLines,
+        ],
+      ),
+    ].join('');
+  }
+
+  return [headline, '', summary, `Neden: ${reason}`, toolNote, ...remedyLines].join('\n');
+}
+
+function buildFreshMarketScanGateResponse(reason, usedTools, originalResponse = '') {
+  const toolNote = usedTools.length > 0
+    ? `Kanıt araçları: ${usedTools.join(', ')}`
+    : 'Kanıt araçları: yok';
+
+  const summary = 'Fresh market scan politikasi tamamlanmadan hisse sepeti veya AL/SAT benzeri nihai sonuc uretmiyorum.';
+  const discipline = 'Zorunlu disiplin: evreni dondur, genis tarama yap, resmi/guvenilir kaynaklarla claim dogrula, degerleme-risk-ters tez adimlarini tamamla. En cok artanlar listesi tek basina aday tavsiyesi degildir.';
+
+  if (hasMeaningfulContent(originalResponse)) {
+    return [
+      neutralizeEquityVerdicts(originalResponse),
+      buildGateFooter('VERI_YETERSIZ / Fresh market scan', summary, reason, toolNote, [
+        '',
+        'Yukarıdaki gözlemler KORUNMUŞTUR; yalnız aday sepeti ve AL/SAT hükmü bloke edilmiştir.',
+        '',
+        discipline,
+      ]),
+    ].join('');
+  }
+
+  return ['VERI_YETERSIZ', '', summary, `Neden: ${reason}`, toolNote, '', discipline].join('\n');
 }
 
 // Profil kurulum / tanışma mesajları: kullanıcı tercihlerini anlatırken geçen
@@ -365,7 +617,50 @@ function buildFreshMarketScanGateResponse(reason, usedTools) {
 // cevapta gerçek bir AL/SAT hükmü varsa devreye girer (detectEquityVerdict).
 const COMMANDER_PROFILE_SETUP_RE = /(risk tolerans|yatırım vade|yatirim vade|maksimum kayıp|maksimum kayip|yatırımcı profil|yatirimci profil|profilimi|profilime|tanışalım|tanisalim|beni tanı|beni tani)/i;
 
-function evaluateCommanderDecisionGate(message, response, events = []) {
+// ── Konuşma eylemi (speech act) ayrımı ────────────────────────────────
+// GERÇEK VAKA: Kullanıcı önceki analizin eksiklerini eleştiren bir metin
+// yapıştırdı. Metinde "giriş", "hedef", "analiz", hisse kodları geçtiği için
+// kapı "Bu istek işlem/sinyal niteliği taşıyor" dedi ve cevabı bloke etti.
+// Oysa ortada yeni bir AL/SAT talebi yoktu.
+//
+// Alan (domain) ile konuşma eylemi (speech act) farklı eksenlerdir:
+//   domain=finance + speech_act=feedback  → işlem kapısı AÇILMAMALI
+//   domain=finance + speech_act=request   → işlem kapısı açılır
+//
+// Bu kapı niyeti tahmin etmeye çalışmaz; emniyet supabı çıkıştadır:
+// cevapta GERÇEK bir AL/SAT hükmü varsa (detectEquityVerdict) kapı yine
+// devreye girer. Yani yanlış sınıflandırma en fazla bir bilgi cevabını
+// serbest bırakır, kanıtsız bir hükmü değil.
+const COMMANDER_META_DISCUSSION_RE = new RegExp([
+  // sistemin/kodun kendisi hakkında konuşma
+  'çakal', 'cakal', 'mimari', 'karar kapısı', 'karar kapisi', 'kapı\\s*(çalış|calis|aç|ac|kapa)',
+  '\\btool\\b', '\\bprompt', 'aktivite log', '\\blog(lar|unda|larda)\\b', 'kaynak kod',
+  // önceki cevaba/rapora gönderme, eleştiri, düzeltme
+  'önceki\\s+(cevab|analiz|yanıt|yanit|tur)', 'onceki\\s+(cevab|analiz|yanit|tur)',
+  'bu\\s+(bulgu|rapor|öneri|oneri|liste|değerlendirme|degerlendirme)',
+  'değerlendir', 'degerlendir', 'eleştir', 'elestir',
+  'hatal[ıi]\\b', 'yanl[ıi]ş\\b', 'yanlis\\b', 'eksik(ler|leri|lik)?\\b',
+  'neden\\s+\\S+\\s*(madın|medin|mad[ıi]n|mıyor|miyor)',
+  // dış kaynaklı analiz metni getirme
+  'chatgpt', '\\bgpt\\b', 'şu listeye', 'su listeye',
+].join('|'), 'i');
+
+function isCommanderMetaDiscussion(message = '') {
+  return COMMANDER_META_DISCUSSION_RE.test(String(message || ''));
+}
+
+/**
+ * @param {object} options
+ * @param {boolean} options.contractGoverned - Araştırma sözleşmesi kilitliyse
+ *   zorunlu kanıt kümesinin TEK KAYNAĞI sözleşmedir. Bu kapı kendi listesini
+ *   dayatmaz; yalnız hüküm güvenliğini korur.
+ *
+ * GEÇMİŞ HATA: sözleşme "s1/s3 COMPLETE" derken bu kapı aynı anda
+ * "VERI_YETERSIZ: claim/evidence dogrulama araci calismadi" diyordu — çünkü
+ * verify_claim bekliyordu, oysa sözleşme RESEARCH_EVIDENCE'ı hiç zorunlu
+ * kılmamıştı. İki sistem farklı şey isteyince kullanıcı çelişki görüyordu.
+ */
+function evaluateCommanderDecisionGate(message, response, events = [], options = {}) {
   if (isCommanderProductMarketplaceMessage(message)) {
     return null;
   }
@@ -374,7 +669,11 @@ function evaluateCommanderDecisionGate(message, response, events = []) {
     return null;
   }
 
-  if (COMMANDER_PROFILE_SETUP_RE.test(String(message || '')) && !detectEquityVerdict(response)) {
+  // Profil kurulumu ve meta tartışma (eleştiri/soru/rapor değerlendirmesi):
+  // bu konuşma eylemlerinde işlem kapısı ancak cevapta GERÇEK bir AL/SAT
+  // hükmü varsa açılır. Alan kelimesinin geçmesi yetmez.
+  const messageText = String(message || '');
+  if ((COMMANDER_PROFILE_SETUP_RE.test(messageText) || isCommanderMetaDiscussion(messageText)) && !detectEquityVerdict(response)) {
     return null;
   }
 
@@ -391,16 +690,37 @@ function evaluateCommanderDecisionGate(message, response, events = []) {
   const decisionTools = usedTools.filter((tool) => COMMANDER_DECISION_TOOLS.has(tool));
   const researchEvidenceTools = usedTools.filter((tool) => COMMANDER_RESEARCH_EVIDENCE_TOOLS.has(tool));
 
-  if (marketDataTools.length === 0) {
+  // Kapı artık "bu turda get_stock_price çağrıldı mı" sormaz; "elde TAZE
+  // piyasa verisi kanıtı var mı" sorar. Kanıt önceki turdan gelmiş olabilir —
+  // olaylar oturum boyunca taşındığında bu kapı onu görür. Bayat kanıt taze
+  // sayılmaz ve gerekçede yaşıyla birlikte raporlanır.
+  const now = Date.now();
+  const ledger = buildEvidenceLedger(events, now);
+  const hasMarketData = hasAnyFreshEvidence(ledger, MARKET_DATA_EVIDENCE_CLASSES, now);
+  const staleMarketData = describeStaleEvidence(ledger, MARKET_DATA_EVIDENCE_CLASSES, now);
+
+  if (!hasMarketData) {
+    const dataReason = staleMarketData.length > 0
+      ? `İşlem kararı için taze piyasa verisi yok; eldeki kanıt bayat: ${staleMarketData.join(', ')}.`
+      : 'İşlem kararı için zorunlu piyasa veri araçları çalışmadı.';
     return {
       status: 'veri_yetersiz',
-      reason: 'İşlem kararı için zorunlu piyasa veri araçları çalışmadı.',
+      reason: dataReason,
       usedTools,
-      response: buildCommanderGateResponse('veri_yetersiz', 'İşlem kararı için zorunlu piyasa veri araçları çalışmadı.', usedTools),
+      staleEvidence: staleMarketData,
+      // GEÇMİŞ HATA: main.cjs onarım turunu `usedTools.length === 0` şartına
+      // bağlıyordu. usedTools TÜM araçları sayar; verify_claim + web_search
+      // çalışmış bir turda uzunluk 0 olmaz, dolayısıyla tam da onarılması
+      // gereken vakada (piyasa verisi yok ama araştırma yapılmış) onarım hiç
+      // tetiklenmez ve 40+ kaynaklık cevap çöpe giderdi. Kapı artık NEYİN
+      // eksik olduğunu açıkça söyler; çağıran taraf buna bakar.
+      missingEvidence: ['MARKET_DATA'],
+      repairable: true,
+      response: buildCommanderGateResponse('veri_yetersiz', dataReason, usedTools, response),
     };
   }
 
-  if (freshMarketScan && hasCommanderActionableResponse(response) && researchEvidenceTools.length === 0) {
+  if (!options.contractGoverned && freshMarketScan && hasCommanderActionableResponse(response) && researchEvidenceTools.length === 0) {
     const onlyRecentGainers = marketDataTools.length === 1 && marketDataTools[0] === 'get_bist_gainers';
     const reason = onlyRecentGainers
       ? 'Sadece en cok artanlar listesi kullanildi; bu fresh market scan icin yasak kisa yoldur.'
@@ -410,7 +730,9 @@ function evaluateCommanderDecisionGate(message, response, events = []) {
       status: 'veri_yetersiz',
       reason,
       usedTools,
-      response: buildFreshMarketScanGateResponse(reason, usedTools),
+      missingEvidence: ['RESEARCH_EVIDENCE'],
+      repairable: true,
+      response: buildFreshMarketScanGateResponse(reason, usedTools, response),
     };
   }
 
@@ -419,7 +741,9 @@ function evaluateCommanderDecisionGate(message, response, events = []) {
       status: 'no_signal',
       reason: 'Piyasa verisi toplandı ama karar/puanlama teyidi oluşmadı.',
       usedTools,
-      response: buildCommanderGateResponse('no_signal', 'Piyasa verisi toplandı ama karar/puanlama teyidi oluşmadı.', usedTools),
+      missingEvidence: ['DECISION_CONFIRMATION'],
+      repairable: true,
+      response: buildCommanderGateResponse('no_signal', 'Piyasa verisi toplandı ama karar/puanlama teyidi oluşmadı.', usedTools, response),
     };
   }
 
@@ -571,7 +895,15 @@ const VERDICT_EVIDENCE_CHECKS = Object.freeze([
   },
 ]);
 
+// HÜKÜM REDDİ ≠ HÜKÜM.
+// GEÇMİŞ HATA: "AL/SAT demiyorum. Doğru hüküm kelimeleri: KCHOL = İNCELE"
+// satırı hüküm sayılıyordu — çünkü "hüküm" bağlam kelimesi ve "AL" büyük
+// harfli. Kilit, hükümden KAÇINAN cevabı hüküm sanıp tam bir onarım turu
+// başlattı. Reddi cezalandırmak, doğru davranışı cezalandırmaktır.
+const VERDICT_NEGATION_RE = /(demiyorum|demem|demek (doğru|dogru) olmaz|vermiyorum|üretmiyorum|uretmiyorum|kullanma|kaç[ıi]n|yerine|değil\b|degil\b|yok\b)/i;
+
 function isVerdictLine(line) {
+  if (VERDICT_NEGATION_RE.test(line)) return false;
   return (
     VERDICT_ARROW_RE.test(line) ||
     VERDICT_TICKER_RE.test(line) ||
@@ -695,10 +1027,131 @@ function evaluateEarningsPricingGate(message, response, events = []) {
   };
 }
 
+// ============================
+// Fiyat Seviyesi Provenance Kilidi
+// ============================
+// GEÇMİŞ HATA: karar kilidinin `risk_level` kontrolü düz kelime aramasıydı —
+// model "stop" yazdığı an tatmin oluyordu. Canlı testte KCHOL için
+// "stop ₺182.1" verildi; bu sayıyı HİÇBİR araç üretmemişti. Aynı hatayı
+// fiyatlanma kilidi için önlemiştik (hasCompletedEarningsPricingRun cevap
+// metnine değil emit imzasına bakar); burada da aynı disiplin uygulanır.
+//
+// Kural: cevapta bir sembole ait SOMUT giriş/stop seviyesi varsa, o sembol
+// için TECHNICAL_SIGNAL veya CURRENT_EQUITY_PRICE kanıtı defterde olmalı.
+
+const PRICE_LEVEL_CONTEXT_RE = /(stop|zarar[- ]kes|giriş|giris|hedef|geçersizlik|gecersizlik|teyit seviyesi)/i;
+const PRICE_LEVEL_NUMBER_RE = /(?:₺|TL\s*)?\d{1,3}(?:[.,]\d{1,2})?\s*(?:TL|₺)?/;
+const TICKER_IN_HEADING_RE = /(^|[^A-ZÇĞİÖŞÜ0-9])([A-Z]{4,6})(?![A-ZÇĞİÖŞÜ])/g;
+
+const PRICE_LEVEL_EVIDENCE_CLASSES = Object.freeze(['TECHNICAL_SIGNAL', 'CURRENT_EQUITY_PRICE']);
+
+// Başlıkta hisse kodu gibi görünen ama olmayan sözcükler.
+// CANLI TESTTE YAKALANDI: "FRESH MARKET SCAN" başlığındaki MARKET altı harfli
+// büyük yazıldığı için sembol sanıldı ve kapı "Kanıtsız seviye: MARKET" dedi.
+// Aynı sınıf hata TICKER_STOPWORDS'te de vardı (BIST). Büyük harfli desen tek
+// başına sembol kanıtı değildir.
+const PRICE_LEVEL_SYMBOL_STOPWORDS = new Set([
+  'MARKET', 'SCAN', 'FRESH', 'RISK', 'STOP', 'GIRIS', 'HEDEF', 'SEVIYE', 'PLAN',
+  'BIST', 'BORSA', 'VIOP', 'ENDEKS', 'TOPLAM', 'ORTALAMA', 'NOTLAR', 'OZET',
+  'KARAR', 'HUKUM', 'SONUC', 'ANALIZ', 'RAPOR', 'VERI', 'KAYNAK', 'UYARI',
+]);
+
+/**
+ * Cevaptan "sembol → somut seviye verildi" eşleşmelerini çıkarır.
+ * Sembol, seviyenin geçtiği satırdan geriye doğru en yakın başlıktan alınır.
+ */
+// Sistem tarafından eklenen bloklar taranmaz: sözleşme kapsamı, kilit
+// açıklamaları ve kanıt sınıfı adları (MARKET_MOVERS gibi) model iddiası
+// değildir. Kendi footer'ını okuyup kendini uyaran bir kapı gürültü üretir.
+const SYSTEM_BLOCK_START_RE = /^(⚖️|📋|---\s*$)|ARAŞTIRMA SÖZLEŞMESİ KAPSAMI|KİLİDİ \(deterministik\)/;
+
+// Somut seviye = gerçek fiyat kalıbı. "giriş kalitesi" bir seviye DEĞİLDİR;
+// "₺198,50" veya "182.1 altı" seviyedir.
+const CONCRETE_PRICE_RE = /(?:₺\s?\d{1,3}(?:[.,]\d{1,3})*|\b\d{1,4}[.,]\d{1,2}\b\s*(?:TL|₺)?|\b\d{2,4}\s*(?:TL|₺))/;
+
+function stripSystemBlocks(response = '') {
+  const out = [];
+  let skipping = false;
+  for (const line of String(response || '').split('\n')) {
+    if (SYSTEM_BLOCK_START_RE.test(line.trim())) { skipping = true; continue; }
+    if (skipping && /^#{1,6}\s/.test(line)) skipping = false;
+    if (!skipping) out.push(line);
+  }
+  return out.join('\n');
+}
+
+function extractQuotedPriceLevels(response = '') {
+  const lines = stripSystemBlocks(response).split('\n');
+  const found = new Map();
+  let currentSymbol = null;
+
+  for (const line of lines) {
+    TICKER_IN_HEADING_RE.lastIndex = 0;
+    const headingMatch = /^\s{0,3}#{1,6}\s+(.*)$/.exec(line) || /^\s*\*\*(.+?)\*\*\s*$/.exec(line);
+    if (headingMatch) {
+      TICKER_IN_HEADING_RE.lastIndex = 0;
+      const m = TICKER_IN_HEADING_RE.exec(headingMatch[1]);
+      currentSymbol = m && !PRICE_LEVEL_SYMBOL_STOPWORDS.has(m[2]) ? m[2] : null;
+    }
+    if (!currentSymbol) continue;
+    if (PRICE_LEVEL_CONTEXT_RE.test(line) && CONCRETE_PRICE_RE.test(line)) {
+      const list = found.get(currentSymbol) || [];
+      list.push(line.trim());
+      found.set(currentSymbol, list);
+    }
+  }
+  return found;
+}
+
+function evaluatePriceLevelProvenanceGate(message, response, events = [], now = Date.now()) {
+  if (isCommanderProductMarketplaceMessage(message)) return null;
+  const quoted = extractQuotedPriceLevels(response);
+  if (quoted.size === 0) return null;
+
+  const ledger = buildEvidenceLedger(events, now);
+  const unsupported = [];
+  for (const symbol of quoted.keys()) {
+    const supported = PRICE_LEVEL_EVIDENCE_CLASSES.some(
+      (klass) => hasFreshEvidenceForEntity(ledger, klass, symbol, now),
+    );
+    if (!supported) unsupported.push(symbol);
+  }
+  if (unsupported.length === 0) return null;
+
+  const lockedResponse = [
+    neutralizeEquityVerdicts(response),
+    '',
+    '---',
+    '⚖️ SEVİYE PROVENANCE KİLİDİ (deterministik):',
+    `Şu semboller için somut giriş/stop seviyesi verildi ama o sembole ait ölçüm kanıtı yok: ${unsupported.join(', ')}.`,
+    'Seviye rakamı üretmek ölçüm yapmak değildir. Giriş/stop için ilgili sembolde',
+    'analyze_finance_signal veya get_stock_price çalışmalı ve seviye o çıktıdan türetilmelidir.',
+    'Ölçüm yoksa seviye verme; "teyit beklenir" gibi niteliksel ifade kullan.',
+  ].join('\n');
+
+  return {
+    status: 'price_level_locked',
+    reason: `Kanıtsız seviye: ${unsupported.join(', ')}`,
+    unsupportedSymbols: unsupported,
+    response: lockedResponse,
+  };
+}
+
 module.exports = {
   COMMANDER_DECISION_TOOLS,
   EARNINGS_PRICING_TOOL,
   COMMANDER_MARKET_DATA_TOOLS,
+  TOOL_EVIDENCE_CLASSES,
+  EVIDENCE_TTL_MS,
+  MARKET_DATA_EVIDENCE_CLASSES,
+  buildEvidenceLedger,
+  hasFreshEvidence,
+  hasFreshEvidenceForEntity,
+  entitiesWithEvidence,
+  hasAnyFreshEvidence,
+  describeStaleEvidence,
+  evaluatePriceLevelProvenanceGate,
+  extractQuotedPriceLevels,
   RISK_GATE_THRESHOLDS,
   buildCommanderGateResponse,
   classifyAssetClass,
@@ -726,6 +1179,9 @@ module.exports = {
   isCommanderActionableFinanceRequest,
   isCommanderFreshMarketScanRequest,
   isCommanderFinanceMessage,
+  containsBistTicker,
+  isCommanderMetaDiscussion,
+  COMMANDER_META_DISCUSSION_RE,
   isCommanderInformationalFinanceRequest,
   isCommanderProductMarketplaceMessage,
 };
