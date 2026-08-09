@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, RefreshCw, Paperclip, X, ShieldAlert, Mic } from 'lucide-react';
+import { Send, RefreshCw, Paperclip, X, ShieldAlert, Mic, Trash2 } from 'lucide-react';
 import VoiceAssistant, { VoiceAssistantHandle } from '../components/VoiceAssistant';
 import { useChatStore } from '../state/chatStore';
 import OpportunityCard from '../components/OpportunityCard';
@@ -220,8 +220,41 @@ export default function ChatScreen() {
   const voiceRef = useRef<VoiceAssistantHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const { messages, opportunities, addMessage, addOpportunity, setLoading, isLoading } = useChatStore();
+  const { messages, opportunities, addMessage, addOpportunity, setLoading, isLoading, clearMessages } = useChatStore();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [clearing, setClearing] = useState(false);
+
+  // Sohbeti temizle.
+  //
+  // İKİ AYRI HAFIZA VAR ve ikisi de temizlenmeli:
+  //   1. Ekrandaki mesajlar — zustand + localStorage (bu bilgisayarda kalıcı)
+  //   2. Modelin hafızası   — ana süreçteki conversationHistory dizisi
+  // Yalnız birincisi temizlenirse ekran boşalır ama ÇAKAL önceki konuşmayı
+  // hatırlamaya devam eder; kullanıcı "temizledim ama hâlâ eskiyi biliyor"
+  // durumuyla karşılaşır. O yüzden ikisi birlikte sıfırlanır.
+  //
+  // Veritabanındaki conversation_logs kaydına DOKUNULMAZ: o uzun vadeli
+  // günlük, ekran değil. Silinmesi ayrı ve bilinçli bir karar olmalı.
+  const handleClearChat = async () => {
+    if (isLoading || clearing) return;
+    const ok = window.confirm(
+      'Sohbet temizlenecek.\n\n'
+      + `${messages.length} mesaj ekrandan silinecek ve ÇAKAL'ın konuşma hafızası sıfırlanacak.\n`
+      + 'Veritabanındaki sohbet kaydı ve fırsat listesi korunur.\n\nDevam edilsin mi?',
+    );
+    if (!ok) return;
+
+    setClearing(true);
+    try {
+      clearMessages();
+      // Modelin hafızası ana süreçte yaşıyor; oradan da sıfırlanmalı.
+      await window.cakalAPI.runAgent('reset', {});
+    } catch (err) {
+      console.error('[Chat] Konuşma hafızası sıfırlanamadı:', err);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -394,8 +427,25 @@ export default function ChatScreen() {
               <h1 className="text-lg font-semibold text-zinc-50">Çakal Çekirdeği</h1>
               <p className="text-sm text-zinc-500">Kişisel Fırsat Motoru</p>
             </div>
-            <div className="rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-xs text-amber-300">
-              Enter gönderir · Shift+Enter yeni satır
+            <div className="flex items-center gap-3">
+              <div className="rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-xs text-amber-300">
+                Enter gönderir · Shift+Enter yeni satır
+              </div>
+              <button
+                onClick={handleClearChat}
+                disabled={messages.length === 0 || isLoading || clearing}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700 disabled:hover:bg-transparent"
+                title={
+                  isLoading
+                    ? 'Cevap beklenirken temizlenemez'
+                    : messages.length === 0
+                      ? 'Temizlenecek mesaj yok'
+                      : "Ekranı ve ÇAKAL'ın konuşma hafızasını sıfırla"
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {clearing ? 'Temizleniyor…' : 'Sohbeti Temizle'}
+              </button>
             </div>
           </div>
         </header>

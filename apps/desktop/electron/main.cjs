@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+﻿const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const cron = require('node-cron');
 const { initOpenAI, chat, multiSourceSearch, resetConversation, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
-const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock } = require('./decision-guards.cjs');
+const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock, evaluatePriceLevelProvenanceGate } = require('./decision-guards.cjs');
+const { createResearchRun, buildContractRepairRequest, evaluateContract: evaluateResearchContract } = require('./research-contract.cjs');
+const { buildEvidenceLedger: buildLedgerForRepair } = require('./decision-guards.cjs');
 const { runDeterministicAgent } = require('./deterministic-agents.cjs');
 const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
@@ -12,6 +14,30 @@ const { storeSecret, hasSecret, listSecretRefs, listSecretRequests, fulfillSecre
 const { resolveAnalysisArtifact } = require('./analysis-artifacts.cjs');
 const surgeryReview = require('./surgery/review-service.cjs');
 const { createSessionManager } = require('./surgery/session-manager.cjs');
+
+// ── Commander oturum kanıt defteri ────────────────────────────────────
+// Karar kapılarının önceki turlarda toplanan kanıtı görebilmesi için aktivite
+// olayları tur sınırını aşarak saklanır. Tazelik kararı burada DEĞİL, kapıda
+// verilir (decision-guards kanıt sınıfına göre TTL uygular) — burada yalnız
+// sınırsız büyümeyi engelleyen bir üst sınır ve yaş budaması vardır.
+const COMMANDER_EVIDENCE_MAX_EVENTS = 400;
+const COMMANDER_EVIDENCE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+let _commanderEvidenceLog = [];
+
+function getCommanderEvidenceLog() {
+  const cutoff = Date.now() - COMMANDER_EVIDENCE_MAX_AGE_MS;
+  _commanderEvidenceLog = _commanderEvidenceLog.filter(
+    (event) => Number.isFinite(Number(event?.timestamp)) && Number(event.timestamp) >= cutoff,
+  );
+  if (_commanderEvidenceLog.length > COMMANDER_EVIDENCE_MAX_EVENTS) {
+    _commanderEvidenceLog = _commanderEvidenceLog.slice(-COMMANDER_EVIDENCE_MAX_EVENTS);
+  }
+  return _commanderEvidenceLog;
+}
+
+function resetCommanderEvidenceLog() {
+  _commanderEvidenceLog = [];
+}
 
 // Load environment variables. Sıra: proje kökü .env (dev) → resources/.env
 // (paketli sürümde bundle edildiyse) → userData/.env (kurulu sürüm için
@@ -1114,6 +1140,85 @@ ipcMain.handle('surgery:start', async (_event, payload = {}) => {
   }
 });
 
+// ── Etkileşimli cerrahi sohbet ──
+// Onay akışı: cerrah dosya yazmak/komut çalıştırmak istediğinde main süreci
+// isteği askılıya alır ve renderer'a `permission_request` olayı gönderir.
+// Kullanıcı karta basana kadar cerrah BEKLER. Karar surgery:permission-respond
+// ile geri döner. Kararsızlık onay değildir: zaman aşımı reddir.
+ipcMain.handle('surgery:chat-start', async (_event, payload = {}) => {
+  try {
+    const result = await surgerySession.startChat({
+      changeRequestId: payload.changeRequestId,
+      title: payload.title,
+      model: payload.model,
+    });
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:chat-start error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:chat-send', async (_event, payload = {}) => {
+  try {
+    const result = await surgerySession.sendChat(payload.message, { timeoutMs: payload.timeoutMs });
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:chat-send error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:permission-respond', async (_event, payload = {}) => {
+  try {
+    const result = surgerySession.respondPermission(
+      payload.permissionId,
+      payload.approved === true,
+      payload.feedback,
+    );
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:permission-respond error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+// Oturumu kapat. apply !== false ise iş canlı koda indirilir (commit →
+// preflight → merge). Kapı BLOCK derse merge yapılmaz; dal incelemede kalır.
+ipcMain.handle('surgery:chat-end', async (_event, payload = {}) => {
+  try {
+    const result = await surgerySession.endChat({
+      apply: payload.apply !== false,
+      verify: payload.verify !== false,
+    });
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:chat-end error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+// Oturumu kapatmadan ara uygulama (kullanıcı "şimdi indir" derse).
+ipcMain.handle('surgery:chat-apply', async (_event, payload = {}) => {
+  try {
+    const result = await surgerySession.applyChat({ verify: payload.verify !== false });
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:chat-apply error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('surgery:chat-abort', async () => {
+  try {
+    const result = await surgerySession.abortChat();
+    return { success: result.ok !== false, ...result };
+  } catch (err) {
+    console.error('[IPC] surgery:chat-abort error:', err.message);
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('surgery:abort', async () => {
   try {
     const result = await surgerySession.abortSurgery();
@@ -1364,10 +1469,35 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
 
   try {
     if (agentName === 'commander') {
-      const commanderActivityLog = [];
+      // OTURUM KANIT DEFTERİ
+      //
+      // GEÇMİŞ HATA: `const commanderActivityLog = []` bu handler'ın İÇİNDE
+      // duruyordu, yani her turda sıfırlanıyordu. 13:32'de fiyat ve finans
+      // verisi çekilmiş olmasına rağmen 13:59'daki turda kapı "zorunlu piyasa
+      // veri araçları çalışmadı" diyordu — çünkü önceki turun kanıtını
+      // GÖREMİYORDU. Kullanıcı verinin toplandığını biliyor, sistem bilmiyordu.
+      //
+      // Defter artık oturum boyunca yaşar. Tazelik kararı kapının kendisine
+      // aittir: decision-guards kanıt sınıfına göre TTL uygular (fiyat 15 dk,
+      // bilanço 90 gün). Yani eski kayıt "kanıt yok" değil, "bayat kanıt"
+      // olarak değerlendirilir ve gerekçede yaşıyla birlikte raporlanır.
+      const commanderActivityLog = getCommanderEvidenceLog();
+      const currentTurnEvents = [];
+
+      // ARAŞTIRMA KOŞUSU KAPSAMI
+      // Bir KULLANICI İSTEĞİ = bir koşu. Aşağıda chat() birden çok kez çağrılır
+      // (veri onarımı, sıralama tamamlama, fiyatlanma, karar kilidi turları);
+      // hepsi AYNI planı ve birikimli kanıt defterini paylaşır.
+      //
+      // Bilinçli olarak oturum geneli DEĞİL: "THYAO analiz et" → "ASELS analiz
+      // et" → "hangisi?" dizisinde ilk sorgunun kanıtı üçüncü sorgunun
+      // gereksinimini sessizce tatmin ederdi. Yeni istek = yeni koşu.
+      const researchRun = createResearchRun({ userQuestion: payload.message || '' });
       const commanderEmitActivity = (event) => {
-        commanderActivityLog.push(event);
-        emitActivity(event);
+        const stamped = event && event.timestamp ? event : { ...event, timestamp: Date.now() };
+        commanderActivityLog.push(stamped);
+        currentTurnEvents.push(stamped);
+        emitActivity(stamped);
       };
 
       commanderEmitActivity({ type: 'agent_start', agent: 'commander', message: payload.message, timestamp: Date.now() });
@@ -1517,19 +1647,57 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         telegramService: telegram,
         telegramReader: telegramReader,
         registerSurgicalRequest: surgerySession.registerRequest,
+        researchRun,
       });
 
-      let gateResult = evaluateCommanderDecisionGate(payload.message, response, commanderActivityLog);
+      let gateResult = evaluateCommanderDecisionGate(payload.message, response, commanderActivityLog, { contractGoverned: researchRun.get().planned });
+
+      // Onarım kararı KAPININ EKSİK BULDUĞU KANIT SINIFINA bakar, o turda kaç
+      // araç çalıştığına değil.
+      //
+      // GEÇMİŞ HATA: koşul `gateResult.usedTools.length === 0` idi. usedTools
+      // o turdaki TÜM araçları sayar. verify_claim + web_search çalışmış ama
+      // piyasa veri aracı çalışmamış bir turda uzunluk 0 olmadığı için onarım
+      // hiç tetiklenmiyor, kapı 40+ kaynakla üretilmiş cevabı doğrudan
+      // VERI_YETERSIZ ile değiştiriyordu. Yani "hiç araç çalışmazsa onar,
+      // yanlış araç çalışırsa onarma" gibi ters bir davranış vardı.
+      // TEKİL ONARIM YETKİSİ: sözleşme kilitliyse onarımı YALNIZ sözleşme
+      // yönetir. GEÇMİŞ HATA: iki onarım sistemi ayrı ayrı çalışıyordu —
+      // genel kapı `run_investment_research_scan`'i 37 saniye çalıştırdı ve
+      // eksik MARKET_MOVERS'ı kapatmadı; sonra sözleşme onarımı doğru aracı
+      // (get_bist_gainers) çağırdı. Genel tur tamamen israftı.
+      // TEK ONARIM MOTORU.
+      // Sözleşme kilitliyse veri toplama turunu YALNIZ sözleşme açar. Kilitler
+      // (sıralama, fiyatlanma, karar, seviye) hükmü doğrudan indirir; kendi
+      // "tamamlama denemesi" turunu AÇMAZ.
+      //
+      // GEÇMİŞ HATA: dört ayrı kilit + genel kapı, her biri kendi chat() turunu
+      // açıyordu. Canlı logda tek soru için 4 iterasyon, 13 aracın yeniden
+      // çalışması ve 103 saniye. Bu yalnız maliyet değil KANIT TUTARLILIĞI
+      // sorunu: her tur farklı asOf üretebilir, aynı cevapta iki snapshot
+      // karışabilir (KCHOL MA50 %2,48 ve %6,7 aynı cevapta göründü).
+      const contractOwnsRepair = researchRun.get().planned;
 
       const shouldRetryForData =
+        !contractOwnsRepair &&
         gateResult &&
         gateResult.status === 'veri_yetersiz' &&
-        Array.isArray(gateResult.usedTools) &&
-        gateResult.usedTools.length === 0;
+        gateResult.repairable !== false;
 
       const shouldRetryForDecision =
+        !contractOwnsRepair &&
         gateResult &&
-        gateResult.status === 'no_signal';
+        gateResult.status === 'no_signal' &&
+        gateResult.repairable !== false;
+
+      if (contractOwnsRepair && gateResult) {
+        commanderEmitActivity({
+          type: 'research_contract',
+          agent: 'commander',
+          detail: `Genel onarım atlandı: araştırma sözleşmesi kilitli, onarımı sözleşme yönetiyor (${gateResult.status}).`,
+          timestamp: Date.now(),
+        });
+      }
 
       if (shouldRetryForData || shouldRetryForDecision) {
         commanderEmitActivity({
@@ -1541,13 +1709,29 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           timestamp: Date.now(),
         });
 
+        // Onarım talimatı eksik KANIT SINIFINA göre yazılır; her eksikte aynı
+        // "fiyat aracı çağır" metnini göndermek, araştırma kanıtı eksik olan
+        // turda modeli yanlış araca yönlendirir.
+        const missingEvidence = Array.isArray(gateResult.missingEvidence) ? gateResult.missingEvidence : [];
+        const needsResearchEvidence = missingEvidence.includes('RESEARCH_EVIDENCE');
+
         const retryMessage = shouldRetryForData
           ? [
               payload.message || '',
               '',
               '[ÇEKİRDEK ZORUNLULUK]',
-              'Final yanıt üretmeden önce en az bir piyasa veri aracı çağır:',
-              'get_stock_price, get_market_signal, analyze_finance_signal, get_forex_rates, get_crypto_prices, get_tcmb_rates veya generate_stock_chart.',
+              ...(needsResearchEvidence
+                ? [
+                    'Piyasa verisi toplandı fakat kanıt doğrulama katmanı eksik kaldı.',
+                    'Final yanıt üretmeden önce yönetilmiş araştırma/kanıt aracı çağır:',
+                    'run_investment_research_scan veya verify_claim.',
+                    'Zaten topladığın verileri TEKRAR ÇEKME; yalnız eksik kanıt katmanını tamamla.',
+                  ]
+                : [
+                    'Final yanıt üretmeden önce en az bir piyasa veri aracı çağır:',
+                    'get_bist_board (çok sembollü BIST için tek istekte tüm pano), get_stock_price, get_market_signal, analyze_finance_signal, get_forex_rates, get_crypto_prices, get_tcmb_rates veya generate_stock_chart.',
+                    'Önceki turda topladığın araştırma/kaynak bilgisini KORU ve cevabında kullan; sadece eksik olan piyasa verisini ekle.',
+                  ]),
               'Ardından sadece mevcut veriye dayanarak cevap ver; veri yoksa nedenini açık yaz.',
             ].join('\n')
           : [
@@ -1567,9 +1751,10 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           telegramService: telegram,
           telegramReader: telegramReader,
         registerSurgicalRequest: surgerySession.registerRequest,
+        researchRun,
         });
 
-        gateResult = evaluateCommanderDecisionGate(payload.message, response, commanderActivityLog);
+        gateResult = evaluateCommanderDecisionGate(payload.message, response, commanderActivityLog, { contractGoverned: researchRun.get().planned });
       }
 
       if (gateResult) {
@@ -1585,7 +1770,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // Kaynak kod isteği ne cerrahi hatta ne sandbox plugin'e yönlendirildiyse
         // istek boşa düşmüştür. Gerçek vaka: README isteği duvara çarptı, ÇAKAL
         // "sandbox'a yazayım mı" dedi — o dosyaları hiçbir şey okumaz.
-        let routingLock = evaluateUnroutedCapabilityGate(payload.message, response, commanderActivityLog);
+        let routingLock = evaluateUnroutedCapabilityGate(payload.message, response, currentTurnEvents);
         if (routingLock) {
           commanderEmitActivity({
             type: 'decision_gate',
@@ -1611,11 +1796,12 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             profileContext,
             onActivity: commanderEmitActivity,
             registerSurgicalRequest: surgerySession.registerRequest,
+            researchRun,
             telegramService: telegram,
             telegramReader: telegramReader,
           });
 
-          routingLock = evaluateUnroutedCapabilityGate(payload.message, response, commanderActivityLog);
+          routingLock = evaluateUnroutedCapabilityGate(payload.message, response, currentTurnEvents);
           if (routingLock) {
             commanderEmitActivity({
               type: 'decision_gate',
@@ -1632,7 +1818,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // ("ensağlam", "top 5 aday", "bunlardan hangileri?"). Bu kapı kullanıcı
         // ifadesini tahmin etmeye çalışmaz; ÇAKAL'ın ÜRETTİĞİ cevaba bakar:
         // ortada hisse sıralaması varsa arkasında yönetilmiş araştırma da olmalı.
-        let rankingLock = evaluateUngovernedRankingGate(payload.message, response, commanderActivityLog);
+        let rankingLock = evaluateUngovernedRankingGate(payload.message, response, currentTurnEvents);
+        if (rankingLock && contractOwnsRepair) { response = rankingLock.response; rankingLock = null; }
         if (rankingLock) {
           commanderEmitActivity({
             type: 'decision_gate',
@@ -1660,9 +1847,10 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             telegramService: telegram,
             telegramReader: telegramReader,
         registerSurgicalRequest: surgerySession.registerRequest,
+        researchRun,
           });
 
-          rankingLock = evaluateUngovernedRankingGate(payload.message, response, commanderActivityLog);
+          rankingLock = evaluateUngovernedRankingGate(payload.message, response, currentTurnEvents);
           if (rankingLock) {
             commanderEmitActivity({
               type: 'decision_gate',
@@ -1677,7 +1865,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // Fiyatlanma kilidi: bilanço kaynaklı AL/fırsat hükmü, analyze_earnings_pricing
         // aracı GERÇEKTEN çalışıp sınıflandırma üretmeden (provenance kaydı) çıkamaz.
         // Doğrulama cevap metnindeki kelimeyle değil tool_call activity log'uyla yapılır.
-        let pricingLock = evaluateEarningsPricingGate(payload.message, response, commanderActivityLog);
+        let pricingLock = evaluateEarningsPricingGate(payload.message, response, currentTurnEvents);
+        if (pricingLock && contractOwnsRepair) { response = pricingLock.response; pricingLock = null; }
         if (pricingLock) {
           commanderEmitActivity({
             type: 'decision_gate',
@@ -1692,7 +1881,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             '[ÇEKİRDEK ZORUNLULUK — FİYATLANMA KİLİDİ]',
             'Önceki cevabında bilanço kaynaklı AL/fırsat hükmü vardı ama önceden fiyatlanma ölçümü yapılmadı.',
             'İki seçeneğin var:',
-            '1) analyze_earnings_pricing aracını çağır (sembol + biliniyorsa bilanço açıklama tarihi), çıkan sınıflandırmayı ve kanıt satırlarını cevaba aynen koy, hükmü sınıflandırmaya göre güncelle (LARGELY_PRICED/OVEREXTENDED ise kovalamama/kâr realizasyonu uyarısıyla).',
+            '1) analyze_earnings_pricing aracını çağır (sembol + biliniyorsa bilanço açıklama tarihi), çıkan sınıflandırmayı ve kanıt satırlarını cevaba aynen koy, hükmü sınıflandırmaya göre güncelle (PRICE_EXTENDED/PRICE_OVEREXTENDED ise kovalamama/kâr realizasyonu uyarısıyla).',
             '2) Ölçüm yapılamıyorsa AL/fırsat hükmünü kaldır; bilanço kalitesini yorumla ama zamanlama hükmü olarak SADECE İNCELE veya İZLE kullan.',
             'Konsensüs verisi görmediysen consensusSurprise alanını DOLDURMA; beklenti sürprizini UNKNOWN olarak raporla.',
           ].join('\n');
@@ -1705,9 +1894,10 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             telegramService: telegram,
             telegramReader: telegramReader,
         registerSurgicalRequest: surgerySession.registerRequest,
+        researchRun,
           });
 
-          pricingLock = evaluateEarningsPricingGate(payload.message, response, commanderActivityLog);
+          pricingLock = evaluateEarningsPricingGate(payload.message, response, currentTurnEvents);
           if (pricingLock) {
             commanderEmitActivity({
               type: 'decision_gate',
@@ -1722,6 +1912,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // Hüküm-kanıt kilidi: AL/SAT ancak değerleme + dönem karşılaştırması +
         // kaynak kanıtı + veri tazeliği + risk seviyesi tamamsa çıkabilir.
         let verdictLock = evaluateVerdictEvidenceLock(payload.message, response);
+        if (verdictLock && contractOwnsRepair) { response = verdictLock.response; verdictLock = null; }
         if (verdictLock) {
           commanderEmitActivity({
             type: 'decision_gate',
@@ -1750,6 +1941,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             telegramService: telegram,
             telegramReader: telegramReader,
         registerSurgicalRequest: surgerySession.registerRequest,
+        researchRun,
           });
 
           verdictLock = evaluateVerdictEvidenceLock(payload.message, response);
@@ -1763,6 +1955,61 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             response = verdictLock.response;
           }
         }
+      }
+
+      // SÖZLEŞME ONARIMI (hedefli, tek deneme)
+      // Kapsam eksikse eksik kanıt sınıfını ÜRETEN aracı adıyla iste.
+      // GEÇMİŞ HATA: eksik MARKET_MOVERS iken onarım turu
+      // run_investment_research_scan çalıştırıyordu; o araç bu sınıfı
+      // üretmiyor. Sözleşme doğru hedefi hesaplıyordu, kimse okumuyordu.
+      const contractNow = researchRun.get();
+      if (contractNow.planned) {
+        const coverage = evaluateResearchContract(
+          contractNow,
+          buildLedgerForRepair(researchRun.events(), Date.now()),
+          Date.now(),
+        );
+        const repair = buildContractRepairRequest(payload.message || '', coverage);
+        if (repair) {
+          commanderEmitActivity({
+            type: 'research_contract',
+            agent: 'commander',
+            detail: `Sözleşme onarımı: ${repair.missingBySubQuestion.map((m) => `${m.id}→${m.missing.join('/')}`).join(', ')}`
+              + (repair.capabilityGaps.length ? ` | yetenek boşluğu: ${repair.capabilityGaps.join(', ')}` : ''),
+            timestamp: Date.now(),
+          });
+
+          response = await chat(repair.message, {
+            perplexityKey: process.env.PERPLEXITY_API_KEY,
+            supabaseClient,
+            profileContext,
+            onActivity: commanderEmitActivity,
+            telegramService: telegram,
+            telegramReader: telegramReader,
+            registerSurgicalRequest: surgerySession.registerRequest,
+            researchRun,
+          });
+        }
+      }
+
+      // SEVİYE PROVENANCE KİLİDİ (en son çalışır)
+      // Cevapta somut giriş/stop rakamı varsa, o SEMBOL için ölçüm kanıtı
+      // aranır. Canlı testte KCHOL'e "stop ₺182.1" verilmişti; bu sayıyı
+      // hiçbir araç üretmemişti ve karar kilidi düz kelime araması olduğu için
+      // "stop" yazılmış olması yeterli sayılıyordu.
+      const priceLevelLock = evaluatePriceLevelProvenanceGate(
+        payload.message,
+        response,
+        researchRun.events(),
+      );
+      if (priceLevelLock) {
+        commanderEmitActivity({
+          type: 'decision_gate',
+          agent: 'commander',
+          detail: `SEVİYE PROVENANCE: ${priceLevelLock.reason}. Seviyeler kanıta bağlanamadı, hüküm indirildi.`,
+          timestamp: Date.now(),
+        });
+        response = priceLevelLock.response;
       }
 
       console.log(
@@ -1809,6 +2056,9 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
 
     if (agentName === 'reset') {
       resetConversation();
+      // Sohbet sıfırlanıyorsa kanıt defteri de sıfırlanmalı: yeni oturumun
+      // kapısı eski turun fiyat verisini "elde kanıt var" diye saymamalı.
+      resetCommanderEvidenceLog();
       return { status: 'ok', response: 'Sohbet sıfırlandı.' };
     }
 

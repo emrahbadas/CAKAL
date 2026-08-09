@@ -21,6 +21,16 @@ contextBridge.exposeInMainWorld('cakalAPI', {
   surgeryListRequests: () => ipcRenderer.invoke('surgery:list-requests'),
   surgeryStart: (payload) => ipcRenderer.invoke('surgery:start', payload),
   surgeryAbort: () => ipcRenderer.invoke('surgery:abort'),
+
+  // Etkileşimli cerrahi sohbet — VS Code Copilot tarzı onay akışı.
+  // Cerrahın her yazma/komut isteği `permission_request` olayı olarak
+  // surgery-activity kanalından düşer; karar buradan geri gider.
+  surgeryChatStart: (payload) => ipcRenderer.invoke('surgery:chat-start', payload),
+  surgeryChatSend: (payload) => ipcRenderer.invoke('surgery:chat-send', payload),
+  surgeryChatEnd: (payload) => ipcRenderer.invoke('surgery:chat-end', payload),
+  surgeryChatApply: (payload) => ipcRenderer.invoke('surgery:chat-apply', payload),
+  surgeryChatAbort: () => ipcRenderer.invoke('surgery:chat-abort'),
+  surgeryRespondPermission: (payload) => ipcRenderer.invoke('surgery:permission-respond', payload),
   onSurgeryActivity: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('surgery-activity', handler);

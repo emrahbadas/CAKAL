@@ -8,14 +8,34 @@
 // UNKNOWN kalır ve fiyatlanma kanıtıyla karıştırılmaz.
 // ============================
 
+// ADLANDIRMA KARARI (2026-08-09):
+// Bu modülün ölçtüğü şey fiyatın ne kadar UZADIĞIDIR — girdileri yalnız
+// 5/20/60 gün getiri, XU100 göreceli getiri, hacim genişlemesi ve MA50
+// uzaklığıdır. Beklenti (konsensüs) verisi GİRDİ DEĞİLDİR.
+//
+// Eski adlar (LARGELY_PRICED, LOW_EVIDENCE_OF_PRICING) "bilanço fiyatlandı"
+// diye okunuyordu; oysa konsensüs bilinmeden bir bilançonun fiyatlanıp
+// fiyatlanmadığı söylenemez. Etiketler ölçülen şeye göre yeniden adlandırıldı:
+// fiyat uzaması ≠ bilanço fiyatlanması.
+//
+// EARNINGS_PRICED_IN hükmü ayrı bir alandır (earningsPricedIn) ve YALNIZ
+// açıklama tarihi + beklenti + gerçekleşen sonuç birlikte varsa üretilir.
 const PRICING_CLASSIFICATIONS = Object.freeze([
   'NOT_ASSESSED',
   'INSUFFICIENT_DATA',
-  'LOW_EVIDENCE_OF_PRICING',
-  'PARTIALLY_PRICED',
-  'LARGELY_PRICED',
-  'OVEREXTENDED',
+  'NOT_EXTENDED',
+  'PARTIALLY_EXTENDED',
+  'PRICE_EXTENDED',
+  'PRICE_OVEREXTENDED',
 ]);
+
+// Eski adları okuyan yerler için geriye dönük eşleme (log/kayıt okuması).
+const LEGACY_PRICING_CLASSIFICATION_ALIASES = Object.freeze({
+  LOW_EVIDENCE_OF_PRICING: 'NOT_EXTENDED',
+  PARTIALLY_PRICED: 'PARTIALLY_EXTENDED',
+  LARGELY_PRICED: 'PRICE_EXTENDED',
+  OVEREXTENDED: 'PRICE_OVEREXTENDED',
+});
 
 const EXPECTATION_SURPRISE_VALUES = Object.freeze(['below', 'in_line', 'above']);
 
@@ -105,28 +125,28 @@ function computeRelativeReturn(indexBars, anchorDate, baseDate, stockReturn) {
 }
 
 function classifyFromScore(score) {
-  if (score >= 8) return 'OVEREXTENDED';
-  if (score >= 5) return 'LARGELY_PRICED';
-  if (score >= 2) return 'PARTIALLY_PRICED';
-  return 'LOW_EVIDENCE_OF_PRICING';
+  if (score >= 8) return 'PRICE_OVEREXTENDED';
+  if (score >= 5) return 'PRICE_EXTENDED';
+  if (score >= 2) return 'PARTIALLY_EXTENDED';
+  return 'NOT_EXTENDED';
 }
 
 function profitTakingRiskFor(classification) {
   switch (classification) {
-    case 'OVEREXTENDED': return 'high';
-    case 'LARGELY_PRICED': return 'high';
-    case 'PARTIALLY_PRICED': return 'medium';
-    case 'LOW_EVIDENCE_OF_PRICING': return 'low';
+    case 'PRICE_OVEREXTENDED': return 'high';
+    case 'PRICE_EXTENDED': return 'high';
+    case 'PARTIALLY_EXTENDED': return 'medium';
+    case 'NOT_EXTENDED': return 'low';
     default: return 'unknown';
   }
 }
 
 function verdictPolicyFor(classification) {
   switch (classification) {
-    case 'OVEREXTENDED': return 'PROFIT_TAKING_RISK';
-    case 'LARGELY_PRICED': return 'DO_NOT_CHASE';
-    case 'PARTIALLY_PRICED': return 'CONTROLLED_POSITIVE';
-    case 'LOW_EVIDENCE_OF_PRICING': return 'FRESH_CATALYST_POSSIBLE';
+    case 'PRICE_OVEREXTENDED': return 'PROFIT_TAKING_RISK';
+    case 'PRICE_EXTENDED': return 'DO_NOT_CHASE';
+    case 'PARTIALLY_EXTENDED': return 'CONTROLLED_POSITIVE';
+    case 'NOT_EXTENDED': return 'FRESH_CATALYST_POSSIBLE';
     default: return 'NO_TIMING_VERDICT';
   }
 }
@@ -289,9 +309,33 @@ function assessEarningsPricing(input = {}) {
 
   const evidenceLines = buildEvidenceLines(evidence, mode);
 
+  // "Bilanço fiyatlandı" hükmü, "fiyat uzamış" hükmünden FARKLIDIR ve ancak
+  // beklenti ekseni bilindiğinde kurulabilir. Konsensüs yoksa bu alan
+  // açıkça UNKNOWN kalır; classification onun yerine geçmez.
+  const earningsPricedIn = consensus.surprise === 'UNKNOWN' || !announcementDate
+    ? {
+        verdict: 'UNKNOWN',
+        reason: !announcementDate
+          ? 'Bilanço açıklama tarihi verilmedi; ölçüm güncel fiyat uzaması modundadır, bilanço fiyatlanması hükmü kurulamaz.'
+          : 'Beklenti/konsensüs verisi yok; fiyat uzaması ölçüsü bilanço fiyatlanmasının yerine geçmez.',
+      }
+    : {
+        verdict: (classification === 'PRICE_EXTENDED' || classification === 'PRICE_OVEREXTENDED') && consensus.surprise !== 'below'
+          ? 'LIKELY_PRICED_IN'
+          : classification === 'NOT_EXTENDED'
+            ? 'LIKELY_NOT_PRICED_IN'
+            : 'PARTIALLY_PRICED_IN',
+        reason: `Açıklama tarihi (${announcementDate}) + beklenti sürprizi (${consensus.surprise}) + fiyat uzaması (${classification}) birlikte değerlendirildi.`,
+        expectationSource: consensus.source,
+      };
+
   return {
     ...base,
     classification,
+    // Etiketin NE ÖLÇTÜĞÜ cevaba taşınmalı; "PRICE_EXTENDED" görüp "bilanço
+    // fiyatlandı" diye okumanın önüne bu satır geçer.
+    classificationMeaning: 'Fiyatın son dönemde ne kadar uzadığını ölçer (getiri + XU100 göreceli getiri + hacim genişlemesi + MA50 uzaklığı). Beklenti/konsensüs GİRDİ DEĞİLDİR.',
+    earningsPricedIn,
     dataConfidence,
     profitTakingRisk: profitTakingRiskFor(classification),
     verdictPolicy: verdictPolicyFor(classification),
@@ -309,8 +353,11 @@ function buildEvidenceLines(evidence, mode) {
   lines.push(`- ${prefix} 20 gün: ${fmtPct(evidence.return20d)}`);
   lines.push(`- ${prefix} 60 gün: ${fmtPct(evidence.return60d)}`);
   lines.push(`- XU100 göreceli 20 gün: ${fmtPct(evidence.relativeReturn20d)}`);
+  // ETİKET AYRIMI: bu MA50 uzaklığı REFERANS KAPANIŞA göredir.
+  // analyze_finance_signal aynı adı CANLI FİYAT için kullanıyor; ikisi aynı
+  // cevapta farklı sayı üretip (KCHOL %2,48 vs %6,7) çelişki gibi görünüyordu.
   lines.push(`- Hacim genişlemesi (20g/önceki 40g): ${evidence.volumeExpansion === null ? 'veri yok' : evidence.volumeExpansion + 'x'}`);
-  lines.push(`- Fiyat / 50 günlük ortalama: ${fmtPct(evidence.distanceToMa50)}`);
+  lines.push(`- REFERANS KAPANIŞIN 50 günlük ortalamaya uzaklığı (${evidence.referenceDate || 'referans'}): ${fmtPct(evidence.distanceToMa50)} — bu, son CANLI fiyatın MA50 uzaklığı DEĞİLDİR`);
   if (evidence.postReaction.direction !== 'not_observed') {
     lines.push(`- Bilanço sonrası ilk gün tepkisi: ${fmtPct(evidence.postReaction.returnPct)} (hacim ${evidence.postReaction.volumeRatio ?? '?'}x)`);
   }
@@ -331,7 +378,7 @@ function buildConstraints(classification, expectationSurprise) {
     constraints.notes.push('Fiyatlanma ölçülemedi: bilanço kalitesi yorumlanabilir, giriş zamanlaması hükmü üretilemez.');
   }
 
-  if (classification === 'LARGELY_PRICED' || classification === 'OVEREXTENDED') {
+  if (classification === 'PRICE_EXTENDED' || classification === 'PRICE_OVEREXTENDED') {
     constraints.forbiddenPhrases.push('güçlü alım fırsatı', 'kaçırılmaz fırsat');
     constraints.requiredWarnings.push('kovalamama', 'kâr realizasyonu riski', 'sınırlı kalan getiri alanı');
     constraints.notes.push('Sonuçlar büyük ölçüde önceden fiyatlanmış görünüyor; yukarı yön sürebilir ama kalan getiri/risk oranı daralmıştır.');
@@ -346,6 +393,7 @@ function buildConstraints(classification, expectationSurprise) {
 
 module.exports = {
   PRICING_CLASSIFICATIONS,
+  LEGACY_PRICING_CLASSIFICATION_ALIASES,
   EXPECTATION_SURPRISE_VALUES,
   assessEarningsPricing,
 };

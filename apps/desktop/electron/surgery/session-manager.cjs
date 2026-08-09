@@ -21,19 +21,25 @@ const path = require('path');
 const crypto = require('crypto');
 
 const handoff = require('./handoff.cjs');
-const { CopilotSurgeon, resolveNativeCliPath } = require('./copilot-surgeon.cjs');
+const { CopilotSurgeon, resolveNativeCliPath, redact } = require('./copilot-surgeon.cjs');
 const { startDeviceLogin, GITHUB_DEVICE_URL } = require('./auth-login.cjs');
 const cakalIdentity = require('../cakal-identity.cjs');
 
 const STATUS = Object.freeze({
   IDLE: 'IDLE',
   RUNNING: 'RUNNING',
+  CHATTING: 'CHATTING',
   AWAITING_REVIEW: 'AWAITING_REVIEW',
   FAILED: 'FAILED',
   ABORTED: 'ABORTED',
 });
 
 const MAX_PENDING = 20;
+
+// Kullanıcının onay kartına cevap vermesi için tanınan süre. Bittiğinde istek
+// REDDEDİLİR — cevapsızlık onay sayılmaz. İzin kancasının kendi zaman aşımı
+// (20 dk) bunun ARKASINDA duran yedektir; normalde bu sayaç önce dolar.
+const PERMISSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Cerrahi için varsayılan model. "auto" bilinçli olarak SEÇİLMEDİ: kod
 // kalitesi cerrahi işin tamamını belirliyor, model kararı şansa bırakılmamalı.
@@ -45,11 +51,18 @@ function createSessionManager(options = {}) {
   const surgeonFactory = typeof options.surgeonFactory === 'function'
     ? options.surgeonFactory
     : (opts) => new CopilotSurgeon(opts);
+  // Merge/preflight servisi enjekte edilebilir: testler gerçek preflight
+  // sürecini (60+ sn) başlatmak zorunda kalmamalı.
+  const reviewService = options.reviewService || require('./review-service.cjs');
+  const permissionTimeoutMs = Number.isFinite(options.permissionTimeoutMs)
+    ? options.permissionTimeoutMs
+    : PERMISSION_TIMEOUT_MS;
 
   /** id → changeRequest (PENDING) */
   const pending = new Map();
 
   let active = null;      // { changeRequestId, branch, worktreePath, surgeon, startedAt }
+  let chat = null;        // etkileşimli sohbet oturumu (aşağıda)
   let lastResult = null;  // son tamamlanan/başarısız oturumun özeti
   let status = STATUS.IDLE;
 
@@ -93,6 +106,18 @@ function createSessionManager(options = {}) {
           branch: active.branch,
           worktreePath: active.worktreePath,
           startedAt: active.startedAt,
+        }
+        : null,
+      chat: chat
+        ? {
+          changeRequestId: chat.changeRequestId,
+          branch: chat.branch,
+          worktreePath: chat.worktreePath,
+          startedAt: chat.startedAt,
+          model: chat.model,
+          busy: chat.busy,
+          turns: chat.turns,
+          pendingPermissions: [...chat.permissions.values()].map((p) => p.payload),
         }
         : null,
       pendingCount: pending.size,
@@ -231,7 +256,7 @@ function createSessionManager(options = {}) {
    * @returns {Promise<object>} oturum sonucu
    */
   async function startSurgery(changeRequestId, opts = {}) {
-    if (active) {
+    if (active || chat) {
       return { ok: false, error: 'Zaten çalışan bir cerrahi var. Önce onu bitir veya iptal et.' };
     }
     const changeRequest = pending.get(changeRequestId);
@@ -326,6 +351,331 @@ function createSessionManager(options = {}) {
     return { ok: true, changeRequestId };
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // ETKİLEŞİMLİ SOHBET OTURUMU
+  // ══════════════════════════════════════════════════════════════════════
+  // startSurgery tek atımlıdır: talep gider, dakikalarca beklersin, sonucu
+  // dal olarak görürsün. Sohbet oturumu bunun karşıtıdır — konuşma açık kalır
+  // ve cerrahın her dosya yazma / komut / ağ isteği kullanıcıya onay kartı
+  // olarak düşer (VS Code Copilot davranışı).
+  //
+  // İKİ AYRI ONAY DÜZLEMİ, KARIŞTIRILMAMALI:
+  //   1. İzin kartı  → "bu dosyayı worktree'ye yazayım mı?"  (tur içinde)
+  //   2. Uygulama    → "bu iş canlı koda insin mi?"           (oturum sonunda)
+  // Kullanıcı kararına göre 2. adım oturum bitince OTOMATİK çalışır; ama
+  // preflight kapısı BLOCK derse onay bile geçersizdir (review-service
+  // içindeki kural). Yani hız kullanıcının, veto kapının.
+
+  /** Sohbet turlarına eklenen bağlayıcı çerçeve — ilk mesajla bir kez gider. */
+  function buildChatPreamble() {
+    return [
+      '# Etkileşimli cerrahi bakım oturumu',
+      '',
+      cakalIdentity.buildSurgeonContract(),
+      '',
+      '## Bağlayıcı kısıtlar',
+      '- Yalnız bu worktree içinde çalış. Dışına çıkma.',
+      '- Güvenlik katmanlarına, preflight kapısına ve cerrahi altyapıya DOKUNMA.',
+      '- .env ve secret dosyalarını okuma/yazma.',
+      '- git push, remote değişikliği, npm publish YASAK.',
+      '- Mevcut testleri silme veya zayıflatma; yeni davranış için yeni test yaz.',
+      '- Değişikliği küçük ve geri alınabilir tut.',
+      '',
+      '## Bu oturumun işleyişi',
+      '- Bu bir SOHBET. Kullanıcı sana adım adım yazacak; her turda kısa ve net cevap ver.',
+      '- Yazdığın HER dosya ve çalıştırdığın HER komut kullanıcıya onay kartı olarak',
+      '  gösterilir. Kullanıcı reddederse gerekçesini oku, kapsamı daralt, kapıyı aşmaya çalışma.',
+      '- Büyük değişiklikleri tek hamlede yapma: küçük parçalara böl ki kullanıcı',
+      '  her adımı görüp onaylayabilsin.',
+      '- Burası bir git worktree; `node_modules` YOK. `npm test`/`npm install` çalışmaz,',
+      '  denemeye zaman harcama. Doğrulama merge kapısında ayrıca koşar.',
+      '- Görev belirsizse TAHMİN ETME: ne yapacağını kısaca yaz ve kullanıcıya sor.',
+      '',
+      '## Kullanıcının mesajı',
+    ].join('\n');
+  }
+
+  /** Bekleyen tüm izin isteklerini verilen gerekçeyle kapatır. */
+  function flushPermissions(feedback) {
+    if (!chat) return;
+    for (const [permissionId, entry] of chat.permissions) {
+      clearTimeout(entry.timer);
+      chat.permissions.delete(permissionId);
+      try { entry.resolve({ approved: false, feedback }); } catch { /* yoksay */ }
+      emit({ type: 'permission_cancelled', permissionId, detail: feedback });
+    }
+  }
+
+  /**
+   * İzin kancasının askUser köprüsü: isteği UI'a yollar ve kullanıcının
+   * kararını bekler. Cevap respondPermission ile gelir.
+   */
+  function askUserBridge(ask) {
+    const permissionId = crypto.randomBytes(8).toString('hex');
+    // Ham metin cerrahtan gelir; token benzeri her şey UI'a gitmeden maskelenir.
+    const payload = {
+      permissionId,
+      kind: ask.kind,
+      intention: ask.intention ? redact(String(ask.intention)) : null,
+      target: ask.target ? redact(String(ask.target)) : null,
+      file: ask.file || null,
+      diff: ask.diff ? redact(ask.diff) : null,
+      command: ask.command ? redact(ask.command) : null,
+      url: ask.url ? redact(String(ask.url)) : null,
+      toolName: ask.toolName || null,
+      paths: Array.isArray(ask.paths) ? ask.paths.slice(0, 20) : null,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + permissionTimeoutMs,
+    };
+
+    return new Promise((resolve) => {
+      if (!chat) { resolve({ approved: false, feedback: 'Sohbet oturumu kapalı.' }); return; }
+
+      const timer = setTimeout(() => {
+        if (!chat || !chat.permissions.has(permissionId)) return;
+        chat.permissions.delete(permissionId);
+        resolve({ approved: false, feedback: 'Kullanıcı süresi içinde yanıt vermedi; işlem reddedildi.' });
+        emit({ type: 'permission_timeout', permissionId });
+      }, permissionTimeoutMs);
+      // Zaman aşımı sayacı Electron main sürecini ayakta tutmasın.
+      if (typeof timer.unref === 'function') timer.unref();
+
+      chat.permissions.set(permissionId, { resolve, timer, payload });
+      emit({ type: 'permission_request', permissionId, payload });
+    });
+  }
+
+  /** UI'dan gelen onay/red kararı. Bekleyen istek yoksa sessizce başarısız olur. */
+  function respondPermission(permissionId, approved, feedback) {
+    if (!chat) return { ok: false, error: 'Açık sohbet oturumu yok.' };
+    const entry = chat.permissions.get(permissionId);
+    if (!entry) {
+      return { ok: false, error: 'Bu izin isteği artık bekletilmiyor (zaman aşımı veya iptal).' };
+    }
+    clearTimeout(entry.timer);
+    chat.permissions.delete(permissionId);
+    const decision = approved === true ? 'approved' : 'rejected';
+    entry.resolve({ approved: approved === true, feedback });
+    emit({ type: 'permission_resolved', permissionId, decision, detail: entry.payload.target || '' });
+    return { ok: true, permissionId, decision };
+  }
+
+  /**
+   * Sohbet oturumunu açar: izole worktree + açık Copilot oturumu.
+   * @param {object} opts
+   * @param {string} [opts.changeRequestId] Bekleyen bir talebe bağlanır (yoksa ad-hoc oturum)
+   * @param {string} [opts.title] Ad-hoc oturum başlığı
+   * @param {string} [opts.model]
+   */
+  async function startChat(opts = {}) {
+    if (active || chat) {
+      return { ok: false, error: 'Zaten çalışan bir cerrahi/sohbet var. Önce onu bitir.' };
+    }
+
+    // Bekleyen talebe bağlanabilir ya da serbest başlatılabilir. Her iki
+    // durumda da izlenebilir bir CR kimliği üretilir — dal adı ondan gelir.
+    let changeRequest;
+    if (opts.changeRequestId && pending.has(opts.changeRequestId)) {
+      changeRequest = pending.get(opts.changeRequestId);
+    } else {
+      changeRequest = handoff.buildChangeRequest({
+        originalUserRequest: String(opts.title || '').trim() || 'Etkileşimli cerrahi sohbet oturumu',
+      });
+    }
+
+    let worktree;
+    try {
+      worktree = handoff.createWorktree(repoRoot, changeRequest.changeRequestId, {
+        startPoint: opts.startPoint || 'HEAD',
+      });
+    } catch (err) {
+      emit({ type: 'chat_failed', detail: `Worktree açılamadı: ${err.message}` });
+      return { ok: false, error: `Worktree açılamadı: ${err.message}` };
+    }
+
+    const surgeon = surgeonFactory({ onEvent: emit });
+    chat = {
+      changeRequestId: changeRequest.changeRequestId,
+      changeRequest,
+      branch: worktree.branch,
+      worktreePath: worktree.worktreePath,
+      surgeon,
+      model: opts.model || DEFAULT_SURGERY_MODEL,
+      startedAt: new Date().toISOString(),
+      busy: false,
+      turns: 0,
+      preambleSent: false,
+      permissions: new Map(),
+    };
+    status = STATUS.CHATTING;
+
+    try {
+      const auth = await surgeon.connect();
+      if (!auth?.authenticated) throw new Error('Copilot oturumu açık değil. Önce GitHub girişi yap.');
+
+      await surgeon.startInteractive({
+        worktreePath: worktree.worktreePath,
+        model: chat.model,
+        askUser: askUserBridge,
+      });
+    } catch (err) {
+      // Başlatma başarısız: worktree BİLEREK bırakılır (inceleme için).
+      try { await surgeon.disconnect(); } catch { /* yoksay */ }
+      const message = err?.message || 'sohbet oturumu açılamadı';
+      chat = null;
+      status = STATUS.FAILED;
+      lastResult = { changeRequestId: changeRequest.changeRequestId, status: STATUS.FAILED, error: message };
+      emit({ type: 'chat_failed', changeRequestId: changeRequest.changeRequestId, detail: message });
+      return { ok: false, error: message, branch: worktree.branch, worktreePath: worktree.worktreePath };
+    }
+
+    // Talebe bağlandıysa kuyruktan düşür: iş artık bu oturumda.
+    pending.delete(changeRequest.changeRequestId);
+
+    emit({
+      type: 'chat_started',
+      changeRequestId: changeRequest.changeRequestId,
+      branch: worktree.branch,
+      detail: `sohbet açıldı · ${chat.model}`,
+    });
+    return {
+      ok: true,
+      changeRequestId: changeRequest.changeRequestId,
+      branch: worktree.branch,
+      worktreePath: worktree.worktreePath,
+      model: chat.model,
+    };
+  }
+
+  /** Sohbete bir tur mesaj gönderir. Tur bitene kadar ikinci mesaj kabul edilmez. */
+  async function sendChat(text, opts = {}) {
+    if (!chat) return { ok: false, error: 'Açık sohbet oturumu yok.' };
+    if (chat.busy) return { ok: false, error: 'Cerrah hâlâ çalışıyor; turun bitmesini bekle.' };
+    const message = String(text || '').trim();
+    if (!message) return { ok: false, error: 'Boş mesaj gönderilemez.' };
+
+    chat.busy = true;
+    chat.turns += 1;
+    emit({ type: 'chat_user_message', detail: message.slice(0, 400) });
+
+    // Çerçeve yalnız ilk turda gider; her turda tekrarlamak bağlamı şişirir.
+    const payload = chat.preambleSent ? message : `${buildChatPreamble()}\n${message}`;
+
+    try {
+      const result = await chat.surgeon.sendMessage(payload, opts.timeoutMs);
+      chat.preambleSent = true;
+      emit({
+        type: 'chat_reply',
+        detail: result?.reply || '(cevap metni yok)',
+        rejectedCount: result?.rejectedCount ?? 0,
+      });
+      return { ok: true, reply: result?.reply || null, rejectedCount: result?.rejectedCount ?? 0 };
+    } catch (err) {
+      const detail = err?.message || 'tur başarısız';
+      emit({ type: 'chat_turn_failed', detail });
+      return { ok: false, error: detail };
+    } finally {
+      chat.busy = false;
+      // Tur bitti ama cevaplanmamış kart kalmışsa artık anlamı yok: kapat.
+      flushPermissions('Tur sona erdiği için istek düştü.');
+    }
+  }
+
+  /**
+   * Oturumdaki işi canlı koda indirir.
+   *
+   * Sıra ÖNEMLİ: önce commit (commit'siz iş merge'de kaybolur), sonra
+   * "merge edilecek bir şey var mı" kontrolü, sonra preflight + merge.
+   * approved:true buraya kullanıcının oturum boyunca verdiği onaylardan
+   * gelir; ama BLOCK durumunda review-service onayı zaten geçersiz sayar.
+   */
+  async function applyChat(opts = {}) {
+    if (!chat) return { ok: false, error: 'Açık sohbet oturumu yok.' };
+    const { branch, worktreePath, changeRequestId } = chat;
+
+    emit({ type: 'chat_apply_started', branch });
+
+    try {
+      handoff.commitAll(worktreePath, `cerrahi: ${changeRequestId} sohbet oturumu`);
+    } catch (err) {
+      emit({ type: 'chat_apply_failed', detail: `Commit başarısız: ${err.message}` });
+      return { ok: false, error: `Commit başarısız: ${err.message}` };
+    }
+
+    let ahead = 0;
+    try { ahead = handoff.commitsAhead(worktreePath, opts.base || 'main'); } catch { /* aşağıda 0 sayılır */ }
+    if (ahead === 0) {
+      emit({ type: 'chat_apply_skipped', detail: 'Uygulanacak değişiklik yok.' });
+      return { ok: true, applied: false, reason: 'NO_CHANGES', message: 'Bu oturumda kod değişikliği olmadı; uygulanacak bir şey yok.' };
+    }
+
+    const result = await reviewService.approveAndMerge({
+      base: opts.base || 'main',
+      head: branch,
+      approved: true,
+      verify: opts.verify !== false,
+      cwd: repoRoot,
+    });
+
+    if (result.merged) {
+      emit({ type: 'chat_apply_merged', branch, detail: `geri dönüş: ${result.rollbackCommand}` });
+    } else {
+      emit({ type: 'chat_apply_blocked', branch, detail: `${result.reason}: ${result.message || ''}` });
+    }
+    return { ok: true, applied: result.merged === true, commits: ahead, result };
+  }
+
+  /**
+   * Sohbeti kapatır ve (varsayılan olarak) işi uygular.
+   * apply:false verilirse dal incelemeye bırakılır — mevcut Cerrahi Bakım
+   * ekranından elle merge edilebilir.
+   */
+  async function endChat(opts = {}) {
+    if (!chat) return { ok: false, error: 'Açık sohbet oturumu yok.' };
+    const { changeRequestId, branch, worktreePath, surgeon } = chat;
+
+    flushPermissions('Oturum kapatıldı; istek reddedildi.');
+
+    let apply = null;
+    if (opts.apply !== false) {
+      apply = await applyChat({ base: opts.base, verify: opts.verify });
+    }
+
+    try { await surgeon.disconnect(); } catch { /* yoksay */ }
+
+    // Merge başarılıysa worktree'ye ihtiyaç kalmaz; dal her hâlükârda korunur.
+    if (apply?.applied === true) {
+      try { handoff.removeWorktree(repoRoot, worktreePath); } catch { /* yoksay */ }
+    }
+
+    const decisions = typeof surgeon.decisions === 'object' ? surgeon.decisions : [];
+    chat = null;
+    status = apply?.applied ? STATUS.IDLE : STATUS.AWAITING_REVIEW;
+    lastResult = {
+      changeRequestId,
+      branch,
+      worktreePath,
+      status,
+      applied: apply?.applied === true,
+      apply: apply || null,
+      decisions,
+    };
+    emit({ type: 'chat_ended', changeRequestId, branch, detail: apply?.applied ? 'uygulandı' : 'incelemede' });
+    return { ok: true, ...lastResult };
+  }
+
+  /** Sohbeti uygulamadan keser. Dal ve worktree inceleme için korunur. */
+  async function abortChat() {
+    if (!chat) return { ok: false, error: 'Açık sohbet oturumu yok.' };
+    const { changeRequestId, surgeon } = chat;
+    flushPermissions('Oturum iptal edildi; istek reddedildi.');
+    try { await surgeon.abort(); } catch { /* yoksay */ }
+    return endChat({ apply: false }).then((r) => {
+      emit({ type: 'chat_aborted', changeRequestId });
+      return r;
+    });
+  }
+
   /** İnceleme bittikten sonra worktree'yi kaldırır (dal korunur). */
   function cleanupWorktree(worktreePath) {
     try {
@@ -339,7 +689,9 @@ function createSessionManager(options = {}) {
 
   function reset() {
     pending.clear();
+    flushPermissions('Oturum sıfırlandı.');
     active = null;
+    chat = null;
     lastResult = null;
     status = STATUS.IDLE;
   }
@@ -356,6 +708,14 @@ function createSessionManager(options = {}) {
     cancelLogin,
     startSurgery,
     abortSurgery,
+    // Etkileşimli sohbet oturumu
+    startChat,
+    sendChat,
+    respondPermission,
+    applyChat,
+    endChat,
+    abortChat,
+    buildChatPreamble,
     cleanupWorktree,
     buildSurgeryPrompt,
     onEvent,
@@ -363,4 +723,4 @@ function createSessionManager(options = {}) {
   };
 }
 
-module.exports = { createSessionManager, STATUS, MAX_PENDING };
+module.exports = { createSessionManager, STATUS, MAX_PENDING, PERMISSION_TIMEOUT_MS };

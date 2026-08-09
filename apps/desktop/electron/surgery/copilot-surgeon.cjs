@@ -13,6 +13,26 @@
 
 const { buildPermissionHandler } = require('./permission-hook.cjs');
 
+/**
+ * `session.sendAndWait()` cevabından asistan metnini çıkarır.
+ *
+ * DİKKAT — buradaki şekil tahmin edilemez, paketten okundu:
+ * `sendAndWait` düz bir metin değil bir OLAY döndürür
+ * (`AssistantMessageEvent | undefined`) ve metin `data.content` altındadır.
+ * Kod uzun süre `result.text` okuyordu; öyle bir alan hiç yok, bu yüzden cevap
+ * HER ZAMAN boş geliyordu ve arayüzde "(cevap metni gelmedi)" görünüyordu.
+ * Hata sessizdi: null bir cevap, çökme değil eksik metin olarak görünür.
+ *
+ * `text` / düz string yolları savunma amaçlı korunur (SDK sürümü değişirse
+ * sessizce boşa düşmek yerine çalışmaya devam etsin).
+ */
+function extractReplyText(result) {
+  if (!result) return null;
+  if (typeof result === 'string') return result;
+  const content = result?.data?.content ?? result?.content ?? result?.text;
+  return typeof content === 'string' && content.trim() ? content : null;
+}
+
 /** Token benzeri desenleri maskeler. Loglanan/rapora giren HER şey buradan geçer. */
 function redact(text) {
   return String(text ?? '')
@@ -110,6 +130,8 @@ class CopilotSurgeon {
     this._client = null;
     this._session = null;
     this._decisions = [];
+    this._interactive = false;
+    this._unsubscribe = null;
   }
 
   _emit(type, detail) {
@@ -181,7 +203,8 @@ class CopilotSurgeon {
     let status = 'COMPLETED';
     try {
       const result = await this._session.sendAndWait(prompt, params.timeoutMs || 300000);
-      reply = result?.text ? redact(result.text) : null;
+      const text = extractReplyText(result);
+      reply = text ? redact(text) : null;
     } catch (err) {
       status = 'FAILED';
       this._emit('surgeon_error', err?.message || 'görev hatası');
@@ -194,6 +217,94 @@ class CopilotSurgeon {
     if (status === 'COMPLETED' && rejected > 0) status = 'COMPLETED_WITH_DENIALS';
 
     return { status, decisions: this._decisions.slice(), reply, eventCounts, rejectedCount: rejected };
+  }
+
+  // ── Etkileşimli (çok turlu) cerrahi oturum ────────────────────────────
+  //
+  // runSurgery tek atımlıdır: prompt gider, 5 dakika sonra sonuç gelir ve
+  // kullanıcı arada olan biteni yalnız seyreder. Sohbet kutusu için oturumun
+  // AÇIK kalması gerekir: kullanıcı yazar, cerrah cevaplar, cerrah izin ister,
+  // kullanıcı onaylar/reddeder, konuşma devam eder.
+  //
+  // Aynı SDK oturumu turlar arasında korunduğu için bağlam da korunur —
+  // her tur için yeni oturum açmak cerrahın hafızasını sıfırlardı.
+
+  /**
+   * Açık kalan bir oturum başlatır.
+   * @param {object} params
+   * @param {string} params.worktreePath izole çalışma alanı (mutlak)
+   * @param {string} [params.model]
+   * @param {(ask:object)=>Promise<{approved:boolean,feedback?:string}>} [params.askUser]
+   *        Verilirse izin kapısı etkileşimli olur (onay katmanı kullanıcıya sorulur).
+   * @param {number} [params.askTimeoutMs]
+   */
+  async startInteractive(params = {}) {
+    if (!this._client) throw new Error('Önce connect() çağrılmalı.');
+    const { worktreePath } = params;
+    if (!worktreePath) throw new Error('worktreePath zorunlu.');
+    if (this._session) throw new Error('Zaten açık bir oturum var.');
+
+    this._decisions = [];
+
+    const handler = buildPermissionHandler({
+      worktreeRoot: worktreePath,
+      askUser: params.askUser,
+      askTimeoutMs: params.askTimeoutMs,
+      onDecision: (d) => {
+        this._decisions.push(d);
+        const target = d.target ? ` — ${String(d.target).slice(0, 120)}` : '';
+        this._emit('surgeon_permission', `${d.decision}:${d.reason}${target}`);
+      },
+    });
+
+    const sessionConfig = {
+      workingDirectory: worktreePath,
+      onPermissionRequest: handler,
+    };
+    if (params.model) sessionConfig.model = params.model;
+
+    this._session = await this._client.createSession(sessionConfig);
+    this._interactive = true;
+    this._emit('surgeon_session', `etkileşimli oturum açıldı · model: ${params.model || 'auto'}`);
+
+    // Ham SDK olaylarını canlı akışa köprüle. Şekilleri sürüm sürüm değişebildiği
+    // için YALNIZ type taşınır; yüksek frekanslı akış parçaları elenir, aksi
+    // halde arayüz saniyede onlarca satırla dolar.
+    this._unsubscribe = this._session.on((event) => {
+      const type = String(event?.type || '');
+      if (!type || /delta|chunk|token/i.test(type)) return;
+      this._emit('surgeon_event', type);
+    });
+
+    return { ok: true };
+  }
+
+  /**
+   * Açık oturuma bir tur mesaj gönderir ve cevabı bekler.
+   * Bu çağrı sırasında izin istekleri askUser üzerinden kullanıcıya düşer;
+   * bu yüzden zaman aşımı runSurgery'den cömerttir (insan onayı bekliyor).
+   * @returns {Promise<{reply:string|null, decisions:object[], rejectedCount:number}>}
+   */
+  async sendMessage(text, timeoutMs) {
+    if (!this._session) throw new Error('Açık etkileşimli oturum yok.');
+    const message = String(text || '').trim();
+    if (!message) throw new Error('Boş mesaj gönderilemez.');
+
+    const before = this._decisions.length;
+    const result = await this._session.sendAndWait(message, timeoutMs || 30 * 60 * 1000);
+    const turnDecisions = this._decisions.slice(before);
+    const replyText = extractReplyText(result);
+
+    return {
+      reply: replyText ? redact(replyText) : null,
+      decisions: turnDecisions,
+      rejectedCount: turnDecisions.filter((d) => d.decision === 'reject').length,
+    };
+  }
+
+  /** Oturum boyunca biriken tüm izin kararları (denetim için). */
+  get decisions() {
+    return this._decisions.slice();
   }
 
   /** Kullanılabilir modelleri listeler (UI seçimi için). */
@@ -211,6 +322,11 @@ class CopilotSurgeon {
   }
 
   async disconnect() {
+    if (typeof this._unsubscribe === 'function') {
+      try { this._unsubscribe(); } catch { /* yoksay */ }
+      this._unsubscribe = null;
+    }
+    this._interactive = false;
     if (this._session) {
       try { await this._session.disconnect(); } catch { /* yoksay */ }
       this._session = null;
@@ -226,6 +342,7 @@ class CopilotSurgeon {
 
 module.exports = {
   CopilotSurgeon,
+  extractReplyText,
   redact,
   defaultClientFactory,
   buildClientOptions,

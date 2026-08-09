@@ -188,9 +188,10 @@ export class PatternExtractorAgent extends BaseAgent {
     }
 
     // Top performing category
+    // `[0]` bilerek aynı satırda: ayrı satıra alındığında dizi-literal gibi
+    // okunup ASI tuzağına benziyor (no-unexpected-multiline).
     const topCategory = Object.entries(categoryStats)
-      .sort(([, a], [, b]) => (b.profit - b.loss) - (a.profit - a.loss))
-      [0];
+      .sort(([, a], [, b]) => (b.profit - b.loss) - (a.profit - a.loss))[0];
 
     // Pattern health check
     const healthyPatterns = (patterns || []).filter(p => p.status === 'active').length;

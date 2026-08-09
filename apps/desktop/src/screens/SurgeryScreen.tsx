@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ShieldCheck, ShieldAlert, ShieldQuestion, RefreshCw, GitMerge, FileDiff } from 'lucide-react';
+import SurgeonChat from '../components/SurgeonChat';
 
 // ─── Cerrahi Bakım — diff inceleme ve onaylı merge ───
 // Kullanıcının "yanlış gideni göremiyorum" derdinin çözümü: cerrahın ürettiği
@@ -97,6 +98,11 @@ export default function SurgeryScreen() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [model, setModel] = useState<string>('');
+  // Sohbet oturumu bir talebe bağlanabilir; boşsa serbest oturum açılır.
+  const [chatRequestId, setChatRequestId] = useState<string | null>(null);
+  // loadBranches bu bileşende olay dinleyicisinden SONRA tanımlanıyor (TDZ).
+  // Ref üzerinden çağırmak, tanım sırasını değiştirmeden erişim sağlar.
+  const loadBranchesRef = useRef<(() => void) | null>(null);
 
   // Durum main process'te yaşar; bileşen açılışta ORADAN hidrasyon yapar.
   // Aksi halde sekme değiştirince state sıfırlanıyor ve kullanıcıya süreç
@@ -166,8 +172,12 @@ export default function SurgeryScreen() {
         setLoginCode({ code: (e as any).code, url: (e as any).url });
       }
       if (e.type === 'login_finished' || e.type === 'login_cancelled') setLoginCode(null);
-      if (['surgery_started', 'surgery_awaiting_review', 'surgery_failed', 'surgery_aborted', 'request_registered'].includes(e.type)) {
+      if ([
+        'surgery_started', 'surgery_awaiting_review', 'surgery_failed', 'surgery_aborted',
+        'request_registered', 'chat_started', 'chat_ended', 'chat_failed', 'chat_apply_merged',
+      ].includes(e.type)) {
         loadSession();
+        if (e.type === 'chat_apply_merged') loadBranchesRef.current?.();
       }
     });
     return () => { if (typeof off === 'function') off(); };
@@ -194,6 +204,7 @@ export default function SurgeryScreen() {
   }, []);
 
   useEffect(() => { loadBranches(); }, [loadBranches]);
+  useEffect(() => { loadBranchesRef.current = loadBranches; }, [loadBranches]);
 
   // loadBranches'ten SONRA tanımlanır: bağımlılık dizisi render anında
   // değerlendirildiği için, önce tanımlanırsa TDZ hatası verir.
@@ -315,6 +326,7 @@ export default function SurgeryScreen() {
           <div className="flex items-center gap-2">
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
               sessionStatus === 'RUNNING' ? 'bg-amber-500/15 text-amber-300'
+                : sessionStatus === 'CHATTING' ? 'bg-emerald-500/15 text-emerald-300'
                 : sessionStatus === 'AWAITING_REVIEW' ? 'bg-cyan-500/15 text-cyan-300'
                 : sessionStatus === 'FAILED' ? 'bg-red-500/15 text-red-300'
                 : 'bg-zinc-800 text-zinc-400'
@@ -336,9 +348,9 @@ export default function SurgeryScreen() {
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                disabled={sessionStatus === 'RUNNING'}
+                disabled={sessionStatus === 'RUNNING' || sessionStatus === 'CHATTING'}
                 className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-300 disabled:opacity-50"
-                title="Cerrahın kullanacağı model"
+                title="Cerrahın kullanacağı model — oturum sırasında değiştirilemez"
               >
                 {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
@@ -380,6 +392,22 @@ export default function SurgeryScreen() {
         )}
       </div>
 
+      {/* ── Cerrahi sohbet: onaylı, adım adım kod akışı ── */}
+      <SurgeonChat
+        authenticated={auth.authenticated}
+        model={model}
+        changeRequestId={chatRequestId}
+        onSessionChange={loadSession}
+      />
+      {chatRequestId && (
+        <div className="flex items-center justify-between rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-xs text-cyan-300">
+          <span>Sohbet şu talebe bağlanacak: <span className="font-mono">{chatRequestId}</span></span>
+          <button onClick={() => setChatRequestId(null)} className="text-cyan-200 underline-offset-2 hover:underline">
+            bağlantıyı kaldır
+          </button>
+        </div>
+      )}
+
       {/* ── Bekleyen değişiklik talepleri ── */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
         <h2 className="mb-2 text-sm font-semibold text-zinc-200">Bekleyen Değişiklik Talepleri</h2>
@@ -398,14 +426,24 @@ export default function SurgeryScreen() {
                     <div className="mt-1 text-[11px] text-zinc-500">🐺 {r.cakalInterpretation}</div>
                   )}
                 </div>
-                <button
-                  onClick={() => startSurgery(r.changeRequestId, r.originalUserRequest)}
-                  disabled={sessionStatus === 'RUNNING' || !auth.authenticated}
-                  className="shrink-0 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
-                  title={!auth.authenticated ? 'Önce Copilot bağlantısını kontrol et' : 'Cerrahiyi başlat'}
-                >
-                  Başlat
-                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={() => setChatRequestId(r.changeRequestId)}
+                    disabled={sessionStatus === 'RUNNING' || sessionStatus === 'CHATTING' || !auth.authenticated}
+                    className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Bu talebi sohbet oturumuna bağla — adım adım onaylayarak ilerle"
+                  >
+                    Sohbete Bağla
+                  </button>
+                  <button
+                    onClick={() => startSurgery(r.changeRequestId, r.originalUserRequest)}
+                    disabled={sessionStatus === 'RUNNING' || sessionStatus === 'CHATTING' || !auth.authenticated}
+                    className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={!auth.authenticated ? 'Önce Copilot bağlantısını kontrol et' : 'Tek atımlı cerrahiyi başlat'}
+                  >
+                    Tek Atımda Başlat
+                  </button>
+                </div>
               </div>
             ))}
           </div>
