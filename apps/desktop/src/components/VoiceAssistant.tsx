@@ -42,8 +42,46 @@ const COLORS = {
 const VAD_START_RMS = 0.012;
 const VAD_STOP_RMS = 0.007;
 const VAD_SILENCE_MS = 1400;
-const VAD_MIN_UTTERANCE_MS = 400;
 const VAD_MAX_UTTERANCE_MS = 30000;
+
+// KONUŞMA DIŞI SES ELEME (öksürük, hapşırık, kapı çarpması, klavye)
+//
+// GEÇMİŞ HATA 1: Minimum süre kontrolü ÖLÜYDÜ. Süre `Date.now() - utteranceStart`
+// ile ölçülüyordu ama bu ölçüm kayıt DURDUKTAN sonra yapılıyor — yani içinde
+// VAD_SILENCE_MS (1400ms) sessizlik kuyruğu da var. Böylece 250ms'lik bir öksürük
+// bile ~1650ms görünüyor ve 400ms eşiğini hiç takılmadan geçiyordu. Pratikte her
+// öksürük, her kapı sesi API'ye gidiyordu.
+//
+// GEÇMİŞ HATA 2: 10 Ağustos 2026 — kullanıcıyı öksürük tuttu, VAD bunu konuşma
+// sanıp kaydetti, STT öksürükten "Welche Aktien wären die besten?" uydurdu ve
+// commander Almanca soruya araştırma başlattı.
+//
+// Artık süre GERÇEK ses enerjisiyle ölçülüyor (sessizlik kuyruğu hariç).
+const VAD_MIN_VOICED_MS = 320;
+
+// GEÇMİŞ HATA 3 (ÇÜRÜTÜLEN VARSAYIM): Kısa kliplerde "alt bant enerji oranı"
+// ile konuşma/gürültü ayrımı denendi — varsayım "konuşmada ünlüler enerjiyi
+// <1kHz'e toplar, darbe sesleri geniş bantlıdır" idi. 10 Ağustos 2026 ölçümü
+// varsayımı ÇÜRÜTTÜ:
+//
+//   gürültü: 0.07 · 0.15 · 0.25 · 0.08 · 0.20
+//   konuşma: 0.17   ("Selam, beni duyuyor musun?")
+//
+// Konuşma tam gürültü aralığının ORTASINDA. Sebebi: masaya vuruş/kapı çarpması
+// alçak frekanslı gümbürtüdür, alt bant oranı konuşmadan bile yüksek çıkar.
+// Kullanılan 0.35 eşiği kısa gerçek komutları ("evet", ~400ms) eleyecekti;
+// o klip yalnız 1259ms olduğu için kurtuldu. Kapı KALDIRILDI.
+//
+// Oran hâlâ ÖLÇÜLÜP panelde gösteriliyor (karar vermiyor) — periyodiklik
+// tabanlı gerçek konuşma tespiti eklenirse karşılaştırma verisi olsun diye.
+const VAD_LOW_BAND_MAX_HZ = 1000;
+
+interface UtteranceMetrics {
+  /** Eşik üstü gerçek ses süresi — sondaki sessizlik kuyruğu DAHİL DEĞİL. */
+  voicedMs: number;
+  /** Alt bant (~<1kHz) enerji oranı. YALNIZ TEŞHİS — eleme kararı vermez. */
+  lowBandRatio: number;
+}
 
 // Yankı önleme: TTS bittikten sonra odadaki ses kuyruğu (tail) mikrofona
 // dönebilir; bu süre boyunca VAD tetiklenmez. Ek olarak TTS penceresine denk
@@ -84,6 +122,10 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
     const [voiceState, setVoiceState] = useState<VoiceState>('standby');
     const [lastHeard, setLastHeard] = useState('');
     const [errorText, setErrorText] = useState('');
+    // Son sesin ölçümü — VAD eşiklerini gerçek kayıtla ayarlamak için panelde
+    // gösterilir. DevTools bu uygulamada varsayılan olarak kapalı (main.cjs
+    // CAKAL_OPEN_DEVTOOLS), o yüzden konsol tek başına yetmiyor.
+    const [diagText, setDiagText] = useState('');
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
@@ -95,7 +137,15 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
     // Uzun cevaplar TTS'ten parça parça gelir; sırada bekleyen blob URL'leri.
     const ttsQueueRef = useRef<string[]>([]);
     const closedRef = useRef(false);
-    const vadRef = useRef({ speaking: false, silenceStart: 0, utteranceStart: 0 });
+    const vadRef = useRef({
+      speaking: false,
+      silenceStart: 0,
+      utteranceStart: 0,
+      // Konuşma dışı ses elemesi için ölçümler — bkz. VAD_MIN_VOICED_MS.
+      lastVoiceAt: 0,
+      lowBandSum: 0,
+      totalBandSum: 0,
+    });
 
     // Yankı önleme durumu: asistan konuşurken zorla durdurulan kayıtlar çözümlenmez;
     // TTS bitiş zamanı ve son okunan metin echo filtresinde kullanılır.
@@ -117,13 +167,28 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
     }, []);
 
     // ── Konuşma segmentini API'ye gönder ──
-    const finalizeUtterance = useCallback(async (blob: Blob, durationMs: number) => {
-      if (closedRef.current || durationMs < VAD_MIN_UTTERANCE_MS) {
+    const finalizeUtterance = useCallback(async (blob: Blob, metrics: UtteranceMetrics) => {
+      // Konuşma dışı ses elemesi — API'ye hiç gitmez (token da harcanmaz).
+      // Tek geçerli ölçüt SÜRE; alt bant oranı karar vermez (bkz. GEÇMİŞ HATA 3).
+      const rejected = metrics.voicedMs < VAD_MIN_VOICED_MS;
+
+      // Ölçüm hem panele hem konsola — eşik ayarı ve teşhis için.
+      const measure = `${Math.round(metrics.voicedMs)}ms · bant ${metrics.lowBandRatio.toFixed(2)}`;
+      console.log(`[VAD] ${measure} → ${rejected ? 'ELENDİ' : 'STT'}`);
+      if (!closedRef.current) {
+        setDiagText(`${measure} · ${rejected ? 'ELENDİ: kısa' : 'STT →'}`);
+      }
+
+      if (closedRef.current || rejected) {
+        if (!closedRef.current && rejected) {
+          setErrorText('Konuşma değil (çok kısa) — atlandı.');
+        }
         // 'speaking' durumunu asla ezme: TTS çalarken listening'e dönmek
         // mikrofonun asistanın kendi sesini kaydetmesine (yankı) yol açar.
         if (micOnRef.current && voiceStateRef.current !== 'speaking') setState('listening');
         return;
       }
+      setErrorText('');
       setState('transcribing');
       try {
         const buf = await blob.arrayBuffer();
@@ -146,13 +211,26 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
           (voiceStateRef.current === 'speaking' || startedNearTts) &&
           echoOverlapRatio(text, lastTtsTextRef.current) >= ECHO_OVERLAP_THRESHOLD;
 
+        const words = text.split(/\s+/).filter(Boolean);
+        const isShortAmbiguous =
+          words.length === 1 && !SHORT_UTTERANCE_WHITELIST.has(words[0].toLocaleLowerCase('tr-TR').replace(/[.,!?]/g, ''));
+
+        // Hangi korumanın yakaladığı tek satırda görünsün — eşik ayarı için.
+        const layer =
+          isSelfEcho ? 'echo'
+            : result?.unreliable ? 'dil-kayması'
+              : result?.hallucination ? 'prompt-yankısı'
+                : !result?.success ? 'hata'
+                  : !text ? 'boş'
+                    : isShortAmbiguous ? 'tek-kelime'
+                      : 'geçti';
+        console.log(`[STT] text="${text}" layer=${layer}`);
+        setDiagText((prev) => `${prev.replace(/ ·[^·]*$/, '')} · STT: ${layer}`);
+
         if (isSelfEcho) {
           setLastHeard(text);
           setErrorText('Yankı algılandı — kendi cevabımı duydum, chat\'e yazmadım.');
         } else if (result?.success && text.length >= 2) {
-          const words = text.split(/\s+/).filter(Boolean);
-          const isShortAmbiguous =
-            words.length === 1 && !SHORT_UTTERANCE_WHITELIST.has(words[0].toLocaleLowerCase('tr-TR').replace(/[.,!?]/g, ''));
           if (isShortAmbiguous) {
             // Tek belirsiz kelime → gönderme; kullanıcıya duyduğunu göster.
             setLastHeard(text);
@@ -163,6 +241,11 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
             onTranscript(text);
             // busy=true olacak; görsel THINKING'e geçer. Mic, cevap okunana kadar bekler.
           }
+        } else if (result?.unreliable) {
+          setErrorText('Konuşma yabancı dile kaydı, atıldı — tekrar söyler misin?');
+        } else if (result?.hallucination) {
+          // Sessizlikte STT prompt'unu geri yankılamış: kullanıcı konuşmadı,
+          // uyarı gösterme — panel sessiz kalsın.
         } else if (result?.success && !text) {
           setErrorText('Anlaşılmadı — biraz daha yüksek sesle ve net söyler misin?');
         } else if (!result?.success) {
@@ -202,6 +285,28 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
           setState('listening');
 
           const timeData = new Float32Array(analyser.fftSize);
+          const freqData = new Uint8Array(analyser.frequencyBinCount);
+          // Alt bant sınırı bin cinsinden: binGenişliği = sampleRate / fftSize.
+          const lowBandBins = Math.max(
+            1,
+            Math.round(VAD_LOW_BAND_MAX_HZ / (ctx.sampleRate / analyser.fftSize)),
+          );
+
+          /** Bu karedeki enerjiyi konuşma/gürültü ayrımı için biriktirir. */
+          const sampleSpectrum = (vad: typeof vadRef.current, now: number) => {
+            vad.lastVoiceAt = now;
+            analyser.getByteFrequencyData(freqData);
+            let low = 0;
+            let total = 0;
+            // 0. bin DC bileşeni — atlanır.
+            for (let i = 1; i < freqData.length; i++) {
+              total += freqData[i];
+              if (i <= lowBandBins) low += freqData[i];
+            }
+            vad.lowBandSum += low;
+            vad.totalBandSum += total;
+          };
+
           vadTimer = setInterval(() => {
             if (closedRef.current || !micOnRef.current) return;
             // Asistan konuşurken / düşünürken / çözümlerken kayıt alma (echo + gereksiz STT önlemi)
@@ -230,6 +335,9 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
               vad.speaking = true;
               vad.utteranceStart = now;
               vad.silenceStart = 0;
+              vad.lowBandSum = 0;
+              vad.totalBandSum = 0;
+              sampleSpectrum(vad, now);
               chunksRef.current = [];
               discardRecordingRef.current = false;
               const rec = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
@@ -243,8 +351,12 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
                   return;
                 }
                 const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-                const dur = Date.now() - vad.utteranceStart;
-                finalizeUtterance(blob, dur);
+                // Süre, sondaki sessizlik kuyruğu HARİÇ son ses anına göre ölçülür;
+                // yoksa 250ms'lik öksürük 1650ms görünür (bkz. VAD_MIN_VOICED_MS).
+                finalizeUtterance(blob, {
+                  voicedMs: Math.max(0, vad.lastVoiceAt - vad.utteranceStart),
+                  lowBandRatio: vad.totalBandSum > 0 ? vad.lowBandSum / vad.totalBandSum : 0,
+                });
               };
               rec.start();
             } else if (vad.speaking) {
@@ -257,6 +369,8 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
                 }
               } else {
                 vad.silenceStart = 0;
+                // Ses hâlâ eşik üstünde: konuşma/gürültü ayrımı için ölç.
+                sampleSpectrum(vad, now);
                 if (tooLong) {
                   vad.speaking = false;
                   if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
@@ -284,26 +398,60 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
     }, [micOn, finalizeUtterance, setState]);
 
     // ── TTS okuma ──
-    const stopSpeaking = useCallback(() => {
-      // Sıradaki parçaları da iptal et — KES tek parçayı değil tüm cevabı keser.
+    //
+    // GEÇMİŞ HATA: speak() önceki okumayı durdurmadan yeni bir çalma zinciri
+    // başlatıyordu. İki cevap arka arkaya gelince (ör. STT prompt yankısı chat'e
+    // düşüp ikinci bir tur açtığında) iki ses aynı anda çalıyordu; playbackRef
+    // yalnızca sonuncuyu tuttuğu için KES sadece birini susturabiliyor,
+    // kullanıcıya "kes çalışmıyor" gibi görünüyordu. Ayrıca uçuştaki TTS isteği
+    // iptal edilemediğinden KES'ten sonra ses gelmeye devam ediyordu.
+    //
+    // Çözüm: her okuma bir "kuşak" numarası alır. Yeni okuma ya da KES kuşağı
+    // ilerletir; uçuştaki istek ve zincirdeki playNext çağrıları kendi kuşağının
+    // geçersizleştiğini görüp sessizce çekilir.
+    const ttsGenRef = useRef(0);
+    const currentUrlRef = useRef<string | null>(null);
+
+    /** Çalan sesi + kuyruğu susturur ve blob URL'lerini serbest bırakır (durumu değiştirmez). */
+    const haltPlayback = useCallback(() => {
       ttsQueueRef.current.forEach((url) => URL.revokeObjectURL(url));
       ttsQueueRef.current = [];
-      if (playbackRef.current) {
-        playbackRef.current.pause();
+      const audio = playbackRef.current;
+      if (audio) {
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.src = '';
         playbackRef.current = null;
       }
+      if (currentUrlRef.current) {
+        URL.revokeObjectURL(currentUrlRef.current);
+        currentUrlRef.current = null;
+      }
+    }, []);
+
+    const stopSpeaking = useCallback(() => {
+      // Kuşağı ilerlet: uçuştaki TTS isteği dönse bile artık çalınmaz.
+      ttsGenRef.current += 1;
+      haltPlayback();
       ttsEndAtRef.current = Date.now();
       if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
-    }, [setState]);
+    }, [haltPlayback, setState]);
 
     useImperativeHandle(ref, () => ({
       speak: (text: string) => {
         if (closedRef.current || !text) return;
+        // Devam eden okuma/istek varsa önce tamamen kapat — üst üste binme yok.
+        const gen = ttsGenRef.current + 1;
+        ttsGenRef.current = gen;
+        haltPlayback();
+        const isStale = () => closedRef.current || ttsGenRef.current !== gen;
+
         setState('speaking');
         // Echo filtresi bu metinle karşılaştırır; TTS fetch'i sürerken de armed olsun.
         lastTtsTextRef.current = text;
         window.cakalAPI.voiceTts(text).then((result) => {
-          if (closedRef.current) return;
+          if (isStale()) return;
           // Uzun cevaplar birden çok ses parçası olarak gelir; sırayla çalınır.
           const base64Chunks: string[] =
             result?.success && Array.isArray(result.audioChunks) && result.audioChunks.length
@@ -321,33 +469,46 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
             const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
             return URL.createObjectURL(new Blob([bytes], { type: result.mimeType || 'audio/mpeg' }));
           });
+          // Blob'lar hazırlanırken KES'e basılmış olabilir.
+          if (isStale()) { urls.forEach((url) => URL.revokeObjectURL(url)); return; }
           ttsQueueRef.current = urls;
+
+          const finishAll = () => {
+            ttsQueueRef.current.forEach((url) => URL.revokeObjectURL(url));
+            ttsQueueRef.current = [];
+            playbackRef.current = null;
+            currentUrlRef.current = null;
+            ttsEndAtRef.current = Date.now();
+            if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
+          };
           const playNext = () => {
+            // KES ya da yeni bir okuma araya girdiyse zinciri bırak; temizliği o yaptı.
+            if (isStale()) return;
             const nextUrl = ttsQueueRef.current.shift();
-            if (!nextUrl || closedRef.current) {
-              ttsQueueRef.current.forEach((url) => URL.revokeObjectURL(url));
-              ttsQueueRef.current = [];
-              playbackRef.current = null;
-              ttsEndAtRef.current = Date.now();
-              if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
-              return;
-            }
+            if (!nextUrl) { finishAll(); return; }
             const audio = new Audio(nextUrl);
             playbackRef.current = audio;
+            currentUrlRef.current = nextUrl;
             const finishChunk = () => {
-              URL.revokeObjectURL(nextUrl);
+              if (currentUrlRef.current === nextUrl) {
+                URL.revokeObjectURL(nextUrl);
+                currentUrlRef.current = null;
+              }
               playNext();
             };
             audio.onended = finishChunk;
-            audio.onerror = () => { setErrorText('Ses çalınamadı (audio error)'); finishChunk(); };
-            audio.play().catch((err) => { setErrorText('Ses çalınamadı: ' + (err?.message || '')); finishChunk(); });
+            audio.onerror = () => { if (!isStale()) setErrorText('Ses çalınamadı (audio error)'); finishChunk(); };
+            audio.play().catch((err) => {
+              if (!isStale()) setErrorText('Ses çalınamadı: ' + (err?.message || ''));
+              finishChunk();
+            });
           };
           playNext();
         }).catch(() => {
-          if (!closedRef.current) setState(micOnRef.current ? 'listening' : 'standby');
+          if (!isStale()) setState(micOnRef.current ? 'listening' : 'standby');
         });
       },
-    }), [setState]);
+    }), [haltPlayback, setState]);
 
     // ── Kapatma: tam teardown, sıfır token ──
     const handleClose = useCallback(() => {
@@ -369,6 +530,12 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
     }));
     const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
     const onDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
+      // GEÇMİŞ HATA: başlık çubuğu pointerdown'da pointer'ı capture ediyordu.
+      // Pointer capture aktifken tarayıcı sonraki click olayını capture hedefine
+      // (başlık div'ine) yönlendirir; içindeki X düğmesinin onClick'i HİÇ
+      // tetiklenmiyor, panel kapanmıyordu. Düğme üzerinden başlayan pointer
+      // sürükleme sayılmaz.
+      if ((e.target as HTMLElement).closest('button')) return;
       dragOffsetRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
       e.currentTarget.setPointerCapture(e.pointerId);
     };
@@ -553,6 +720,8 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
           onPointerDown={onDragStart}
           onPointerMove={onDragMove}
           onPointerUp={onDragEnd}
+          onPointerCancel={onDragEnd}
+          onLostPointerCapture={onDragEnd}
           className="flex cursor-grab items-center justify-between border-b px-3 py-2 active:cursor-grabbing"
           style={{ borderColor: 'rgba(255,46,210,0.25)' }}
         >
@@ -579,6 +748,14 @@ const VoiceAssistant = forwardRef<VoiceAssistantHandle, VoiceAssistantProps>(
           )}
           {errorText && (
             <div className="max-w-full truncate text-[11px] text-rose-400" title={errorText}>{errorText}</div>
+          )}
+          {diagText && (
+            <div
+              className="max-w-full select-text truncate font-mono text-[9px] text-zinc-600"
+              title="Son sesin ölçümü — VAD eşik ayarı için. voicedMs · alt bant oranı · sonuç"
+            >
+              ⟟ {diagText}
+            </div>
           )}
 
           <div className="mt-1 flex items-center gap-2">

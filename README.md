@@ -181,9 +181,26 @@ docs/                # Denetim ve API notları
 
 ## Yol Haritası
 
-- [ ] **Deterministik aday hunisi:** pano → likidite filtresi → sabit ilk 10 → teknik ön skor → ilk 5'e temel+değerleme → ortak skor tablosu. Aday seçimi koda alınacak; model hiçbir kademede sembol seçmeyecek, yalnız çıkan tabloyu yorumlayacak (`CANDIDATE_FUNNEL` kanıt sınıfıyla bağlayıcı)
+### Deterministik aday hunisi
+
+Aday seçimi koda alınır; model hiçbir kademede sembol seçmez, yalnız çıkan tabloyu yorumlar. Kademeler: istek kapısı → evren → uygunluk → ucuz ön tarama → araştırma havuzu → derin araştırma → nihai kapı → raporlama.
+
+Tasarım kararları: nihai listede **kota doldurma yok** (iki aday geçtiyse iki tane döner, hiçbiri geçmezse `NO_CANDIDATE` geçerli sonuçtur); temel analiz nihai seçimden **önce** çalışır (yoksa seçimi teknik belirler); veri yokluğu kalite hükmünden **ayrı** raporlanır (kaynak limiti "kötü şirket" demek değildir).
+
+- [x] Huni sözleşmesi (`candidate-funnel.cjs`) — kademe grameri, elenme gerekçe kodları, soy zinciri, `CANDIDATE_FUNNEL` kanıt nesnesi, "model listeyi değiştiremez" kapısı. Eşik İÇERMEZ (bilerek).
+- [x] **Adım 1 — Entity kapsamı:** `web_search` / `search_youtube_insights` / `verify_claim` sembolü `query` metninde taşıyor, kanıt olayları entity'siz yazılıyordu → sözleşme o şirketleri hiç göremiyor, alt soru BLOCKED kalıyordu (`bist-entity-resolver.cjs`)
+- [ ] **Adım 2 — Sonuç-duyarlı kanıt sınıfı:** kanıt sınıfı statik `TOOL_EVIDENCE_CLASSES[toolName]` tablosundan türüyor; defter olayın kendi `evidenceClasses` alanını okumuyor. Tarayıcı `status: 'BLOCKED'` iken bile `success: true` döndüğü için bloke tarama da kanıt üretmiş sayılır. `resolveEvidenceClasses(toolName, result)` gerekiyor — **`CANDIDATE_FUNNEL` bu yapılmadan statik tabloya EKLENMEYECEK**
+- [ ] **Adım 3 — Sözleşme kapanışı hükmü indirmiyor:** kapanış raporu cevabın altına *ekleniyor*, üstteki model hükmüne dokunulmuyor; aynı cevapta "sosyal kanıtı kapattım" ile "sosyal kanıt BLOCKED" yan yana durabiliyor. `neutralizeEquityVerdicts` zaten var, kapanışa bağlanacak. İki regresyon testi: (a) AL/SAT nötrleşiyor mu, (b) bloke alt soruya ait **nitel** hüküm ("haber akışı kirli", "spek doğası baskın") kalıyor mu — kalıyorsa nihai çözüm composer'ın `coverage.answerableIds/blockedIds` bilgisini cevap üretmeden ÖNCE alması
+- [ ] **Adım 4 — İki tarama hesabını tekleştir:** core'daki `runInvestmentScreening` hiç çağrılmıyor, canlı tarafta ayrı skorlayıcılar var; ikisi aynı koşula zıt etiket veriyor (core `SCREENING_READY` ↔ canlı `PARTIAL_RESEARCH`). DİKKAT: core `maximumVolatility: 35` ile **eski aralık-genişliği** semantiğinde; canlı taraf 2026-08-09'da std-sapma + 3/5/8'e düzeltildi. Önce doğru semantik core'a taşınacak, sonra canlı core'a yönlendirilecek — tersi eski hatayı sessizce diriltir
+- [ ] **Adım 5 — Huni entegrasyonu:** kademe 0'ı mevcut `requiresResearchContract` niyet skoruna bağla (yeni sınıflandırıcı yazma), `run_investment_research_scan`'i kademe 5–7 ile genişlet (ikinci tarayıcı kurma — o aracın `nextRequiredStates` listesi zaten bu kademeleri sayıyor)
+
+Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama Commander aracı olarak bağlı değil — katalizör kademesi ona muhtaç. `evidenceConfidence` şu an sabit (`success ? 0.78 : 0.35`), gerçek ölçüm olmadan `dataConfidence` kapısı ayırt etmez. Eşik kalibrasyonu için geriye dönük test motoru yok (`backtests/` altında yalnız örnek JSON).
+
+### Diğer
+
 - [ ] **Kaynak otorite katmanı:** alan adı tekilleştirmesi var, otorite derecesi ve ortak köken tespiti yok — 31 farklı alan adı hâlâ 31 bağımsız kaynak demek değil
 - [ ] **Seviye türetimi:** kapı şu an "o sembolde ölçüm var mı" soruyor; "bu rakam o ölçümden mi türedi" sormuyor
+- [ ] **Sesli asistan — konuşma dışı ses:** süre kapısı tek öksürüğü eliyor; sürekli ritmik gürültü (masa tempo) hâlâ STT'ye gidiyor. Alt bant enerji oranı denendi ve ölçümle çürütüldü (konuşma 0.17, gürültü 0.07–0.30 — ayırmıyor). Gerçek çözüm periyodiklik/perde tespiti
 - [x] Değerleme girdileri (`get_valuation_multiples`) — hisse adedi gerektiren mutlak çarpanlar hâlâ eksik
 - [ ] FSM genişlemesi: kontrollü POST, zincirli API çağrıları, JSON dönüşüm DSL'i
 - [ ] `ai-service.cjs` monolitinin modüllere bölünmesi (~10k satır)

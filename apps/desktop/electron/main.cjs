@@ -1345,13 +1345,94 @@ async function callOpenAiTts(apiKey, input) {
 // dili yanlış kilitlediğinin göstergesi ("Gördün mü" -> Korece çıktı gibi).
 const NON_LATIN_SCRIPT_RE = /[぀-ヿ㐀-鿿가-힯Ѐ-ӿ؀-ۿ]/;
 
+// GEÇMİŞ HATA: Dil kayması yalnız Latin dışı alfabeye bakılarak aranıyordu.
+// "Hangi hisseler en iyisi olur?" sorusu Almancaya ÇEVRİLİP
+// "Welche Aktien wären die besten?" olarak chat'e düştü — Latin alfabesi
+// olduğu için filtre görmedi ve commander Almanca soruya araştırma başlattı.
+// Bu yüzden Latin alfabeli ama Türkçe olmayan çıktılar da yakalanmalı.
+const FOREIGN_STOPWORDS = new Set([
+  // Almanca
+  'welche', 'welcher', 'wären', 'waren', 'wäre', 'die', 'der', 'das', 'und', 'ist',
+  'nicht', 'für', 'mit', 'ich', 'sie', 'sind', 'auf', 'eine', 'einen', 'besten', 'aktien', 'wie',
+  // İngilizce
+  'the', 'what', 'which', 'would', 'are', 'best', 'and', 'for', 'with', 'stocks', 'today', 'should',
+  // Fransızca / İspanyolca
+  'quel', 'quelles', 'les', 'sont', 'pour', 'meilleures', 'cuál', 'cuales', 'los', 'mejores',
+  // NOT: "son" (son fiyat) ve "para" (para birimi) Türkçede sık geçer — listeye ASLA ekleme.
+]);
+
+/**
+ * Latin alfabeli ama Türkçe olmayan transkript mi?
+ * Kelimelerin en az %30'u yabancı işlev kelimesiyse dil kayması sayılır.
+ * Türkçeye özgü harf/ek varsa kayma yok kabul edilir (karışık cümle koruması).
+ */
+function isForeignLanguageDrift(text) {
+  const normalized = normalizeSttText(text);
+  const words = normalized.split(' ').filter(Boolean);
+  if (words.length < 3) return false;
+  const foreign = words.filter((word) => FOREIGN_STOPWORDS.has(word)).length;
+  if (foreign < 2) return false;
+  return foreign / words.length >= 0.3;
+}
+
+// Kısa kliplerde dil kilidini Türkçeye sabitleyen bağlam ipucu.
+//
+// GEÇMİŞ HATA: Whisper/gpt-4o-transcribe, ses sessizlik ya da oda gürültüsü
+// olduğunda prompt'un KENDİSİNİ transkript diye geri döndürür. Bu metin chat'e
+// düşüp commander'ı tetikliyordu; kullanıcı aynı anda konuşmuşsa iki ayrı cevap
+// üretilip iki TTS üst üste okunuyordu. Prompt hâlâ gerekli (dil kayması
+// önlemi), o yüzden kaldırmak yerine çıktısı filtreleniyor: aşağıdaki
+// isPromptHallucination() prompt'u yankılayan transkripti sessizlik sayar.
+const STT_LANGUAGE_PROMPT =
+  'Türkçe finans sohbeti: BIST, hisse, bilanço, sepet, tarama, analiz, fırsat, portföy.';
+
+// Sessiz/gürültülü kliplerde modelin ürettiği bilinen sabit uydurmalar.
+const STT_HALLUCINATION_PHRASES = [
+  'altyazı m.k.',
+  'altyazı mk',
+  'abone olmayı unutmayın',
+  'bizi izlediğiniz için teşekkürler',
+  'izlediğiniz için teşekkür ederim',
+  'altyazı ve çeviri',
+];
+
+function normalizeSttText(text) {
+  return String(text)
+    .toLocaleLowerCase('tr-TR')
+    .replace(/[.,!?;:'"()[\]*_`~-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Transkript, STT prompt'unun geri yankısı mı?
+ * Kelime örtüşmesi %60'ı geçiyorsa (ya da bilinen uydurma cümlelerden biriyse)
+ * gerçek konuşma değil, model uydurmasıdır.
+ */
+function isPromptHallucination(text) {
+  const normalized = normalizeSttText(text);
+  if (!normalized) return false;
+  // Kalıplar da aynı normalizasyondan geçmeli ("Altyazı M.K." -> "altyazı m k").
+  if (STT_HALLUCINATION_PHRASES.some((phrase) => normalized.includes(normalizeSttText(phrase)))) return true;
+
+  const words = normalized.split(' ').filter(Boolean);
+  // Tek/iki kelimelik transkriptler prompt'ta geçen tek bir terim olabilir
+  // ("bilanço"); onları burada eleme — istemcideki kısa-söz kuralı ilgilenir.
+  if (words.length < 4) return false;
+  // Eşik yüksek tutuldu: gerçek komutlar neredeyse her zaman prompt'ta olmayan
+  // kelimeler içerir (fiil, hisse kodu, sayı). Yankı ise prompt'un birebir
+  // kopyası olduğu için 1.0'a yakın örtüşür.
+  const promptWords = new Set(normalizeSttText(STT_LANGUAGE_PROMPT).split(' ').filter(Boolean));
+  const hits = words.filter((word) => promptWords.has(word)).length;
+  return hits / words.length >= 0.7;
+}
+
 async function callOpenAiTranscription(apiKey, buffer, mimeType, model) {
   const form = new FormData();
   form.append('file', new Blob([buffer], { type: mimeType || 'audio/webm' }), 'utterance.webm');
   form.append('model', model);
   form.append('language', 'tr');
-  // Kısa kliplerde dil kilidini Türkçeye sabitleyen bağlam ipucu.
-  form.append('prompt', 'Türkçe finans sohbeti: BIST, hisse, bilanço, sepet, tarama, analiz, fırsat, portföy.');
+  form.append('prompt', STT_LANGUAGE_PROMPT);
 
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -1381,22 +1462,37 @@ ipcMain.handle('voice:transcribe', async (_event, payload) => {
 
     let text = await callOpenAiTranscription(apiKey, buffer, payload?.mimeType, VOICE_STT_MODEL);
 
-    // Dil kayması tespiti: Türkçe konuşmada Latin dışı alfabe çıktıysa bir kez
-    // whisper-1 ile yeniden dene; o da Latin dışıysa transkripti güvenilmez say.
-    if (NON_LATIN_SCRIPT_RE.test(text)) {
-      console.warn('[Voice] Latin dışı transkript, whisper-1 ile yeniden deneniyor:', text.slice(0, 40));
+    // Dil kayması tespiti: Latin dışı alfabe ya da Latin alfabeli yabancı dil
+    // (Almanca/İngilizce çeviri) çıktıysa bir kez whisper-1 ile yeniden dene;
+    // ikinci deneme de kaymışsa transkripti güvenilmez say ve chat'e düşürme.
+    const hasDrifted = (t) => NON_LATIN_SCRIPT_RE.test(t) || isForeignLanguageDrift(t);
+    if (hasDrifted(text)) {
+      console.warn('[Voice] Dil kayması, whisper-1 ile yeniden deneniyor:', text.slice(0, 60));
       try {
         text = await callOpenAiTranscription(apiKey, buffer, payload?.mimeType, 'whisper-1');
       } catch (_) { /* retry başarısızsa aşağıdaki kontrol yakalar */ }
-      if (NON_LATIN_SCRIPT_RE.test(text)) {
+      if (hasDrifted(text)) {
+        console.warn('[Voice] Dil kayması sürdü, transkript atıldı:', text.slice(0, 60));
         return { success: true, text: '', unreliable: true };
       }
+    }
+
+    // Prompt yankısı / bilinen uydurma → sessizlik say, chat'e düşürme.
+    if (isPromptHallucination(text)) {
+      console.warn('[Voice] Prompt yankısı atıldı:', text.slice(0, 60));
+      return { success: true, text: '', hallucination: true };
     }
 
     return { success: true, text };
   } catch (err) {
     console.error('[Voice] transcribe error:', err.message, err.detail || '');
-    return { success: false, error: err.message };
+    // Ham DOMException metni panele düşmesin ("The operation was aborted due
+    // to timeout" gibi) — kullanıcıya ne yapacağını söyleyen Türkçe mesaj ver.
+    const isTimeout = err.name === 'TimeoutError' || /timeout|aborted/i.test(err.message || '');
+    return {
+      success: false,
+      error: isTimeout ? 'Ses çözümleme zaman aşımına uğradı — tekrar söyler misin?' : err.message,
+    };
   }
 });
 
