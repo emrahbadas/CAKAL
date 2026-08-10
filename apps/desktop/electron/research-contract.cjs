@@ -589,6 +589,24 @@ function extractAsOf(result) {
 }
 
 /** Araç çağrısının hangi sembolleri kapsadığını çıkarır. */
+/**
+ * Bir araç çağrısının HANGİ ŞİRKETLER hakkında kanıt ürettiğini çıkarır.
+ *
+ * GEÇMİŞ HATA (10 Ağustos 2026): yalnız `symbol/asset/symbols` argümanlarına ve
+ * `result.data.items|stocks|symbol` alanlarına bakılıyordu. Ama `web_search`,
+ * `search_youtube_insights` ve `verify_claim` sembolü argümanda değil `query`/
+ * `claim` METNİNDE taşır — bu araçların kanıt olayları ENTITY'SİZ yazılıyordu.
+ * Dört hisse için sekiz araç gerçekten çalıştığı halde sözleşme hiçbirini
+ * bulamıyor, sosyal kanıt alt sorusu BLOCKED kalıyordu.
+ *
+ * ÇÖZÜM: okuyucu GENEL, üretici DAR. Burada opsiyonel `coveredEntities` alanı
+ * okunur; onu şimdilik yalnız o üç araç üretir (bkz. bist-entity-resolver.cjs).
+ * Bu alan opsiyonel olduğu için diğer araçların dönüş şekli değişmez.
+ *
+ * Sorgu metnini burada körlemesine ayrıştırmıyoruz: "NET", "FOR", "IS" gibi
+ * sözcükleri hisse sanan yanlış pozitifler doğar. Çözümleme, bilinen sembol
+ * kümesine sahip olan aracın kendi sınırında yapılır.
+ */
 function extractEntities(args = {}, result = null) {
   const out = new Set();
   const push = (v) => {
@@ -599,8 +617,19 @@ function extractEntities(args = {}, result = null) {
     const val = args[key];
     if (typeof val === 'string') val.split(/[,;\s]+/).forEach(push);
   }
+  // Aracın açıkça bildirdiği kapsam (opsiyonel alan).
+  const covered = result?.data?.coveredEntities ?? result?.coveredEntities;
+  if (Array.isArray(covered)) covered.forEach(push);
+  // Gelecekte argümandan da bildirilebilsin.
+  if (Array.isArray(args.entities)) args.entities.forEach(push);
+
   const items = result?.data?.items || result?.data?.stocks;
   if (Array.isArray(items)) items.forEach((item) => push(item.symbol));
+  // Tarayıcının araştırılabilir listesi: bu semboller taramaca KAPSANDI —
+  // "araştırıldı" demek DEĞİLDİR, kanıt sınıfı bunu ayrıca belirler.
+  if (Array.isArray(result?.data?.researchable)) {
+    result.data.researchable.forEach((item) => push(item?.symbol ?? item));
+  }
   if (result?.data?.symbol) push(result.data.symbol);
   return [...out];
 }

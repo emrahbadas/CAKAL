@@ -110,7 +110,7 @@ interface CakalAPI {
   getMessages: (options?: { limit?: number }) => Promise<DbResult>;
 
   // Sesli Asistan — STT/TTS
-  voiceTranscribe: (audioBase64: string, mimeType?: string) => Promise<{ success: boolean; text?: string; error?: string }>;
+  voiceTranscribe: (audioBase64: string, mimeType?: string) => Promise<{ success: boolean; text?: string; error?: string; unreliable?: boolean; hallucination?: boolean }>;
   voiceTts: (text: string) => Promise<{ success: boolean; audioBase64?: string; audioChunks?: string[]; mimeType?: string; error?: string }>;
 
   // Notifications (realtime)

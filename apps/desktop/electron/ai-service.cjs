@@ -17,6 +17,7 @@ const { createSecretResolver, requestSecretInputs, listSecretRequests, hasSecret
 const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
 const researchContractLib = require('./research-contract.cjs');
+const bistEntityResolver = require('./bist-entity-resolver.cjs');
 const { buildEvidenceLedger } = require('./decision-guards.cjs');
 const safePath = require('./safe-path.cjs');
 const { registerAnalysisArtifact } = require('./analysis-artifacts.cjs');
@@ -1114,8 +1115,9 @@ FİNANS ARAÇLARI KULLANIM KURALLARI:
 - Döviz kuru sorulduğunda → get_forex_rates kullan (ECB verileri)
 - TCMB resmi kur veya altın fiyatı sorulduğunda → get_tcmb_rates kullan (TCMB resmi XML, alış/satış fiyatları)
 - Kripto piyasa genel durumu, top coinler, en çok yükselenler → get_crypto_market kullan (CoinCap)
-- BIST "en çok artan", "en çok yükselen", "tavan", "günün hareketli hisseleri", "%5-%10 arası artanlar" gibi sıralama/liste sorularında → get_bist_gainers kullan; get_stock_price ile sabit watchlist tarayıp liste uydurma
-- Kullanıcı belirli hisse adı vermediyse THYAO/ASELS/TUPRS gibi örnek hisseleri veri diye sunma; ranking istiyorsa get_bist_gainers, genel piyasa istiyorsa XU100 + makro varlıklar kullan
+- BIST "en çok artan", "en çok yükselen", "tavan", "günün hareketli hisseleri", "%5-%10 arası artanlar" gibi sıralama/liste sorularında → get_bist_board kullan: index filtresi VERME (tüm 600+ hisselik pano taransın), sortBy='change' ver. get_bist_gainers ikincil/teyit kaynağıdır (Uzmanpara listesi kısadır ve eksik kalabilir). get_stock_price ile sabit watchlist tarayıp liste uydurma
+- SIRALAMADA KAPSAM HATASI YASAK: get_bist_board'a index=XU100 verip sonucu "günün en çok artanları" diye sunma. Tavan yapan hisselerin çoğu XU100 DIŞINDADIR; endeks filtresiyle çıkan liste piyasa geneli sıralaması DEĞİLDİR. Araç çıktısındaki data.scope alanını oku; scope.warning doluysa ya filtresiz yeniden çağır ya da kapsamı ("XU100 içinde") başlıkta açıkça yaz
+- Kullanıcı belirli hisse adı vermediyse THYAO/ASELS/TUPRS gibi örnek hisseleri veri diye sunma; ranking istiyorsa get_bist_board (filtresiz), genel piyasa istiyorsa XU100 + makro varlıklar kullan
 - Bilanço, temel analiz, finansal tablo, net kâr, FAVÖK, marj, borçluluk, özkaynak, "KAP raporu" sorulduğunda → get_financial_statements kullan; analyze_finance_signal SADECE teknik/fiyat analizidir, bilanço sorusuna teknik analizle cevap verme
 - Bilanço ile fiyat dünyası arasındaki TEK onaylı köprü analyze_earnings_pricing aracıdır: bilanço kaynaklı AL/fırsat zamanlaması ancak bu araçla ölçülür; teknik analizi bilanço yorumunun yerine, bilanço kalitesini giriş zamanlamasının yerine koyma
 - get_financial_statements başarısız olursa web_search fallback kullanılabilir ama cevapta kaynak MUTLAKA "web araması — KAP/İş Yatırım teyidi yok" diye etiketlenmeli
@@ -3273,7 +3275,7 @@ const TOOLS = [
         type: 'object',
         properties: {
           symbols: { type: 'string', description: 'Opsiyonel virgülle ayrılmış semboller, örn: "THYAO,KCHOL,ASELS". Boş bırakılırsa tüm pano döner.' },
-          index: { type: 'string', enum: ['XU030', 'XU050', 'XU100'], description: 'Sadece bu endekse üye hisseleri döndür.' },
+          index: { type: 'string', enum: ['XU030', 'XU050', 'XU100'], description: 'Sadece bu endekse üye hisseleri döndür. SIRALAMA sorularında (en çok artan/düşen, tavan yapanlar, günün hareketlileri) KULLANMA — pano 600+ hisse, tavan yapanların çoğu XU100 dışıdır ve filtre uygularsan liste YANLIŞ olur. Yalnız kullanıcı açıkça "BIST100 içinde" dediyse ver.' },
           minChangePercent: { type: 'number', description: 'Minimum günlük değişim yüzdesi.' },
           maxChangePercent: { type: 'number', description: 'Maksimum günlük değişim yüzdesi.' },
           minTurnoverTRY: { type: 'number', description: 'Minimum günlük işlem hacmi (TL). Likidite filtresi için, örn: 100000000' },
@@ -3786,6 +3788,37 @@ KURALLAR:
 // Tool Handler
 // ============================
 
+/**
+ * Sorgu/iddia METNİNDEN kapsanan BIST şirketlerini çıkarır.
+ *
+ * `web_search`, `search_youtube_insights` ve `verify_claim` sembolü argümanda
+ * taşımaz; bu yüzden kanıt olayları entity'siz kalıyor ve sözleşme o şirketleri
+ * hiç göremiyordu (bkz. research-contract.cjs `extractEntities` notu).
+ *
+ * Kaynak önceliği: (1) sözleşmede planlanmış şirketler — MEYSU/MCARD gibi
+ * hisselerin herhangi bir statik listede olmasını gerektirmez, (2) canlı Mynet
+ * panosu, (3) statik evren yalnız fallback. `DEFAULT_BIST_EQUITY_UNIVERSE`
+ * BIST şirket sicili DEĞİL, 104 sembollük tarama bütçesi listesidir.
+ */
+function resolveToolCoveredEntities(text, researchContract) {
+  const plannedEntities = [];
+  const contract = typeof researchContract?.get === 'function' ? researchContract.get() : null;
+  for (const sq of contract?.subQuestions || []) {
+    for (const entity of sq?.entities || []) plannedEntities.push(entity);
+  }
+
+  const board = getCachedResult('mynet:bist:board');
+  const boardItems = board?.success && Array.isArray(board.items) ? board.items : [];
+  const index = bistEntityResolver.buildEntityIndex({
+    boardItems,
+    extraSymbols: DEFAULT_BIST_EQUITY_UNIVERSE,
+  });
+
+  // Ad katmanı KAPALI: bu tamirat canlı bir hatayı kapatmak içindir, şirket
+  // adı tanıma motoru kurmak değil. Ticker tam sınır eşleşmesiyle çözülür.
+  return bistEntityResolver.resolveCoveredEntities({ text, plannedEntities, index });
+}
+
 async function handleToolCall(name, args, options = {}) {
   const { perplexityKey, supabaseClient, onActivity, telegramService, telegramReader } = options;
 
@@ -4116,10 +4149,14 @@ async function handleToolCall(name, args, options = {}) {
         if (perplexityKey) {
           const results = await perplexitySearch(args.query, perplexityKey);
           emit(`Perplexity sonucu: ${results.success ? 'ok' : 'hata'}${Array.isArray(results.citations) ? `, citations=${results.citations.length}` : ''}`);
+          // Kapsam yalnız arama BAŞARILIYSA bildirilir: başarısız çağrı kanıt değildir.
+          const covered = results.success !== false
+            ? resolveToolCoveredEntities(args.query, researchContract)
+            : { entities: [], unresolved: [] };
           const result = {
             tool: name,
             success: results.success !== false,
-            data: results,
+            data: { ...results, coveredEntities: covered.entities, unresolvedEntityTokens: covered.unresolved },
             source: 'perplexity',
             provider: 'perplexity',
             message: results.success === false ? results.message : undefined,
@@ -4187,6 +4224,11 @@ async function handleToolCall(name, args, options = {}) {
               claim,
               context: context || 'belirtilmedi',
               depth,
+              // Hangi şirketler hakkında kanıt üretildi (bkz. resolveToolCoveredEntities).
+              ...(() => {
+                const covered = resolveToolCoveredEntities(`${claim} ${context}`, researchContract);
+                return { coveredEntities: covered.entities, unresolvedEntityTokens: covered.unresolved };
+              })(),
               supporting_evidence: supportResult.success ? supportResult.content : 'Destekleyici kanıt bulunamadı.',
               supporting_sources: supportResult.citations || [],
               counter_evidence: counterResult?.success ? counterResult.content : (depth === 'quick' ? 'Hızlı modda çürütücü kanıt aranmadı.' : 'Çürütücü kanıt bulunamadı.'),
@@ -4285,6 +4327,11 @@ async function handleToolCall(name, args, options = {}) {
             description_excerpt: v.description.substring(0, 500),
           }));
 
+          // Sonuçsuz arama kapsam bildirmez: sorguda sembol geçmesi "kanıt
+          // toplandı" demek değildir.
+          const covered = videoSummaries.length > 0
+            ? resolveToolCoveredEntities(query, researchContract)
+            : { entities: [], unresolved: [] };
           const result = {
             tool: name,
             success: true,
@@ -4293,6 +4340,8 @@ async function handleToolCall(name, args, options = {}) {
               category,
               timeRange: args.timeRange || 'month',
               videoCount: videoSummaries.length,
+              coveredEntities: covered.entities,
+              unresolvedEntityTokens: covered.unresolved,
               videos: videoSummaries,
               analysis_note: `YouTube'da "${query}" için ${videoSummaries.length} video bulundu (son ${days} gün). Lütfen video başlıkları ve açıklamalarını analiz ederek kullanıcıya ÖZETLİ rapor sun: ortak temalar, öne çıkan tahminler, analist konsensüsü ve dikkat çeken uyarılar. YouTube linklerini kaynak olarak göster.`,
             },
@@ -4941,7 +4990,15 @@ async function handleToolCall(name, args, options = {}) {
       case 'get_bist_board': {
         const rawSymbols = String(args.symbols || '').split(/[,;\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
         const indexFilter = String(args.index || '').trim().toUpperCase();
-        const sortBy = ['turnover', 'change', 'volume', 'symbol'].includes(String(args.sortBy)) ? String(args.sortBy) : 'turnover';
+        // Sıralama ölçütü. GEÇMİŞ HATA: "%9 üstü ilk 10" gibi bir istekte model
+        // sortBy vermeyince varsayılan turnover (likidite) devreye giriyor ve
+        // "en çok artan" sorusuna hacme göre sıralanmış liste dönüyordu. Değişim
+        // filtresi verilmişse niyet sıralamadır — varsayılanı change yap.
+        const hasChangeFilter =
+          Number.isFinite(Number(args.minChangePercent)) || Number.isFinite(Number(args.maxChangePercent));
+        const sortBy = ['turnover', 'change', 'volume', 'symbol'].includes(String(args.sortBy))
+          ? String(args.sortBy)
+          : (hasChangeFilter ? 'change' : 'turnover');
         const limit = Math.min(Math.max(parseInt(args.limit ?? 25, 10) || 25, 1), 200);
 
         emit(`Mynet canlı borsa panosu çekiliyor${indexFilter ? ` (${indexFilter})` : ''}${rawSymbols.length ? ` [${rawSymbols.slice(0, 8).join(', ')}]` : ''}`);
@@ -5017,6 +5074,15 @@ async function handleToolCall(name, args, options = {}) {
               XU050: fetched.items.filter((item) => item.inXu050).length,
               XU100: fetched.items.filter((item) => item.inXu100).length,
             },
+            // Sonucun hangi evrenden geldiği — bkz. buildBistBoardScope().
+            scope: buildBistBoardScope({
+              indexFilter,
+              symbolCount: rawSymbols.length,
+              indexMemberCount: indexFilter
+                ? fetched.items.filter((item) => item.indices.includes(indexFilter)).length
+                : fetched.items.length,
+              boardSize: fetched.items.length,
+            }),
             // Denetlenebilirlik: her sayının hangi ana ait olduğu cevapta yazılmalı.
             metadata: {
               sourceUrl: MYNET_LIVE_BOARD_URL,
@@ -8667,6 +8733,29 @@ function parseMynetLiveBoardHtml(html = '') {
   }
 
   return { success: true, items, malformed, fieldOrder: fields };
+}
+
+/**
+ * get_bist_board sonucunun HANGİ EVRENDEN geldiğini açıklar.
+ *
+ * GEÇMİŞ HATA: "Bugünün en çok artan hisseleri hangileri?" sorusuna model
+ * index=XU100 ile çağrı yaptı; pano 600+ hisseyken yalnız 100 üye tarandı ve
+ * BRSAN %9.97 ile "günün en çok artanı" diye sunuldu. Gerçekte MCARD/OFSYM/
+ * ENDAE %10 ile tavandaydı — hepsi XU100 dışı. Filtre uygulandığı cevapta hiç
+ * belirtilmediği için kullanıcı yanlış listeyi doğru sandı. Kapsam artık araç
+ * çıktısının parçası: model hangi evreni taradığını cevapta yazmak zorunda.
+ */
+function buildBistBoardScope({ indexFilter, symbolCount, indexMemberCount, boardSize }) {
+  const filtered = Boolean(indexFilter);
+  return {
+    universe: filtered
+      ? `${indexFilter} üyeleri (${indexMemberCount} hisse)`
+      : `tüm BIST panosu (${boardSize} hisse)`,
+    isMarketWide: !filtered && symbolCount === 0,
+    warning: filtered
+      ? `DİKKAT: Bu sonuç yalnızca ${indexFilter} üyeleriyle SINIRLIDIR, piyasa geneli değildir. "En çok artan/düşen", "tavan yapanlar", "günün hareketlileri" gibi piyasa geneli sıralamalarda index filtresi KULLANMA — tavan yapan hisselerin çoğu ${indexFilter} dışındadır. Bu çıktıyla cevap yazacaksan kapsamı ("${indexFilter} içinde") başlıkta AÇIKÇA belirt.`
+      : null,
+  };
 }
 
 async function fetchMynetLiveBoard() {
