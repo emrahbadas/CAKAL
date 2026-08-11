@@ -11,7 +11,39 @@
  * tests/investment-research-policy-core.test.mjs drift'i yakalar.
  */
 
-const POLICY_CORE_VERSION = '2.0.0';
+const POLICY_CORE_VERSION = '2.1.0';
+
+// ── Tarama volatilite semantiği ───────────────────────────────────────
+// BİRİM TEK KAYNAKTAN GELİR.
+// GEÇMİŞ HATA: iki ayrı tarama hesabı vardı ve AYNI koşula ZIT etiket
+// veriyorlardı. Sebep eşik değil BİRİMDİ: core `maximumVolatility: 35` ile
+// eski ARALIK GENİŞLİĞİ semantiğindeydi; canlı taraf 2026-08-09'da günlük
+// getiri STANDART SAPMASINA geçti ve eşikleri 3/5/8 yaptı. Core'un eşiği
+// canlı tarafa taşınsaydı filtre hiçbir şeyi elemezdi (std-sapma neredeyse
+// hiçbir zaman 35'i geçmez) — sessiz bir regresyon.
+//
+// Birim: günlük getirilerin standart sapması, YÜZDE olarak.
+// BIST'te tipik günlük volatilite %2-4; yükselen/oynak rejimde %5-8.
+const VOLATILITY_UNIT = 'DAILY_RETURN_STDDEV_PCT';
+
+const VOLATILITY_CAPS = Object.freeze({
+  low: 3,
+  medium: 5,
+  high: 8,
+});
+
+const DEFAULT_VOLATILITY_CAP = VOLATILITY_CAPS.medium;
+
+/**
+ * Risk toleransına göre sert filtre volatilite tavanı.
+ * Bilinmeyen/boş tolerans → medium (muhafazakâr orta yol).
+ */
+function resolveVolatilityCap(riskTolerance) {
+  const key = String(riskTolerance || '').trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(VOLATILITY_CAPS, key)
+    ? VOLATILITY_CAPS[key]
+    : DEFAULT_VOLATILITY_CAP;
+}
 
 const RESEARCH_MODES = Object.freeze([
   'FRESH_MARKET_SCAN',
@@ -460,6 +492,10 @@ function countIndependentSources(evidenceItems) {
 
 module.exports = {
   POLICY_CORE_VERSION,
+  VOLATILITY_UNIT,
+  VOLATILITY_CAPS,
+  DEFAULT_VOLATILITY_CAP,
+  resolveVolatilityCap,
   RESEARCH_MODES,
   RESEARCH_STATES,
   RESEARCH_STATE_TRANSITIONS,

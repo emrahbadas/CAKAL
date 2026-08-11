@@ -5,6 +5,8 @@ import {
   RESEARCH_STATE_TRANSITIONS,
   RETRYABLE_STATES,
   STATE_CAPABILITIES,
+  DEFAULT_VOLATILITY_CAP,
+  resolveVolatilityCap,
   countIndependentSources,
   detectResearchMode as detectResearchModeCore,
   evaluateFreshness,
@@ -1481,7 +1483,11 @@ export function createAuditEvent(input: Omit<AuditEvent, 'eventId' | 'createdAt'
 export const DEFAULT_SCREENING_CONFIG: ScreeningConfig = {
   minimumAverageDailyVolume: 100000,
   minimumSampleSize: 20,
-  maximumVolatility: 35,
+  // BİRİM: günlük getiri standart sapması (%). Eski değer 35'ti ve ARALIK
+  // GENİŞLİĞİ semantiğine aitti; canlı taraf 2026-08-09'da std-sapmaya geçti
+  // ve iki hesap aynı koşula zıt etiket vermeye başladı. Tek kaynak artık
+  // policy-core; bkz. VOLATILITY_UNIT.
+  maximumVolatility: DEFAULT_VOLATILITY_CAP,
   minimumEvidenceConfidence: 0.7,
   weights: {
     liquidity: 0.2,

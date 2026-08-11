@@ -1,4 +1,11 @@
-const COMMANDER_FINANCE_DOMAIN_RE = /borsa|hisse|xu100|bist|kripto|bitcoin|ethereum|döviz|usd|eur|altın|ons|emtia|trade|trading|pozisyon|portföy|al\s*sat/i;
+// TEMEL ANALİZ SÖZCÜKLERİ DE FİNANS BAĞLAMIDIR.
+// ÖLÇÜLEN VAKA (11 Ağustos 2026): "bilanço + fiyatlama karşılaştırması da yap"
+// mesajı bu desene takılmadığı için isCommanderFinanceMessage FALSE döndü;
+// requiresResearchContract skoru 0 / sinyal "finans baglami yok" oldu ve iki
+// hissenin bilançosunu karşılaştıran tur TAMAMEN yönetimsiz geçti. Sözcükler
+// borsa jargonunda tek anlamlı olanlardan seçilir; "fiyat" gibi genel bir
+// sözcük buraya GİRMEZ (pazaryeri mesajlarını finans sanar).
+const COMMANDER_FINANCE_DOMAIN_RE = /borsa|hisse|xu100|bist|kripto|bitcoin|ethereum|döviz|usd|eur|altın|ons|emtia|trade|trading|pozisyon|portföy|al\s*sat|bilanço|bilanco|mali\s*tablo|finansal\s*tablo|değerleme|degerleme|fiyatla(ma|nma|nmış|nmis)|temett[üu]|özkaynak|ozkaynak|net\s*borç|net\s*borc|f\/k|pd\/dd|favök|favok|net\s*kâr|net\s*kar\b/i;
 // DİKKAT: bu listedeki kalıplar DAR olmalı. Çıplak "giriş" / "hedef" yazmak,
 // önceki analizi eleştiren ("iyi giriş fırsatı demişsin ama...") ya da
 // piyasayı anlatan her mesajı işlem talebi saydırıyordu. Bu kelimeler ancak
@@ -40,14 +47,26 @@ const COMMANDER_RANKING_REQUEST_RE = new RegExp([
 // Çıktının bir HİSSE SIRALAMASI/SEÇİMİ içerdiğini gösteren desenler.
 // Kapı, kullanıcı ifadesini tahmin etmek yerine ÇAKAL'ın kendi ürettiği
 // metni denetler; bu deterministik ve kapsam olarak çok daha dar bir yüzeydir.
-const RANKING_RESPONSE_MARKERS = [
-  /(^|\n)\s*\d+[).\-]\s*[A-ZÇĞİÖŞÜ]{3,6}\b/m,      // "1) TUREX" / "2. SSAAT"
-  /(^|\n)\s*[-*]\s*[A-ZÇĞİÖŞÜ]{3,6}\s*[—:-]/m,      // "- TUREX —"
+//
+// İKİ SINIF AYRI TUTULUR:
+//   ÇAPA — liste satırının başındaki hisse kodu. HANGİ kodun sıralandığı
+//          bilinir; bu yüzden "bu kodu kullanıcı zaten adıyla verdi mi"
+//          sorusu sorulabilir.
+//   DİL  — açık üstünlük ifadesi ("en sağlam 3 hisse"). Kod geçmese bile
+//          ortada bir kalite hükmü vardır; bu asla affedilmez.
+const RANKING_ANCHOR_MARKERS = [
+  /(^|\n)\s*\d+[).\-]\s*([A-ZÇĞİÖŞÜ]{3,6})\b/m,      // "1) TUREX" / "2. SSAAT"
+  /(^|\n)\s*[-*]\s*([A-ZÇĞİÖŞÜ]{3,6})\s*[—:-]/m,      // "- TUREX —"
+];
+
+const RANKING_LANGUAGE_MARKERS = [
   /en\s+(sağlam|saglam|iyi|güçlü|guclu|cazip)\s+\d*\s*(hisse|üç|uc|3)/i,
   // DİKKAT: JS regex'te Türkçe 'İ' (U+0130) `i` ile EŞLEŞMEZ ve `\b` Türkçe
   // harflerde güvenilmez. Bu yüzden sınıf açıkça yazılır: [İIiı]
   /(^|[^a-zçğıöşü])([İIiı]lk|[Tt]op)\s*\d+\s*(hisse|aday)/,
 ];
+
+const RANKING_RESPONSE_MARKERS = [...RANKING_ANCHOR_MARKERS, ...RANKING_LANGUAGE_MARKERS];
 
 // Bir sıralamanın "yönetilmiş" sayılması için gereken kanıt araçları.
 const GOVERNED_RANKING_TOOLS = new Set(['run_investment_research_scan', 'verify_claim']);
@@ -92,6 +111,11 @@ const TOOL_EVIDENCE_CLASSES = Object.freeze({
   // get_valuation_multiples mali tablo + fiyattan F/K, PD/DD, FD/FAVÖK türetir.
   get_financial_statements: ['FUNDAMENTALS'],
   get_valuation_multiples: ['VALUATION'],
+  // BORÇ İYİLEŞMESİNİN KAYNAĞI AYRI BİR KANITTIR.
+  // FUNDAMENTALS "net borç 546,9 mn TL" der; bu rakamın halka arz nakdinden mi
+  // operasyondan mı geldiğini söylemez. MEYSU vakasında sermaye girişiyle
+  // kapanan borç, operasyonel kalite artısı olarak sunuldu.
+  get_cash_flow_breakdown: ['CASH_FLOW_BREAKDOWN'],
 });
 
 // Kanıt sınıfına göre tazelik. Tek bir 5 dakikalık TTL her kanıta uygulanamaz:
@@ -109,6 +133,8 @@ const EVIDENCE_TTL_MS = Object.freeze({
   BENCHMARK_PRICE_SERIES: 60 * 60 * 1000,
   EARNINGS_PRICE_REACTION: 24 * 60 * 60 * 1000,
   FUNDAMENTALS: 90 * 24 * 60 * 60 * 1000,
+  // Bilanço kadar yaşar: aynı çeyrek boyunca geçerlidir.
+  CASH_FLOW_BREAKDOWN: 90 * 24 * 60 * 60 * 1000,
   // Değerleme fiyata bağlıdır; bilanço kadar uzun yaşayamaz.
   VALUATION: 6 * 60 * 60 * 1000,
   RESEARCH_EVIDENCE: 6 * 60 * 60 * 1000,
@@ -142,12 +168,68 @@ function normalizeEntity(value) {
   return String(value || '').trim().toUpperCase().replace(/\.IS$/i, '');
 }
 
+// ── Sonuç-duyarlı kanıt sınıfı ────────────────────────────────────────
+// ARACIN ÇALIŞMASI ≠ KANIT ÜRETMESİ.
+// GERÇEK VAKA: tarayıcı `status: 'BLOCKED'` iken bile `success: true`
+// döndürüyordu; defter yalnız araç ADINA baktığı için bloke tarama üç kanıt
+// sınıfı birden basıyor, entity düzeyinde "BRSAN kanıtlı" sayılıyor ve
+// yönetilmiş sıralama kapısını açıyordu. Aynı hastalık action ledger'da da
+// vardı: model bir sonraki turda "değerleme aracını çalıştırdım, başarılı"
+// diye hatırlıyordu — oysa araç eksik girdiyle dönmüştü.
+//
+// Sıra ÖNEMLİ: önce başarısızlık elenir, sonra olayın KENDİ beyanı okunur,
+// en son statik tabloya düşülür. Beyan tabloyu daraltabilir de genişletebilir
+// de; araç kendi ne ürettiğini tablodan iyi bilir.
+const FAILED_RESULT_STATUSES = new Set([
+  'BLOCKED', 'FAILED', 'ERROR', 'DENIED', 'TIMEOUT', 'RATE_LIMITED',
+  'NO_DATA', 'EMPTY', 'UNAVAILABLE', 'INPUT_REQUIRED',
+]);
+
+function isFailedToolEvent(event) {
+  if (!event) return true;
+  if (event.success === false) return true;
+
+  const result = event.result && typeof event.result === 'object' ? event.result : null;
+  if (result && result.success === false) return true;
+
+  for (const candidate of [event.status, result && result.status]) {
+    if (typeof candidate !== 'string') continue;
+    if (FAILED_RESULT_STATUSES.has(candidate.trim().toUpperCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * Bir tool_call olayının GERÇEKTEN ürettiği kanıt sınıfları.
+ * @param {string} toolName
+ * @param {object} event - tool_call aktivite olayı (success/status/result/evidenceClasses)
+ * @returns {string[]} kanıt sınıfları; üretmediyse boş dizi
+ */
+function resolveEvidenceClasses(toolName, event = {}) {
+  const tool = String(toolName || '');
+  if (!tool) return [];
+
+  // 1) Başarısız/bloke olay kanıt üretmez — tablo ne derse desin.
+  if (isFailedToolEvent(event)) return [];
+
+  // 2) Olayın kendi beyanı. Boş dizi de GEÇERLİ bir beyandır ("kanıt yok");
+  //    bu yüzden Array.isArray ile yokluğundan ayrılır.
+  const declared = event.evidenceClasses ?? (event.result && event.result.evidenceClasses);
+  if (Array.isArray(declared)) {
+    return [...new Set(declared.map((k) => String(k || '').trim()).filter(Boolean))];
+  }
+
+  // 3) Statik tablo — beyan yoksa aracın sözleşmesi geçerlidir.
+  return TOOL_EVIDENCE_CLASSES[tool] ? [...TOOL_EVIDENCE_CLASSES[tool]] : [];
+}
+
 function buildEvidenceLedger(events = [], now = Date.now()) {
   const ledger = new Map();
   for (const event of Array.isArray(events) ? events : []) {
     if (!event || event.type !== 'tool_call' || !event.tool) continue;
-    const classes = TOOL_EVIDENCE_CLASSES[String(event.tool)];
-    if (!classes) continue;
+    // Araç adı değil, olayın SONUCU belirler. Bkz. resolveEvidenceClasses.
+    const classes = resolveEvidenceClasses(String(event.tool), event);
+    if (classes.length === 0) continue;
 
     // TTL "ne zaman baktık" üzerinden ölçülür (retrievedAt). asOf ise verinin
     // ne zamana ait olduğudur ve raporlama içindir — ikisini karıştırma:
@@ -310,6 +392,20 @@ function extractCommanderToolNames(events = []) {
   )];
 }
 
+/**
+ * ÇALIŞAN değil, KANIT ÜRETEN araçlar.
+ * "Araç çalıştı" ile "araç kanıt üretti" ayrımı gerektiğinde bu kullanılır;
+ * bloke/başarısız çağrı bir kapıyı açmaya yetmez.
+ */
+function extractEvidenceProducingToolNames(events = []) {
+  return [...new Set(
+    events
+      .filter((event) => event && event.type === 'tool_call' && event.tool)
+      .filter((event) => resolveEvidenceClasses(String(event.tool), event).length > 0)
+      .map((event) => String(event.tool))
+  )];
+}
+
 // HİSSE KODU DA FİNANS BAĞLAMIDIR.
 // GEÇMİŞ HATA: "THYAO bugün alınır mı?" mesajında borsa/hisse gibi bir alan
 // kelimesi geçmediği için isCommanderFinanceMessage FALSE dönüyordu. Sonuç:
@@ -323,14 +419,39 @@ const TICKER_FALSE_POSITIVES = new Set([
   'ANCAK', 'FAKAT', 'VERI', 'ANALIZ', 'RAPOR', 'TOPLAM', 'ORTALAMA', 'HISSE',
 ]);
 
-function containsBistTicker(message = '') {
+/** Metinde geçen (yanlış pozitifleri elenmiş) hisse kodları. */
+function extractBistTickers(message = '') {
   const text = String(message || '');
   BIST_TICKER_RE.lastIndex = 0;
+  const found = new Set();
   let m;
   while ((m = BIST_TICKER_RE.exec(text)) !== null) {
-    if (!TICKER_FALSE_POSITIVES.has(m[2])) return true;
+    if (!TICKER_FALSE_POSITIVES.has(m[2])) found.add(m[2]);
   }
-  return false;
+  return [...found];
+}
+
+function containsBistTicker(message = '') {
+  return extractBistTickers(message).length > 0;
+}
+
+/**
+ * Sıralama çapalarının yakaladığı kodlar: "1) TUREX", "- BRSAN:".
+ * Sadece ÇAPA marker'ları taranır — dil marker'larının kod bağlantısı yoktur.
+ */
+function collectRankingAnchorTickers(response = '') {
+  const text = String(response || '');
+  const found = new Set();
+  for (const marker of RANKING_ANCHOR_MARKERS) {
+    const flags = marker.flags.includes('g') ? marker.flags : `${marker.flags}g`;
+    const scanner = new RegExp(marker.source, flags);
+    let m;
+    while ((m = scanner.exec(text)) !== null) {
+      const code = m[2];
+      if (code && !TICKER_FALSE_POSITIVES.has(code)) found.add(code);
+    }
+  }
+  return [...found];
 }
 
 /**
@@ -368,8 +489,17 @@ function isCommanderActionableFinanceRequest(message = '') {
 
 function isCommanderFreshMarketScanRequest(message = '') {
   const text = String(message || '');
+  // TARAMA KALIBI KENDİ BAŞINA PİYASA BAĞLAMIDIR.
+  // ÖLÇÜLEN VAKA: "piyasayı sıfırdan tara ve aday çıkar" mesajı finans
+  // sözlüğüne takılmıyordu ("piyasa" o listede yok) ve ders kitabı gibi bir
+  // tarama talebi finans dışı sayılıp huni kapısından geri dönüyordu.
+  // COMMANDER_FRESH_MARKET_SCAN_RE kalıpları zaten piyasaya özgüdür
+  // ("piyasayı tara", "aday çıkar", "fırsat hisseleri"); genel finans
+  // sözlüğünü genişletmek yerine bu kalıbı bağlam kanıtı sayıyoruz —
+  // "ikinci el piyasası" gibi mesajları finans sanmamak için dar tutuldu.
+  if (COMMANDER_FRESH_MARKET_SCAN_RE.test(text)) return true;
   if (!isCommanderFinanceMessage(text)) return false;
-  return COMMANDER_FRESH_MARKET_SCAN_RE.test(text) || COMMANDER_RANKING_REQUEST_RE.test(text);
+  return COMMANDER_RANKING_REQUEST_RE.test(text);
 }
 
 /** Cevap metni bir hisse sıralaması/seçimi sunuyor mu? */
@@ -406,8 +536,32 @@ function evaluateUngovernedRankingGate(message, response, events = []) {
     || isCommanderFinanceMessage(response, { tickerAware: false });
   if (!financeContext) return null;
 
+  // ADAYLARI KULLANICI VERDİYSE ORTADA SEÇİM YOKTUR.
+  // GERÇEK VAKA (11 Ağustos 2026): "BRSAN ve MEYSU hakkında son haberleri tara
+  // ve karşılaştır" isteğinde cevaptaki "- BRSAN: İZLE" ve "1. BRSAN ve MEYSU
+  // için teknik seviye haritası" satırları çapa marker'larına düştü. Kapı
+  // ateşledi, boşuna ikinci LLM turu yandı ve nihai cevap kullanıcının hiç
+  // istemediği bir "sıralamayı" geri çekerek başladı.
+  // Oysa bu kapı ADAY SEÇİMİNİ yönetir: evren yoksa elenen de yoktur.
+  // Kullanıcının kendi adıyla verdiği sembolleri karşılaştırmak seçim değildir.
+  // Kaçış iki koşulda KAPALIDIR: açık tarama/sıralama talebi ("en sağlam 3'ü
+  // sırala") ya da cevapta dil marker'ı — o durumda üstünlük hükmü kurulmuştur.
+  const rankedByAnchor = collectRankingAnchorTickers(response);
+  const hasRankingLanguage = RANKING_LANGUAGE_MARKERS.some((p) => p.test(String(response || '')));
+  if (!hasRankingLanguage && !isCommanderFreshMarketScanRequest(message)) {
+    const askedFor = new Set(extractBistTickers(message));
+    if (askedFor.size > 0 && rankedByAnchor.length > 0
+      && rankedByAnchor.every((code) => askedFor.has(code))) {
+      return null;
+    }
+  }
+
   const usedTools = extractCommanderToolNames(events);
-  if (usedTools.some((tool) => GOVERNED_RANKING_TOOLS.has(tool))) return null;
+  // Kapıyı açan şey aracın ÇALIŞMASI değil, KANIT ÜRETMESİDİR.
+  // Ölçüldü: `status: 'BLOCKED'` dönen bir run_investment_research_scan olayı
+  // eski kodda üç kanıt sınıfı basıp bu kapıyı açıyordu.
+  const producingTools = extractEvidenceProducingToolNames(events);
+  if (producingTools.some((tool) => GOVERNED_RANKING_TOOLS.has(tool))) return null;
 
   const reason = usedTools.length === 0
     ? 'Hisse sıralaması üretildi fakat hiçbir araştırma aracı çalışmadı.'
@@ -418,6 +572,68 @@ function evaluateUngovernedRankingGate(message, response, events = []) {
     reason,
     usedTools,
     response: buildUngovernedRankingResponse(reason, usedTools),
+  };
+}
+
+// ── Borç kalite kapısı ────────────────────────────────────────────────
+// GERÇEK VAKA (11 Ağustos 2026): "Net borç 1,36 mlr TL'den 546,9 mn TL'ye
+// inmiş görünüyor. Bu pozitif." Muhasebe olarak doğru, hüküm olarak eksik:
+// borcu kapatan nakit büyük ölçüde halka arz sermayesiydi ve işletme nakit
+// akışı negatifti. Kasa doldu ama makine kendi ürettiği nakitle doldurmadı.
+//
+// Kural: cevap borç azalmasını OLUMLU bir hükme bağlıyorsa, arkasında
+// CASH_FLOW_BREAKDOWN kanıtı olmalı. Yoksa iddia nötrleştirilir — bulgu
+// silinmez, yalnız "kalite artısı" niteliği düşer.
+
+// Borç/borçluluk iyileşmesi ifadeleri.
+// DİKKAT: burada `\b` KULLANILMAZ. JS regex'inde ş/ı/ğ/ç/ö/ü kelime karakteri
+// sayılmaz; /inmiş\b/ "inmiş" sözcüğünü KAÇIRIR (sonundaki 'ş' non-word).
+// Aynı tuzak router'da da vardı ve orada da düzeltildi.
+const DEBT_IMPROVEMENT_RE = /(net\s*bor[çc]|bor[çc]luluk|finansal\s*bor[çc])[^.\n]{0,90}(düş|dus|azal|geriled|iyileş|iyiles|inmiş|inmis|indi|ine?rek)/i;
+
+// İyileşmeyi OLUMLU hükme bağlayan ifadeler.
+const DEBT_POSITIVE_FRAMING_RE = /(bu\s*pozitif|pozitif|olumlu|güçlen|guclen|sağlam|saglam|iyi\s*sinyal|artı\s*yaz|lehte|güven\s*ver|guven\s*ver)/i;
+
+function responseClaimsDebtQuality(response = '') {
+  const text = String(response || '');
+  if (!DEBT_IMPROVEMENT_RE.test(text)) return false;
+  // İyileşme cümlesinin YAKININDA olumlu çerçeveleme var mı?
+  // Tüm metinde "pozitif" aramak, başka bir konuda geçen kelimeyi yakalardı.
+  return text.split(/\n{2,}|(?<=\.)\s+/).some(
+    (parca) => DEBT_IMPROVEMENT_RE.test(parca) && DEBT_POSITIVE_FRAMING_RE.test(parca),
+  ) || text.split('\n').some(
+    (satir, i, hepsi) => DEBT_IMPROVEMENT_RE.test(satir)
+      && DEBT_POSITIVE_FRAMING_RE.test([satir, hepsi[i + 1] || ''].join(' ')),
+  );
+}
+
+/**
+ * ÇIKIŞ KAPISI — borç iyileşmesi kanıtsız kaliteye yazılamaz.
+ * Kanıt "araç çalıştı" değil "kanıt üretti" ölçütüyle aranır (bkz. Adım 2).
+ */
+function evaluateDebtQualityGate(message, response, events = []) {
+  if (isCommanderProductMarketplaceMessage(message)) return null;
+  if (!responseClaimsDebtQuality(response)) return null;
+
+  const ledger = buildEvidenceLedger(events);
+  if (hasFreshEvidence(ledger, 'CASH_FLOW_BREAKDOWN')) return null;
+
+  const reason = 'Net borç iyileşmesi olumlu hükme bağlandı fakat nakit akışı ayrıştırması yok: '
+    + 'borcu kapatan nakdin operasyondan mı sermaye girişinden mi geldiği ölçülmedi.';
+
+  return {
+    status: 'BLOCKED_UNSOURCED_DEBT_QUALITY',
+    reason,
+    response: [
+      neutralizeEquityVerdicts(response),
+      '',
+      '---',
+      '⚖️ BORÇ KALİTE KİLİDİ (deterministik):',
+      reason,
+      'Borç azalması muhasebe olarak doğru olabilir; OPERASYONEL kalite göstergesi olduğu '
+        + 'ancak get_cash_flow_breakdown ile kanıtlanırsa söylenebilir.',
+      'Eksik kanıtı toplayacak araç: get_cash_flow_breakdown.',
+    ].join('\n'),
   };
 }
 
@@ -1162,6 +1378,8 @@ module.exports = {
   evaluateEarningsPricingGate,
   evaluateUngovernedRankingGate,
   evaluateUnroutedCapabilityGate,
+  evaluateDebtQualityGate,
+  responseClaimsDebtQuality,
   evaluateRiskGate,
   responseClaimsCapabilityWork,
   buildUnroutedCapabilityResponse,
@@ -1169,17 +1387,27 @@ module.exports = {
   responseContainsEquityRanking,
   buildUngovernedRankingResponse,
   COMMANDER_RANKING_REQUEST_RE,
+  // Bağlamdan devralınan kapsamla birleştirilebilmesi için ham desen de açık:
+  // "peki bugün alınır mı?" mesajında finans SÖZCÜĞÜ yok ama işlem NİYETİ var.
+  COMMANDER_ACTIONABLE_FINANCE_RE,
   GOVERNED_RANKING_TOOLS,
   evaluateVerdictEvidenceLock,
   hasCompletedEarningsPricingRun,
   neutralizeEquityVerdicts,
   extractCommanderToolNames,
+  extractEvidenceProducingToolNames,
+  resolveEvidenceClasses,
+  // İşlem kaydı da "OK" derken aynı başarısızlık tanımını kullansın:
+  // iki yerde iki farklı liste tutmak, birinin bayatlaması demektir.
+  FAILED_RESULT_STATUSES,
   getRiskGateThresholds,
   hasCommanderActionableResponse,
   isCommanderActionableFinanceRequest,
   isCommanderFreshMarketScanRequest,
   isCommanderFinanceMessage,
   containsBistTicker,
+  extractBistTickers,
+  collectRankingAnchorTickers,
   isCommanderMetaDiscussion,
   COMMANDER_META_DISCUSSION_RE,
   isCommanderInformationalFinanceRequest,

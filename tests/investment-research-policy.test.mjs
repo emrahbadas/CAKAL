@@ -293,7 +293,11 @@ describe('investment research policy', () => {
           currency: 'TRY',
           changePercent: 1.2,
           ret20d: 8,
-          volatility: 18,
+          // BİRİM: günlük getiri standart sapması (%). Bu fixture eskiden 18
+          // yazıyordu ve ARALIK GENİŞLİĞİ semantiğine aitti; core 2026-08-11'de
+          // canlı tarafla aynı birime (std-sapma) geçirildi. BIST'te tipik
+          // günlük volatilite %2-4 — 2.4 sağlıklı bir hisseyi temsil eder.
+          volatility: 2.4,
           avgVolume: 500000,
           volumeRatio: 1.3,
           rangePosition: 72,
@@ -308,7 +312,9 @@ describe('investment research policy', () => {
           currency: 'TRY',
           changePercent: 9,
           ret20d: 2,
-          volatility: 42,
+          // Aynı birim taşıması: 42 → 9. Hem likidite hem volatilite hem de
+          // örneklem büyüklüğünden elenmeli (elenme gerekçesi çoklu olabilir).
+          volatility: 9,
           avgVolume: 1000,
           volumeRatio: 4,
           rangePosition: 98,

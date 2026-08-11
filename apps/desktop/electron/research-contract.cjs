@@ -29,6 +29,8 @@
 
 const {
   TOOL_EVIDENCE_CLASSES,
+  resolveEvidenceClasses,
+  COMMANDER_ACTIONABLE_FINANCE_RE,
   EVIDENCE_TTL_MS,
   hasFreshEvidence,
   hasFreshEvidenceForEntity,
@@ -91,7 +93,10 @@ const OUTPUT_KIND_MINIMUM_EVIDENCE = Object.freeze({
 const OUTPUT_KIND_ADMISSIBLE_EVIDENCE = Object.freeze({
   structural_leader: ['INDEX_MEMBERSHIP', 'LIQUIDITY', 'CURRENT_EQUITY_PRICE', 'FUNDAMENTALS'],
   current_leader: ['CURRENT_EQUITY_PRICE', 'TECHNICAL_SIGNAL', 'LIQUIDITY', 'EARNINGS_PRICE_REACTION', 'BENCHMARK_PRICE_SERIES'],
-  investable_candidate: ['FUNDAMENTALS', 'VALUATION', 'CURRENT_EQUITY_PRICE', 'EARNINGS_PRICE_REACTION', 'TECHNICAL_SIGNAL', 'RESEARCH_EVIDENCE', 'MARKET_SESSION_STATUS'],
+  // CASH_FLOW_BREAKDOWN kabul edilir ama ZORUNLU DEĞİLDİR: her yatırım
+  // sorusu borçluluk yorumu içermez, zorunlu kılmak kapanamayan duvar üretir.
+  // Borç yorumu YAPILDIĞINDA devreye giren ayrı bir kapı var (borç kalite kapısı).
+  investable_candidate: ['FUNDAMENTALS', 'VALUATION', 'CURRENT_EQUITY_PRICE', 'EARNINGS_PRICE_REACTION', 'TECHNICAL_SIGNAL', 'RESEARCH_EVIDENCE', 'MARKET_SESSION_STATUS', 'CASH_FLOW_BREAKDOWN'],
   // Aşağıdakiler serbest: keşif ve tek-olgu soruları her sınıfı kullanabilir.
   single_fact: null,
   comparison: null,
@@ -375,6 +380,11 @@ function evaluateContract(contract, ledger, now = Date.now()) {
       repairPlan: [],
       answerableIds: [],
       blockedIds: [],
+      // Şekil tutarlılığı: tüketen taraf her kapanışta aynı alanları bulmalı,
+      // yoksa `coverage.unresolvedIds.length` gibi okumalar patlar.
+      partialIds: [],
+      unresolvedIds: [],
+      capabilityGaps: [],
     };
   }
 
@@ -432,6 +442,11 @@ function evaluateContract(contract, ledger, now = Date.now()) {
 
   const complete = evaluated.filter((sq) => sq.status === SUB_QUESTION_STATUS.COMPLETE);
   const blocked = evaluated.filter((sq) => sq.status === SUB_QUESTION_STATUS.BLOCKED);
+  // PARTIAL HİÇBİR LİSTEYE DÜŞMÜYORDU.
+  // ÖLÇÜLEN VAKA: üç alt soru da PARTIAL iken kapanış "cevaplanabilir: yok;
+  // bloke: yok" diyordu. İki liste de boş olduğu için tüketen taraf ortada
+  // hiçbir sorun yokmuş gibi davranıyordu — oysa hiçbir alt soru tam değildi.
+  const partial = evaluated.filter((sq) => sq.status === SUB_QUESTION_STATUS.PARTIAL);
 
   const status = complete.length === contract.subQuestions.length
     ? CONTRACT_STATUS.COMPLETE
@@ -453,6 +468,11 @@ function evaluateContract(contract, ledger, now = Date.now()) {
     // Kısmi cevap için: hangi alt sorular cevaplanabilir, hangileri susmalı.
     answerableIds: complete.map((sq) => sq.id),
     blockedIds: blocked.map((sq) => sq.id),
+    // Kısmen kanıtlı alt sorular: bulguları geçerlidir, HÜKMÜ değildir.
+    partialIds: partial.map((sq) => sq.id),
+    // Hüküm indirmesi gereken alt sorular = tam olmayan her şey.
+    // Tek bir yerden hesaplanır ki tüketen taraf yeniden türetmesin.
+    unresolvedIds: [...partial, ...blocked].map((sq) => sq.id),
     repairPlan: [...new Set(evaluated.flatMap((sq) => sq.repairTools))],
   };
 }
@@ -473,9 +493,18 @@ const TICKER_RE = /(^|[^A-ZÇĞİÖŞÜ0-9])([A-Z]{4,6})(?![A-ZÇĞİÖŞÜ])/g;
 // DİKKAT: borsa/kurum/endeks adları buraya ŞART. "BIST" tam olarak 4 büyük
 // harftir ve şirket kodu deseni ile birebir eşleşir; listede olmazsa her
 // "BIST" geçen mesaj bir şirket daha saymış olur ve karmaşıklık skoru şişer.
+// Çok şirketli karşılaştırma talebi. Sıralama/üstünlük talebinden AYRIDIR.
+const MULTI_COMPANY_COMPARISON_RE = /karşılaştır|karsilastir|kıyasla|kiyasla|hangisi|farkı\s*ne|arasındaki\s*fark|\bvs\b/i;
+
 const TICKER_STOPWORDS = new Set([
   // borsa / kurum / endeks
   'BIST', 'BORSA', 'VIOP', 'TEFAS', 'TCMB', 'BDDK', 'TUIK', 'IMKB', 'ENDEKS',
+  // DÖVİZ/KRİPTO PARİTELERİ ŞİRKET DEĞİLDİR.
+  // "USDTRY ve EURTRY karşılaştır" iki şirket sayılıp sözleşme açtırıyordu;
+  // oysa investable_candidate MARKET_SESSION_STATUS istiyor ve tek üreticisi
+  // BIST'e özgü get_bist_board — sözleşme kapanamaz, duvar üretir.
+  'USDTRY', 'EURTRY', 'GBPTRY', 'CHFTRY', 'JPYTRY', 'EURUSD', 'GBPUSD',
+  'USDJPY', 'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD', 'BTCTRY', 'ETHTRY',
   // yaygın büyükharf yazılan Türkçe sözcükler
   'KAPS', 'ANCAK', 'FAKAT', 'VERI', 'ANALIZ', 'RAPOR', 'TOPLAM', 'ORTALAMA',
   'HISSE', 'PIYASA', 'FIYAT', 'HEDEF', 'YATIRIM', 'PORTFOY', 'BILANCO',
@@ -497,17 +526,59 @@ function countDistinctTickers(message) {
  * Bu istek araştırma sözleşmesi gerektiriyor mu?
  * Dönen skor ve sinyaller log'a yazılır — kararın neden verildiği görünür olur.
  */
-function requiresResearchContract(message = '') {
+function requiresResearchContract(message = '', opts = {}) {
   const text = String(message || '');
   const signals = [];
   let score = 0;
 
-  if (!isCommanderFinanceMessage(text)) {
+  // KAPSAM KONUŞMADAN TAŞINIR, KANIT TAŞINMAZ.
+  // ÖLÇÜLEN VAKA: "bilanço + fiyatlama karşılaştırması da yap" mesajında BRSAN
+  // ve MEYSU yazmıyordu; semboller bir önceki turdan geliyordu. Skor yalnız
+  // mesaja baktığı için iki şirketi hiç görmedi ve sözleşme açılmadı.
+  //
+  // DİKKAT — bu KANIT taşıması DEĞİLDİR (bkz. main.cjs araştırma koşusu notu):
+  // "hangi şirketler konuşuluyor" bilgisi taşınır, "hangi ölçümler elimizde"
+  // bilgisi taşınmaz. Aksi hâlde ilk sorgunun kanıtı üçüncü sorgunun
+  // gereksinimini sessizce tatmin ederdi.
+  //
+  // Mesaj kendi sembolünü SÖYLÜYORSA devralma yapılmaz: kullanıcı kapsamı
+  // açıkça yeniden çizmiştir ("şimdi sadece ASELS").
+  const ownTickers = countDistinctTickers(text);
+  const inherited = ownTickers > 0
+    ? []
+    : [...new Set((Array.isArray(opts.priorEntities) ? opts.priorEntities : [])
+      .map((e) => String(e || '').trim().toUpperCase().replace(/\.IS$/i, ''))
+      .filter((e) => e && !TICKER_STOPWORDS.has(e)))];
+
+  // FİNANS BAĞLAMI MESAJDAN VEYA DEVRALINAN KAPSAMDAN GELİR.
+  // "peki bugün alınır mı?" mesajında tek bir finans SÖZCÜĞÜ yok; niyet var ve
+  // konuşulan şey bir hisse. Erken çıkış bunu eskiden "finans değil" sayıyordu.
+  // Devralma tek başına yetmez — yanına işlem/karşılaştırma/sıralama NİYETİ
+  // şart, yoksa "teşekkürler" de finans mesajı olurdu.
+  const contextIntent = inherited.length > 0 && (
+    COMMANDER_ACTIONABLE_FINANCE_RE.test(text)
+    || MULTI_COMPANY_COMPARISON_RE.test(text)
+    || COMMANDER_RANKING_REQUEST_RE.test(text)
+  );
+  if (!isCommanderFinanceMessage(text) && !contextIntent) {
     return { required: false, score: 0, signals: ['finans baglami yok'], threshold: CONTRACT_COMPLEXITY_THRESHOLD };
   }
 
-  const tickerCount = countDistinctTickers(text);
-  if (tickerCount >= 2) { score += 2; signals.push(`coklu sirket (${tickerCount})`); }
+  const tickerCount = ownTickers > 0 ? ownTickers : inherited.length;
+  if (tickerCount >= 2) {
+    score += 2;
+    signals.push(inherited.length > 0 ? `coklu sirket (${tickerCount}, baglamdan)` : `coklu sirket (${tickerCount})`);
+  }
+
+  // ÇOK ŞİRKETLİ KARŞILAŞTIRMA KARAR SEVİYESİDİR.
+  // "karşılaştır" BİLEREK sıralama talebi sayılmaz (COMMANDER_RANKING_REQUEST_RE'ye
+  // eklenmez): kullanıcının adıyla verdiği iki sembolü kıyaslamak bir aday
+  // seçimi değildir ve sıralama kapısının kaçışını bozardı. Ama iki şirketin
+  // kıyaslanması kanıt disiplini gerektirir; sinyal ayrı tutulur.
+  if (tickerCount >= 2 && MULTI_COMPANY_COMPARISON_RE.test(text)) {
+    score += 2;
+    signals.push('coklu sirket karsilastirmasi');
+  }
 
   if (COMMANDER_RANKING_REQUEST_RE.test(text)) { score += 2; signals.push('siralama/karsilastirma'); }
   // Açık işlem kararı + belirli bir hisse = tanımı gereği karar seviyesi soru;
@@ -520,8 +591,14 @@ function requiresResearchContract(message = '') {
   // çünkü investable_candidate MARKET_SESSION_STATUS istiyor ve onun tek
   // üreticisi get_bist_board (BIST'e özgü). Döviz/kripto tarafında karar
   // kapısı zaten koruyor.
-  if (isCommanderActionableFinanceRequest(text)) {
-    const equityTrade = containsBistTicker(text);
+  // isCommanderActionableFinanceRequest kendi içinde finans SÖZCÜĞÜ arar;
+  // devralınan kapsamı göremez. Burada niyet ile bağlam ayrı değerlendirilir.
+  const actionable = COMMANDER_ACTIONABLE_FINANCE_RE.test(text)
+    && (isCommanderFinanceMessage(text) || inherited.length > 0);
+  if (actionable) {
+    // Devralınan kapsam da hisse bağlamıdır: "peki bugün alınır mı?" mesajında
+    // kod yazmaz ama konuşulan şey bir hissedir.
+    const equityTrade = containsBistTicker(text) || inherited.length > 0;
     score += equityTrade ? 4 : 3;
     signals.push(equityTrade ? 'hisse islem karari' : 'islem karari');
   }
@@ -631,7 +708,24 @@ function extractEntities(args = {}, result = null) {
     result.data.researchable.forEach((item) => push(item?.symbol ?? item));
   }
   if (result?.data?.symbol) push(result.data.symbol);
-  return [...out];
+
+  // İSTENEN ≠ BULUNAN.
+  // ÖLÇÜLEN VAKA (11 Ağustos 2026): get_bist_board'a [BRSAN, MEYSU, XU100]
+  // istendi, pano 2 satır döndü ve `notFound: ['XU100']` bildirdi. Buna rağmen
+  // XU100 args.symbols'da geçtiği için CURRENT_EQUITY_PRICE, LIQUIDITY,
+  // INDEX_MEMBERSHIP ve MARKET_SESSION_STATUS kanıtı ALMIŞ sayılıyordu.
+  // Bu, Adım 2'nin sınıf düzeyinde kapattığı hastalığın entity düzeyindeki
+  // hâlidir: aracın çağrılması o sembolün ölçüldüğü anlamına gelmez.
+  const notFound = new Set();
+  for (const key of ['notFound', 'missingEntities']) {
+    const val = result?.data?.[key] ?? result?.[key];
+    if (!Array.isArray(val)) continue;
+    for (const v of val) {
+      const s = String(v || '').trim().toUpperCase().replace(/\.IS$/i, '');
+      if (s) notFound.add(s);
+    }
+  }
+  return [...out].filter((entity) => !notFound.has(entity));
 }
 
 // Evren kapsamı: araç belirli sembolleri mi ölçtü, yoksa evrenden bir kesit mi
@@ -657,7 +751,9 @@ function createResearchRun(opts = {}) {
   // GEÇMİŞ HATA: her onarım turunda yeniden hesaplanıyordu ve onarım
   // promptuna eklenen metin yüzünden sembol sayısı sürükleniyordu
   // ("coklu sirket (3)" → "(4)").
-  const complexity = requiresResearchContract(userQuestion);
+  // priorEntities = konuşmanın çözülmüş sembol kapsamı (KANIT DEĞİL).
+  // Bu da bir kez hesaplanır; onarım turları koşuyu yeniden kurmaz.
+  const complexity = requiresResearchContract(userQuestion, { priorEntities: opts.priorEntities });
 
   return {
     runId,
@@ -668,13 +764,18 @@ function createResearchRun(opts = {}) {
     /** Araç GERÇEKTEN çalıştığında çağrılır. Performans kaydından bağımsızdır. */
     record(toolName, args, result) {
       if (!TOOL_EVIDENCE_CLASSES[toolName]) return;
-      if (!result || result.success === false) return; // başarısız çağrı kanıt değildir
+      // SONUCA BAK, ADA DEĞİL.
+      // GEÇMİŞ HATA: burada yalnız `success === false` eleniyordu. Tarayıcı
+      // `status: 'BLOCKED'` iken bile `success: true` döndüğü için bloke tarama
+      // statik tablonun tüm kanıt sınıflarını damgalayıp deftere giriyordu.
+      const evidenceClasses = resolveEvidenceClasses(toolName, { ...result, result });
+      if (evidenceClasses.length === 0) return;
       evidence.push({
         researchRunId: runId,
         type: 'tool_call',
         tool: toolName,
         entities: extractEntities(args, result),
-        evidenceClasses: TOOL_EVIDENCE_CLASSES[toolName],
+        evidenceClasses,
         universeScope: universeScopeFor(toolName),
         observedCount: Array.isArray(result?.data?.items) ? result.data.items.length : null,
         asOf: extractAsOf(result),

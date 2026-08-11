@@ -18,7 +18,40 @@ const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
 const researchContractLib = require('./research-contract.cjs');
 const bistEntityResolver = require('./bist-entity-resolver.cjs');
-const { buildEvidenceLedger } = require('./decision-guards.cjs');
+const {
+  buildEvidenceLedger,
+  // Sözleşme kapanışı hükmü indirebilsin diye: tespit + nötrleştirme.
+  detectEquityVerdict,
+  neutralizeEquityVerdicts,
+  // Router'ın işlem seviyesi talebinde hisse bağlamını görmesi için.
+  containsBistTicker,
+  // İşlem kaydı "OK" derken kanıt defteriyle aynı başarısızlık tanımını kullanır.
+  FAILED_RESULT_STATUSES,
+} = require('./decision-guards.cjs');
+
+// Tarama volatilite tavanı TEK KAYNAKTAN gelir (Yol Haritası Adım 4).
+// Aynı köprü deseni deterministic-agents.cjs'te de kullanılıyor: paketlenmiş
+// uygulamada yol çözümlemesi bozulursa inline fallback devreye girer, drift'i
+// eşdeğerlik testi yakalar.
+let _screeningPolicyCore = null;
+try {
+  // eslint-disable-next-line global-require
+  _screeningPolicyCore = require('../../../packages/core/investment-research/shared/policy-core.cjs');
+} catch (err) {
+  _screeningPolicyCore = null;
+}
+
+const FALLBACK_VOLATILITY_CAPS = Object.freeze({ low: 3, medium: 5, high: 8 });
+
+function resolveResearchVolatilityCap(riskTolerance) {
+  if (_screeningPolicyCore && typeof _screeningPolicyCore.resolveVolatilityCap === 'function') {
+    return _screeningPolicyCore.resolveVolatilityCap(riskTolerance);
+  }
+  const key = String(riskTolerance || '').trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(FALLBACK_VOLATILITY_CAPS, key)
+    ? FALLBACK_VOLATILITY_CAPS[key]
+    : FALLBACK_VOLATILITY_CAPS.medium;
+}
 const safePath = require('./safe-path.cjs');
 const { registerAnalysisArtifact } = require('./analysis-artifacts.cjs');
 const cakalIdentity = require('./cakal-identity.cjs');
@@ -95,6 +128,14 @@ function buildToolResultPreview(result) {
 
   const count = result.data?.count ?? result.data?.totalListings ?? result.data?.items?.length ?? result.data?.listings?.length;
   if (Number.isFinite(Number(count))) parts.push(`count=${count}`);
+
+  // EKSİK SEMBOL SESSİZ KALMAZ.
+  // Monitörde yalnız "count=2" görünüyordu; üç sembol istenip birinin
+  // düştüğü ancak ham sonucu okuyan biri için görünürdü.
+  const notFound = result.data?.notFound ?? result.data?.missingEntities;
+  if (Array.isArray(notFound) && notFound.length > 0) {
+    parts.push(`BULUNAMADI=${notFound.join(',')}`);
+  }
 
   const message = result.message || result.data?.message || result.data?.content || result.data?.analysis_note;
   if (message) parts.push(String(message).replace(/\s+/g, ' ').trim().substring(0, 180));
@@ -476,7 +517,16 @@ async function createChatCompletionWithFallback(client, payload, stage = 'chat')
 // Kullanıcı mesajından görev tipini algıla
 const TASK_DETECTION_PATTERNS = {
   code_gen: /\b(kod\s*(yaz|üret|ekle|değiştir|refactor|düzelt|oluştur|geliştir)|self.?dev|modül\s*(yaz|ekle)|tool\s*(yaz|ekle|oluştur)|bug\s*(fix|düzelt)|feature\s*(ekle|yaz)|implement|kendine.*özellik|dosya.*(oluştur|yaz|değiştir)|onayla|onaylıyorum|kabul\s*et|reddet|ilerle|devam\s*et|teknik\s*(sorun|açık|eksik)|migration|fk\s*patladı|api\s*key|skill\s*ekle|prompt\s*ekle|sandbox)\b/i,
-  deep_analysis: /\b(analiz\s*(et|yap)|rapor\s*(çıkar|yaz|oluştur)|strateji|pattern|derin\s*inceleme|haftalık\s*özet|karşılaştır|değerlendir|detaylı)\b/i,
+  // TÜRKÇE ÇEKİM EKİ ROUTER'I DELİYORDU.
+  // JS regex'inde `\b` ş/ı/ğ/ç/ö/ü harflerini kelime karakteri saymaz ve ek
+  // almış gövdede sınır bulamaz: /karşılaştır\b/ "karşılaştırMASI"yı KAÇIRIR.
+  // ÖLÇÜLEN VAKA (11 Ağustos 2026): "teknik sinyal karşılaştırMASI yap ve stop
+  // seviyesi ver" mesajı bu yüzden deep_analysis'e giremedi, 'chat' sınıfına
+  // düştü ve işlem seviyesi üreten tur en zayıf modele gitti. Aynı ders
+  // FUNDAMENTAL_QUERY_RE'de zaten yazılıydı, buraya uygulanmamıştı.
+  // Çözüm: uzun ve tek anlamlı gövdelerde son sınır kaldırılır (ek serbest);
+  // kısa/çok anlamlı sözcüklerde (ara, bul, kaç) korunur.
+  deep_analysis: /(analiz\s*(et|yap)|rapor\s*(çıkar|yaz|oluştur)|strateji|pattern|derin\s*inceleme|haftalık\s*özet|karşılaştır|karsilastir|kıyasla|kiyasla|değerlendir|degerlendir|detaylı|detayli)/i,
   scoring: /\b(puanla|skorla|eşik|threshold|sırala|rank)\b/i,
   search: /\b(ara|bul|search|internet|web|güncel|haber|fiyat\s*karşılaştır)\b/i,
   quick: /\b(merhaba|selam|nasılsın|teşekkür|sağol|tamam|ok|evet|hayır|ne\s*zaman|kaç|nedir)\b/i,
@@ -489,6 +539,12 @@ const FINANCE_QUERY_RE = /\b(borsa|hisse|xu100|bist|kripto|bitcoin|ethereum|döv
 // analize sapıyor. Not: \b Türkçe karakterlerle (ç/ö/ü) çalışmadığı için
 // kelime sınırı kullanılmıyor.
 const FUNDAMENTAL_QUERY_RE = /(bilanço|bilanco|temel analiz|finansal tablo|finansal rapor|gelir tablosu|nakit akış|nakit akim|favök|favok|ebitda|net kâr|net kar|kar marjı|kâr marjı|marjlar|borçluluk|borcluluk|net bor[çc]|özkaynak|özsermaye|temettü|kap rapor|kap bildirim|oran analizi|rasyo|f\/k|pd\/dd|çeyrek sonuç|bilanço sezonu)/i;
+
+// İŞLEM SEVİYESİ ÜRETEN İSTEK ASLA ZAYIF MODELE DÜŞEMEZ.
+// Giriş/stop/destek/direnç rakamı vermek, sohbet değil karar üretimidir; bu
+// turda model kalitesi doğrudan kullanıcının parasına dokunur. Router'ın
+// kelime eşleşmesine güvenmek yerine niyet açıkça yakalanır.
+const TRADE_LEVEL_QUERY_RE = /(giriş\s*(seviye|fiyat|nokta|bölge|bolge)|giris\s*(seviye|fiyat|nokta)|stop\s*(seviye|loss)|\bstop\b|destek\s*(seviye|bölge|bolge|noktas)|direnç|direnc|hedef\s*(fiyat|seviye)|zarar\s*kes|pozisyon\s*(boyut|büyüklük|buyukluk))/i;
 
 // Tool call'lardan görev tipini algıla (tool tetiklendiğinde model geçişi)
 const TOOL_TO_TASK_MAP = {
@@ -541,6 +597,13 @@ function detectTaskType(userMessage) {
   // Bilanço/temel analiz soruları doğrudan deep_analysis modeline gider.
   if (FUNDAMENTAL_QUERY_RE.test(text)) return 'deep_analysis';
 
+  // İşlem seviyesi talebi (giriş/stop/destek/direnç) + finans bağlamı →
+  // en güçlü model. Bağlam şartı, "müşteri desteği" gibi masum cümlelerin
+  // pahalı modele düşmesini engeller.
+  if (TRADE_LEVEL_QUERY_RE.test(text) && (FINANCE_QUERY_RE.test(text) || containsBistTicker(text))) {
+    return 'deep_analysis';
+  }
+
   // Finans alanındaki sorular, kısa soru kelimeleri içeriyor olsa bile
   // 'quick' modele düşmesin; aksi halde yorum kalitesi düşüp tool döngüsü uzayabiliyor.
   if (FINANCE_QUERY_RE.test(text)) {
@@ -585,6 +648,57 @@ function buildToolOnlyFallback(workingHistory = []) {
   ].join('\n');
 }
 
+// ARACIN ADI DEĞİL, GETİRDİĞİ ŞEY KAYDEDİLİR.
+// ÖLÇÜLEN VAKA (11 Ağustos 2026): kayıt yalnız araç adı + OK/HATA yazıyordu.
+// Model bir sonraki turda "BRSAN mali tablosunu çektim" bilgisini görüyor ama
+// HANGİ DÖNEMİ çektiğini, verinin ne zamana ait olduğunu, hangi girdinin eksik
+// döndüğünü görmüyordu. Kanıt yerine kendi önceki anlatısına çıpa atıyordu.
+// Ayrıca get_valuation_multiples eksik girdiyle bile success:true döndüğü için
+// kayıtta "OK" yazıyordu — model değerlemeyi yapılmış sanıyordu.
+function distillToolFacts(result) {
+  if (!result || typeof result !== 'object') return null;
+  const d = result.data && typeof result.data === 'object' ? result.data : {};
+  const facts = [];
+  const push = (label, value) => {
+    let v = value;
+    if (v === null || v === undefined || v === '') return;
+    if (Array.isArray(v)) {
+      if (v.length === 0) return;
+      v = v.join(',');
+    }
+    facts.push(`${label}=${String(v).substring(0, 70)}`);
+  };
+
+  push('kaynak', result.source);
+  // Hangi DÖNEM — "2026/3 mi 2026/6 mı" sorusunun cevabı kayıtta durmalı.
+  push('dönem', d.latestPeriod ?? (Array.isArray(d.periods) ? d.periods[0] : null));
+  push('dönemler', Array.isArray(d.periods) ? d.periods.slice(0, 4) : null);
+  // Verinin ait olduğu an — "bugünün fiyatı mı Cuma kapanışı mı".
+  push('asOf', d.asOf ?? d.priceAsOf ?? d.dataAsOf ?? result.asOf);
+  push('fiyat', d.price ?? d.lastPrice);
+  push('netKâr', d.netKar);
+  push('özkaynak', d.ozkaynak);
+  push('sınıflandırma', d.classification ?? d.status ?? result.status);
+  push('adet', d.count);
+  // EKSİKLER — sessiz kalırsa model "yapıldı" sanıyor.
+  push('EKSİK_GİRDİ', d.missingInputs);
+  push('BULUNAMADI', d.notFound ?? d.missingEntities);
+
+  return facts.length > 0 ? facts.join(' | ') : null;
+}
+
+function actionLedgerStatus(timing) {
+  if (timing.success === false) return 'HATA';
+  const result = timing.result || {};
+  const data = result.data && typeof result.data === 'object' ? result.data : {};
+  const rawStatus = String(result.status ?? data.status ?? '').trim().toUpperCase();
+  if (rawStatus && FAILED_RESULT_STATUSES.has(rawStatus)) return 'BLOKE';
+  const eksik = (Array.isArray(data.missingInputs) && data.missingInputs.length > 0)
+    || (Array.isArray(data.notFound) && data.notFound.length > 0)
+    || (Array.isArray(data.missingEntities) && data.missingEntities.length > 0);
+  return eksik ? 'KISMİ' : 'OK';
+}
+
 // Tur içinde çalışan araçları kalıcı hafızaya yazılacak kısa bir kayda çevirir.
 // sanitizeConversationHistory tool mesajlarını sildiği için bu kayıt olmadan
 // LLM bir sonraki turda kendi yaptığı işi göremiyor ("yapmadım" hatası).
@@ -592,20 +706,24 @@ function buildActionLedger(toolTimings = []) {
   if (!Array.isArray(toolTimings) || toolTimings.length === 0) return null;
 
   const lines = toolTimings.map((t) => {
-    const status = t.success === false ? 'HATA' : 'OK';
+    const status = actionLedgerStatus(t);
     const hints = [];
     if (t.args) {
       if (t.args.file_path) hints.push(`dosya: ${t.args.file_path}`);
       if (t.args.mode) hints.push(`mod: ${t.args.mode}`);
       if (t.args.symbol) hints.push(`sembol: ${t.args.symbol}`);
+      if (t.args.symbols) hints.push(`semboller: ${String(t.args.symbols).substring(0, 60)}`);
       if (t.args.query) hints.push(`sorgu: ${String(t.args.query).substring(0, 80)}`);
     }
-    return `- ${t.tool} [${status}]${hints.length ? ' | ' + hints.join(', ') : ''}`;
+    const facts = t.facts || distillToolFacts(t.result);
+    return `- ${t.tool} [${status}]${hints.length ? ' | ' + hints.join(', ') : ''}${facts ? ` | ${facts}` : ''}`;
   });
 
   return [
     `[İŞLEM KAYDI ${new Date().toISOString()}] Bu turda sistem tarafından loglanan gerçek araç çağrıları aşağıdadır.`,
-    'Bu kayıt kesindir; sonraki turlarda "ne yaptın" sorulursa bu listeye dayan, işlemleri inkar etme:',
+    'Bu kayıt kesindir; sonraki turlarda "ne yaptın" sorulursa bu listeye dayan, işlemleri inkar etme.',
+    'DİKKAT: [KISMİ] ve [BLOKE] araçlar İSTENEN VERİYİ GETİRMEMİŞTİR — o katmanda hüküm kurma,',
+    'eksik girdiyi kendi yorumunla doldurma; kayıtta yazan dönem ve asOf değerlerini cevapta kullan:',
     ...lines,
   ].join('\n');
 }
@@ -3164,6 +3282,22 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'get_cash_flow_breakdown',
+      description: 'BIST şirketinin nakit akış tablosunu ayrıştırır: işletme, yatırım ve finansman faaliyetlerinden nakit akışları + pay ihracı/borçlanma kaynaklı nakit girişleri. '
+        + 'NET BORÇ DEĞİŞİMİ YORUMLANACAKSA ZORUNLU: borcun azalması tek başına kalite değildir; nakdin operasyondan mı sermaye girişinden mi geldiği bu araçla ayrılır. '
+        + 'Borçluluk iyileşmesi, "net borç düştü", "bilanço güçlendi" gibi hükümlerden ÖNCE çağır.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'BIST sembolü veya şirket adı (örn: MEYSU, BRSAN)' },
+        },
+        required: ['symbol'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_stock_price',
       description: 'BIST hisse, döviz veya emtia için güncel fiyat ve özet bilgi al. Yahoo Finance verisi kullanır.',
       parameters: {
@@ -4688,6 +4822,69 @@ async function handleToolCall(name, args, options = {}) {
         };
       }
 
+      // ── Nakit akışı ayrıştırması ──
+      // Aynı MaliTablo verisinden okunur; getOrFetch aynı anahtara katıldığı
+      // için ek ağ isteği YOKTUR.
+      case 'get_cash_flow_breakdown': {
+        const rawSymbol = (args.symbol || '').trim();
+        if (!rawSymbol) return { tool: name, success: false, message: 'Sembol gerekli.' };
+        const resolved = resolveBistSymbol(rawSymbol);
+        if (resolved && !/\.IS$/i.test(resolved)) {
+          return { tool: name, success: false, message: `${rawSymbol} bir BIST şirketi değil; nakit akışı çekilemez.` };
+        }
+        const bistCode = (resolved ? resolved.replace(/\.IS$/i, '') : rawSymbol.toUpperCase());
+        emit(`Nakit akışı ayrıştırılıyor: ${bistCode}`);
+
+        const fin = await getOrFetch(`isyatirim:financials:${bistCode}`, () => fetchCompanyFinancials(bistCode));
+        if (!fin.success) {
+          return { tool: name, success: false, message: `Mali tablo alınamadı: ${fin.message}. Nakit akışı ayrıştırılamaz.` };
+        }
+
+        const cashFlowItems = extractCashFlowItems(fin.rows);
+        const periods = fin.quarters.map((q) => `${q.year}/${q.period}`);
+
+        // KALEM YOKSA HÜKÜM DE YOK. Sessizce "operasyonel" demektense
+        // eksikliği açıkça bildir — Adım 2'nin kuralı burada da geçerli.
+        if (cashFlowItems.length === 0) {
+          return {
+            tool: name,
+            success: true,
+            status: 'NO_DATA',
+            data: {
+              symbol: bistCode,
+              periods,
+              cashFlowItems: [],
+              debtImprovementSource: 'UNKNOWN',
+              missingInputs: ['nakit akış tablosu kalemleri'],
+            },
+            source: 'is_yatirim_malitablo',
+            sourceLabel: 'Nakit akış kalemleri bu şirketin tablosunda bulunamadı. '
+              + 'Net borç değişimini operasyonel kaliteye BAĞLAMA; kaynağı ayrıştıramadığını yaz.',
+          };
+        }
+
+        const classification = classifyDebtImprovementSource(cashFlowItems);
+
+        return {
+          tool: name,
+          success: true,
+          data: {
+            symbol: bistCode,
+            periods,
+            latestPeriod: periods[0] || null,
+            financialGroup: fin.group,
+            cashFlowItems,
+            debtImprovementSource: classification.source,
+            classification: classification.source,
+            interpretation: classification.reason,
+          },
+          source: 'is_yatirim_malitablo',
+          sourceLabel: 'Nakit akış ayrıştırması. KURAL: net borç azalması, kaynağı OPERATIONS değilse '
+            + 'operasyonel kalite artısı olarak sunulamaz. Kaynağı cevapta AÇIKÇA yaz '
+            + '(işletme nakit akışı mı, pay ihracı mı, borçlanma mı).',
+        };
+      }
+
       // ── Şirket Finansal Tabloları (bilanço/gelir tablosu — İş Yatırım) ──
       case 'get_financial_statements': {
         const rawSymbol = (args.symbol || '').trim();
@@ -4714,9 +4911,25 @@ async function handleToolCall(name, args, options = {}) {
         const { keyItems, netDebt } = extractFinancialKeyItems(fin.rows, fin.group, sectorInfo.sector);
         const sectorKeys = new Set((SECTOR_ADAPTERS[sectorInfo.sector]?.extra || []).map((p) => p.key));
         const sectorItemsFound = keyItems.filter((item) => sectorKeys.has(item.key)).length;
+        // YIL ÖNCESİ AYNI ÇEYREK — ayrı istekle gelir.
+        // "Veri yok" ile "aracım getirmiyor" aynı şey değildir; ikisi de
+        // açıkça raporlanır ki cevap piyasa eksikliği gibi sunmasın.
+        const yoyPeriods = fin.yoy ? fin.yoy.quarters.map((q) => `${q.year}/${q.period}`) : [];
+        const yoyItems = fin.yoy
+          ? extractFinancialKeyItems(fin.yoy.rows, fin.yoy.group, sectorInfo.sector).keyItems
+          : [];
+        const yoyAvailable = yoyItems.length > 0;
+
         const data = {
           symbol: bistCode,
           financialGroup: fin.group,
+          yoyAvailable,
+          yoyPeriods,
+          yoyKeyItems: yoyItems,
+          yoyNote: yoyAvailable
+            ? `Yıl öncesi aynı çeyrek karşılaştırması mevcut: ${yoyPeriods.join(', ')}.`
+            : 'Yıl öncesi aynı çeyrek verisi BU ARAÇLA alınamadı. Cevapta "veri yok" DEME; '
+              + '"aracım o kolonu getiremedi" de — ikisi farklı şeydir.',
           sector: sectorInfo.sector,
           sectorLabel: SECTOR_ADAPTERS[sectorInfo.sector]?.label || 'bilinmiyor',
           sectorDetectionBasis: sectorInfo.basis,
@@ -4947,10 +5160,26 @@ async function handleToolCall(name, args, options = {}) {
           return { tool: name, success: false, message: `Fiyat alınamadı: ${yf.message}. Değerleme çarpanı fiyatsız hesaplanamaz.` };
         }
 
-        const { keyItems } = extractFinancialKeyItems(fin.rows, fin.group);
+        // SEKTÖR ARGÜMANI ŞART.
+        // GERÇEK VAKA (11 Ağustos 2026): burada sektör geçilmediği için
+        // extractFinancialKeyItems, grup XI_29 değilse BANK adaptörüne düşüyordu;
+        // banka kalıpları sanayi/gıda şirketinin satırlarını bulamayınca net kâr
+        // ve özkaynak null geliyordu. Sonuç: aynı cevapta get_financial_statements
+        // o iki sayıyı tabloya yazarken bu araç "missingInputs: net kâr, özkaynak"
+        // diyordu — cevap kendi kendini yalanladı. Veri aynı (getOrFetch aynı
+        // anahtara katılıyor); fark yalnızca bu argümandı.
+        const sectorInfo = detectFinancialSector(fin.rows, fin.group, bistCode);
+        const { keyItems } = extractFinancialKeyItems(fin.rows, fin.group, sectorInfo.sector);
+        // ANAHTAR ADLARI KALEM TABLOSUNDAN GELİR, UYDURULMAZ.
+        // GERÇEK VAKA: burada 'netKar' ve 'ozkaynak' aranıyordu; bu adlar
+        // FINANCIAL_KEY_ITEM_PATTERNS'te HİÇ tanımlı değil (gerçekleri
+        // 'netDonemKari' ve 'ozkaynaklar'). Sonuç: araç her şirkette, her
+        // sektörde "missingInputs: net kâr, özkaynak" döndürdü — sessiz ve
+        // %100 tekrarlayan bir kusur. Sessiz olduğu için de kimse fark etmedi:
+        // "veri yok" cevabı, "aracım bozuk" cevabından ayırt edilemiyordu.
         const pick = (key) => keyItems.find((k) => k.key === key)?.values?.[0] ?? null;
-        const netKar = pick('netKar');
-        const ozkaynak = pick('ozkaynak');
+        const netKar = pick('netDonemKari');
+        const ozkaynak = pick('ozkaynaklar');
         const price = yf.data.price;
         const periods = fin.quarters.map((q) => `${q.year}/${q.period}`);
 
@@ -8869,12 +9098,17 @@ function getDefaultBistResearchUniverse(extraSymbols = [], limit = 30, fullUnive
 // yüzden sonuç her zaman "İş Yatırım verisi" olarak etiketlenir.
 const IS_YATIRIM_FINANCIAL_GROUPS = ['XI_29', 'UFRS', 'UFRS_K'];
 
-function lastReportedQuarters(count = 5) {
-  // Finansal tablolar dönem kapanışından ~6-10 hafta sonra yayımlanır;
-  // 45 gün geriden başlayarak büyük olasılıkla yayımlanmış son çeyreği bul.
-  const ref = new Date(Date.now() - 45 * 24 * 3600 * 1000);
+// EN GÜNCEL KAPANMIŞ ÇEYREKTEN BAŞLA, GERİYE PROBLA.
+// GEÇMİŞ HATA: pencere "dönem kapanışı + 45 gün" varsayımıyla seçiliyordu.
+// 30 Haziran + 45 gün = 14 Ağustos; BRSAN 2Ç26'yı 7 Ağustos'ta yayımladı ve
+// sistem yeni bilançoyu YAPISAL OLARAK göremedi — üstelik düzeltme yalnız
+// GERİYE kayıyordu, ileriye asla. Artık en güncel kapanmış çeyrekten başlanır;
+// o çeyrek henüz yayımlanmadıysa fetchCompanyFinancials geriye kayar.
+function lastReportedQuarters(count = 5, now = Date.now()) {
+  const ref = new Date(now);
   let year = ref.getFullYear();
   const month = ref.getMonth() + 1;
+  // Kapanmış son çeyrek: Oca-Mar → önceki yılın 12'si, Nis-Haz → 3, vb.
   let period = month >= 10 ? 9 : month >= 7 ? 6 : month >= 4 ? 3 : 12;
   if (period === 12) year -= 1;
   const quarters = [];
@@ -8884,6 +9118,22 @@ function lastReportedQuarters(count = 5) {
     if (period === 0) { period = 12; year -= 1; }
   }
   return quarters;
+}
+
+// YIL ÖNCESİ AYNI ÇEYREK AYRI BİR İSTEKTİR.
+// GEÇMİŞ HATA: pencere 4 ARDIŞIK çeyrek (son, -1, -2, -3). Yıl öncesi aynı
+// çeyrek her zaman -4'tür ve API satır şeması yalnız value1..value4 taşır.
+// Yani YoY karşılaştırma HİÇBİR koşulda mümkün değildi; cevap bunu "veri yok"
+// diye sunuyordu — oysa doğrusu "bu araç o kolonu getirmiyor".
+function sameQuarterAcrossYears(latest, count = 4) {
+  if (!latest) return [];
+  const out = [];
+  let year = latest.year;
+  for (let i = 0; i < count; i++) {
+    out.push({ year, period: latest.period });
+    year -= 1;
+  }
+  return out;
 }
 
 async function fetchIsYatirimMaliTablo(bistCode, quarters) {
@@ -8904,20 +9154,125 @@ async function fetchIsYatirimMaliTablo(bistCode, quarters) {
 }
 
 async function fetchCompanyFinancials(bistCode) {
-  const quarters = lastReportedQuarters(5);
-  let used = quarters.slice(0, 4);
-  let fin = await fetchIsYatirimMaliTablo(bistCode, used);
-  if (fin.success) {
-    // En güncel çeyrek henüz yayımlanmadıysa tüm value1 alanları null gelir —
-    // bir çeyrek geri kayarak tekrar dene.
-    const hasLatest = fin.rows.some((r) => r.value1 !== null && r.value1 !== undefined);
-    if (!hasLatest) {
-      used = quarters.slice(1, 5);
-      fin = await fetchIsYatirimMaliTablo(bistCode, used);
+  // İLERİDEN GERİYE PROB: en güncel kapanmış çeyrekten başla, boş dönerse
+  // bir çeyrek geri kay. İki kayma yeterli (erken yayımlayan şirket ile
+  // geç yayımlayan şirket arasındaki fark en fazla bir çeyrektir).
+  const quarters = lastReportedQuarters(6);
+  let used = null;
+  let fin = null;
+  for (let shift = 0; shift <= 2; shift++) {
+    const candidate = quarters.slice(shift, shift + 4);
+    const attempt = await fetchIsYatirimMaliTablo(bistCode, candidate);
+    if (!attempt.success) {
+      // Kaynak hatası — geri kaymak bunu düzeltmez.
+      if (!fin) fin = attempt;
+      break;
+    }
+    const hasLatest = attempt.rows.some((r) => r.value1 !== null && r.value1 !== undefined);
+    fin = attempt;
+    used = candidate;
+    if (hasLatest) break;
+  }
+  if (!fin || !fin.success) return fin || { success: false, message: `İş Yatırım MaliTablo verisi alınamadı: ${bistCode}` };
+
+  // YoY kolonu AYRI istektir; başarısızlığı ana sonucu düşürmez.
+  let yoy = null;
+  const yoyQuarters = sameQuarterAcrossYears(used && used[0], 4);
+  if (yoyQuarters.length > 0) {
+    try {
+      const yoyFetch = await fetchIsYatirimMaliTablo(bistCode, yoyQuarters);
+      if (yoyFetch.success) {
+        yoy = { rows: yoyFetch.rows, group: yoyFetch.group, quarters: yoyQuarters };
+      }
+    } catch {
+      // YoY isteği başarısızsa ana tablo yine geçerlidir; eksiklik raporlanır.
     }
   }
-  if (!fin.success) return fin;
-  return { ...fin, quarters: used };
+
+  return { ...fin, quarters: used, yoy };
+}
+
+// ── Nakit akışı kalemleri ─────────────────────────────────────────────
+// NET BORÇ İYİLEŞMESİ TEK BAŞINA KALİTE DEĞİLDİR.
+// GERÇEK VAKA (11 Ağustos 2026): MEYSU'nun net borcu 1,36 mlr TL'den 546,9
+// mn TL'ye indi ve cevap bunu "pozitif" diye şirket kalitesine yazdı. Oysa
+// borcu kapatan nakit büyük ölçüde halka arz sermayesiydi; işletme nakit
+// akışı NEGATİFTİ. Kasa doldu ama makine kendi ürettiği nakitle doldurmadı.
+// Bu ayrım yapılmadan borç iyileşmesi operasyonel kalite göstergesi olamaz.
+//
+// Bu kalemler ayrı bir grupta tutulur: taban kalem çıkarımına (ve netDebt
+// hesabına) karışmamalı; oradaki "Finansal Borçlar" mantığı bilanço satırına
+// dayanır, buradakiler nakit akış tablosu satırlarıdır.
+const FINANCIAL_KEY_ITEM_PATTERNS_CASHFLOW = [
+  { key: 'isletmeNakitAkisi', label: 'İşletme Faaliyetlerinden Nakit Akışı', re: /^işletme faaliyetlerinden/ },
+  { key: 'yatirimNakitAkisi', label: 'Yatırım Faaliyetlerinden Nakit Akışı', re: /^yatırım faaliyetlerinden/ },
+  { key: 'finansmanNakitAkisi', label: 'Finansman Faaliyetlerinden Nakit Akışı', re: /^finansman faaliyetlerinden/ },
+  { key: 'payIhraciNakitGirisi', label: 'Pay İhracından Nakit Girişi', re: /pay ihra[çc]/ },
+  { key: 'borclanmaNakitGirisi', label: 'Borçlanmadan Nakit Girişi', re: /borçlanmadan kaynaklanan nakit giriş/ },
+  { key: 'borcOdemesi', label: 'Borç Ödemesine İlişkin Nakit Çıkışı', re: /borç ödemelerine ilişkin nakit çıkış/ },
+];
+
+/**
+ * Nakit akış tablosu kalemleri. Aynı MaliTablo satırlarından okunur —
+ * ek ağ isteği YOK.
+ */
+function extractCashFlowItems(rows = []) {
+  const norm = (s) => String(s || '').toLocaleLowerCase('tr-TR').trim();
+  const rowValues = (r) => [r.value1, r.value2, r.value3, r.value4]
+    .map((v) => (Number.isFinite(Number(v)) && v !== null ? Number(v) : null));
+
+  const items = [];
+  for (const pattern of FINANCIAL_KEY_ITEM_PATTERNS_CASHFLOW) {
+    const row = rows.find((r) => pattern.re.test(norm(r?.itemDescTr)));
+    if (!row) continue;
+    items.push({
+      key: pattern.key,
+      label: pattern.label,
+      itemCode: row.itemCode,
+      itemDescTr: row.itemDescTr,
+      values: rowValues(row),
+    });
+  }
+  return items;
+}
+
+/**
+ * Borç iyileşmesinin KAYNAĞINI sınıflandırır.
+ * Deterministik: eşik yok, işaret var. "Şirket iyi mi" demez; nakdin
+ * nereden geldiğini söyler.
+ */
+function classifyDebtImprovementSource(cashFlowItems = []) {
+  const first = (key) => cashFlowItems.find((i) => i.key === key)?.values?.[0] ?? null;
+  const isletme = first('isletmeNakitAkisi');
+  const finansman = first('finansmanNakitAkisi');
+  const payIhraci = first('payIhraciNakitGirisi');
+
+  if (isletme === null && finansman === null) {
+    return { source: 'UNKNOWN', reason: 'Nakit akış kalemleri tabloda bulunamadı.' };
+  }
+
+  const operasyonelPozitif = Number.isFinite(isletme) && isletme > 0;
+  const finansmanPozitif = Number.isFinite(finansman) && finansman > 0;
+  const sermayeGirisi = Number.isFinite(payIhraci) && payIhraci > 0;
+
+  if (sermayeGirisi && !operasyonelPozitif) {
+    return {
+      source: 'EQUITY_ISSUANCE',
+      reason: 'Nakit girişi ağırlıklı olarak pay ihracından; işletme faaliyeti nakit üretmiyor. '
+        + 'Borç iyileşmesi OPERASYONEL kalite göstergesi olarak sunulamaz.',
+    };
+  }
+  if (finansmanPozitif && !operasyonelPozitif) {
+    return {
+      source: 'FINANCING',
+      reason: 'Nakit girişi finansman faaliyetlerinden; işletme faaliyeti nakit üretmiyor. '
+        + 'Borç iyileşmesi operasyonel kalite göstergesi olarak sunulamaz.',
+    };
+  }
+  if (operasyonelPozitif) {
+    return { source: 'OPERATIONS', reason: 'İşletme faaliyeti pozitif nakit üretiyor.' };
+  }
+  return { source: 'MIXED', reason: 'İşletme nakit akışı negatif; kaynak tek başına ayrıştırılamadı.' };
 }
 
 const FINANCIAL_KEY_ITEM_PATTERNS = [
@@ -9431,13 +9786,12 @@ async function runLiveInvestmentResearchScan(args = {}, options = {}) {
   const mandateGuidance = buildRuntimeResearchMandate(args);
   // BİRİM DEĞİŞTİ (2026-08-09): eski eşikler (24/35/45) aralık genişliği
   // içindi. Artık `volatility` günlük getiri standart sapmasıdır; BIST'te
-  // tipik günlük volatilite %2-4, yükselen rejimde %5-8. Eşikler bu birime
-  // göre yeniden konuldu — eskisi kalsaydı filtre hiçbir şeyi elemezdi.
-  const riskVolatilityCap = mandateGuidance.mandate.riskTolerance === 'low'
-    ? 3
-    : mandateGuidance.mandate.riskTolerance === 'high'
-      ? 8
-      : 5;
+  // tipik günlük volatilite %2-4, yükselen rejimde %5-8.
+  //
+  // EŞİKLER ARTIK BURADA DEĞİL, policy-core'DA (Yol Haritası Adım 4).
+  // Buradaki inline 3/5/8 ile core'daki 35 iki ayrı doğruluk kaynağıydı ve
+  // aynı koşula zıt etiket üretiyorlardı. Tek kaynak: resolveVolatilityCap.
+  const riskVolatilityCap = resolveResearchVolatilityCap(mandateGuidance.mandate.riskTolerance);
   const config = {
     minimumAverageDailyVolume: Number.isFinite(Number(args.minimumAverageDailyVolume)) ? Number(args.minimumAverageDailyVolume) : 100000,
     minimumSampleSize: 20,
@@ -10656,6 +11010,28 @@ function sanitizeConversationHistory(history) {
     .filter(Boolean);
 }
 
+/**
+ * Kapılar yerleştikten SONRA nihai cevabı kalıcı geçmişe yazar.
+ * Onarım turları (internalTurn) geçmişe hiç dokunmadığı için, bir kullanıcı
+ * isteğinin sonunda geçmişte tam olarak iki kayıt olur: kullanıcı mesajı ve
+ * NİHAİ cevap. Doğrulanmamış ara cevaplar ve "[ÇEKİRDEK ZORUNLULUK]" onarım
+ * metinleri konuşmaya sızmaz.
+ *
+ * Aynı tur için birden çok kez çağrılırsa son cevap öncekini EZER — kapı
+ * zinciri cevabı birkaç kez değiştirebilir, geçmişte yalnız sonuncusu kalmalı.
+ */
+function commitConversationTurn(finalContent) {
+  const content = String(finalContent || '').trim();
+  if (!content) return;
+
+  const last = conversationHistory[conversationHistory.length - 1];
+  if (last && last.role === 'assistant') {
+    last.content = content;
+    return;
+  }
+  conversationHistory.push({ role: 'assistant', content });
+}
+
 function resetConversation() {
   conversationHistory = [];
   console.log('[AI] Conversation reset');
@@ -10734,19 +11110,38 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
   const detectedTask = detectTaskType(message);
   let activeModel = normalizeChatCompletionsModel(getModelForTask(detectedTask));
 
+  // ONARIM TURU KALICI GEÇMİŞE YAZILMAZ.
+  // ÖLÇÜLEN VAKA (11 Ağustos 2026): main.cjs bir kullanıcı isteği için chat()'i
+  // birden çok kez çağırıyor (karar kapısı, yönlendirme, sıralama, sözleşme
+  // onarımı). Her birinin "[ÇEKİRDEK ZORUNLULUK — ...]" metni role:'user'
+  // olarak kalıcı geçmişe giriyordu. Sonuçları:
+  //   - iç sistem talimatları kullanıcı ağzından geçmişe karışıyordu,
+  //   - doğrulanmamış ilk cevap sonraki turları etkiliyordu,
+  //   - geçmiş son 16 mesaja kırpıldığı için kapı ateşleyen TEK tur 6 slot
+  //     yiyor ve gerçek konuşma ~2,5 turda pencereden düşüyordu.
+  // Onarım turları artık yalnız istek-içi working history üzerinde yaşar;
+  // kalıcı geçmişe yalnız NİHAİ cevap yazılır (bkz. commitConversationTurn).
+  const internalTurn = options.internalTurn === true;
+
   // Clean stale tool-call traces from previous turns (prevents orphan tool errors)
   conversationHistory = sanitizeConversationHistory(conversationHistory);
 
-  // Add user message to persistent history
-  conversationHistory.push({ role: 'user', content: message });
+  if (!internalTurn) {
+    // Add user message to persistent history
+    conversationHistory.push({ role: 'user', content: message });
 
-  // Keep conversation history manageable (max 20 messages)
-  if (conversationHistory.length > 20) {
-    conversationHistory = conversationHistory.slice(-16);
+    // Keep conversation history manageable (max 20 messages)
+    if (conversationHistory.length > 20) {
+      conversationHistory = conversationHistory.slice(-16);
+    }
   }
 
   // Request-local working history can include assistant tool_calls + tool results safely
-  const workingHistory = [...conversationHistory];
+  // Onarım turunda kullanıcı mesajı kalıcı listeye girmediği için buraya
+  // AYRICA eklenir: model onarım talimatını görmeli, geçmiş görmemeli.
+  const workingHistory = internalTurn
+    ? [...conversationHistory, { role: 'user', content: message }]
+    : [...conversationHistory];
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -10817,7 +11212,7 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
         researchContract.record(fnName, fnArgs, result);
 
         // Timing kaydet
-        _toolTimings.push({ tool: fnName, args: fnArgs, duration: toolDuration, success: result?.success !== false, cached: toolDuration < 50 });
+        _toolTimings.push({ tool: fnName, args: fnArgs, duration: toolDuration, success: result?.success !== false, cached: toolDuration < 50, facts: distillToolFacts(result), result });
         console.log(`[AI] Tool ${fnName} completed in ${toolDuration}ms${toolDuration < 50 ? ' (cached)' : ''}`);
         if (onActivity) {
           onActivity({
@@ -10981,7 +11376,7 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
             result = await handleToolCall(fnName, fnArgs, {
               perplexityKey, supabaseClient, onActivity, telegramService, telegramReader, executionContract, registerSurgicalRequest,
             });
-            _toolTimings.push({ tool: fnName, args: fnArgs, duration: Date.now() - toolStart, success: result?.success !== false, cached: false });
+            _toolTimings.push({ tool: fnName, args: fnArgs, duration: Date.now() - toolStart, success: result?.success !== false, cached: false, facts: distillToolFacts(result), result });
           }
 
           if (fnName === 'submit_task_verdict' && result && result.should_continue === false) {
@@ -11079,15 +11474,20 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
         + '\n```';
     }
 
-    conversationHistory.push({ role: 'assistant', content: finalContent });
+    // Onarım turunun cevabı DOĞRULANMAMIŞTIR — kalıcı geçmişe girmez.
+    // main.cjs kapılar yerleştikten sonra nihai metni commitConversationTurn
+    // ile bir kez yazar.
+    if (!internalTurn) {
+      conversationHistory.push({ role: 'assistant', content: finalContent });
 
-    // İşlem kaydını kalıcı geçmişe ekle — sonraki turda LLM yaptığı işi görebilsin
-    const actionLedger = buildActionLedger(_toolTimings);
-    if (actionLedger) {
-      const ledgerWithStatus = executionStatusRecord
-        ? actionLedger + `\nGörev durumu (deterministik): ${executionStatusRecord.status} | dosyalar: ${executionStatusRecord.createdFiles.join(', ') || 'yok'}`
-        : actionLedger;
-      conversationHistory.push({ role: 'assistant', content: ledgerWithStatus });
+      // İşlem kaydını kalıcı geçmişe ekle — sonraki turda LLM yaptığı işi görebilsin
+      const actionLedger = buildActionLedger(_toolTimings);
+      if (actionLedger) {
+        const ledgerWithStatus = executionStatusRecord
+          ? actionLedger + `\nGörev durumu (deterministik): ${executionStatusRecord.status} | dosyalar: ${executionStatusRecord.createdFiles.join(', ') || 'yok'}`
+          : actionLedger;
+        conversationHistory.push({ role: 'assistant', content: ledgerWithStatus });
+      }
     }
 
     if (onActivity) {
@@ -11159,7 +11559,12 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
       if (onActivity) {
         onActivity({
           type: 'research_contract',
-          detail: `Sözleşme kapanışı: ${coverage.status} — cevaplanabilir: ${coverage.answerableIds.join(', ') || 'yok'}; bloke: ${coverage.blockedIds.join(', ') || 'yok'}`,
+          // PARTIAL da raporlanır: eskiden üç alt soru da PARTIAL iken monitör
+          // "cevaplanabilir: yok; bloke: yok" yazıyordu ve hiçbir şey olmamış
+          // gibi görünüyordu.
+          detail: `Sözleşme kapanışı: ${coverage.status} — tam: ${coverage.answerableIds.join(', ') || 'yok'}`
+            + `; kısmi: ${(coverage.partialIds || []).join(', ') || 'yok'}`
+            + `; bloke: ${coverage.blockedIds.join(', ') || 'yok'}`,
           timestamp: Date.now(),
         });
       }
@@ -11179,6 +11584,23 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
         return `${mark} [${sq.id}] ${sq.question} (${sq.outputKind}): ${sq.status}${miss}`;
       });
 
+      // KAPANIŞ HÜKMÜ İNDİRİR — yalnız rapor eklemez.
+      // ÖLÇÜLEN VAKA: kapanış raporu cevabın ALTINA ekleniyor, üstteki model
+      // hükmüne dokunulmuyordu; aynı cevapta "sosyal kanıtı kapattım" ile
+      // "sosyal kanıt BLOCKED" yan yana durabiliyordu. Sözleşme kapı değil,
+      // cevaptan sonra tutanak tutan zabit gibi çalışıyordu.
+      //
+      // Kural (README "Eksik kanıt cevabı susturmaz, hükmü sınırlar"):
+      // sözleşme tam kapanmadıysa KESİN AL/SAT hükmü duramaz — İNCELE/RİSKLİ
+      // seviyesine iner. NİTEL bulgular ("haber akışı kirli") olduğu gibi
+      // kalır; neutralizeEquityVerdicts yalnız hüküm satırlarındaki AL/SAT
+      // sözcüğüne dokunur.
+      const contractIncomplete = coverage.status !== 'COMPLETE';
+      const verdictLowered = contractIncomplete && detectEquityVerdict(finalContent);
+      if (verdictLowered) {
+        finalContent = neutralizeEquityVerdicts(finalContent);
+      }
+
       finalContent += [
         '',
         '',
@@ -11187,10 +11609,21 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
         ...lines,
       ].join('\n');
 
-      if (coverage.blockedIds.length > 0) {
+      if (verdictLowered) {
         finalContent += [
           '',
-          `Bloke alt sorular için hüküm verilmedi. Eksik kanıtı toplayacak araçlar: ${coverage.repairPlan.join(', ') || 'yok'}.`,
+          'HÜKÜM İNDİRİLDİ (deterministik): sözleşme tam kapanmadığı için kesin AL/SAT hükmü '
+            + 'İNCELE/RİSKLİ seviyesine indirildi. Nitel bulgular geçerliliğini korur.',
+        ].join('\n');
+      }
+
+      // Tam olmayan HER alt soru rapor edilir; eskiden yalnız BLOCKED olanlar
+      // yazılıyordu ve hepsi PARTIAL olan tur sessiz geçiyordu.
+      if ((coverage.unresolvedIds || []).length > 0) {
+        finalContent += [
+          '',
+          `Kanıtı tamamlanmamış alt sorular (${coverage.unresolvedIds.join(', ')}) için hüküm verilmedi. `
+            + `Eksik kanıtı toplayacak araçlar: ${coverage.repairPlan.join(', ') || 'yok'}.`,
           'Kapsanan alt sorulardaki bulgular geçerlidir; eksik katman yüzünden tüm araştırma geçersiz sayılmaz.',
         ].join('\n');
       }
@@ -11374,6 +11807,7 @@ module.exports = {
   chat,
   multiSourceSearch,
   resetConversation,
+  commitConversationTurn,
   buildDynamicSystemPrompt,
   trackCapabilityGap,
   getModelForTask,
@@ -11395,6 +11829,22 @@ module.exports = {
   determineOpportunitySources,
   hasChinaSourcingIntent,
   buildToolResultPreview,
+  // Saf yardımcılar — test edilebilmeleri için dışa açık. Sektör argümanı
+  // geçilmediğinde kalem çıkarımının nasıl bozulduğu regresyon testiyle sabitlenir.
+  extractFinancialKeyItems,
+  detectFinancialSector,
+  // Router kararı test edilebilir olmalı: işlem seviyesi üreten tur hangi
+  // görev sınıfına düşüyor sorusunun cevabı sessizce değişmemeli.
+  detectTaskType,
+  // İşlem kaydının içeriği de sözleşmedir: dönem/asOf/eksik girdi kaybolamaz.
+  buildActionLedger,
+  distillToolFacts,
+  // Dönem penceresi saf tarih mantığıdır; ağsız test edilir.
+  lastReportedQuarters,
+  sameQuarterAcrossYears,
+  // Nakit akışı ayrıştırması saf fonksiyondur; ağsız test edilir.
+  extractCashFlowItems,
+  classifyDebtImprovementSource,
   // Güvenlik sınırı — regresyon testleri için export edilir (denetim HIGH-4).
   // Bu fonksiyonlar projenin sandbox hapsini tanımlar; testsiz kalmamalı.
   normalizeRepoPath,
