@@ -1,4 +1,8 @@
 export declare const POLICY_CORE_VERSION: string;
+export declare const VOLATILITY_UNIT: string;
+export declare const VOLATILITY_CAPS: Readonly<{ low: number; medium: number; high: number }>;
+export declare const DEFAULT_VOLATILITY_CAP: number;
+export declare function resolveVolatilityCap(riskTolerance?: string | null): number;
 export declare const RESEARCH_MODES: readonly string[];
 export declare const RESEARCH_STATES: readonly string[];
 export declare const RESEARCH_STATE_TRANSITIONS: Readonly<Record<string, readonly string[]>>;

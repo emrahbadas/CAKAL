@@ -3,10 +3,19 @@ const path = require('path');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const cron = require('node-cron');
-const { initOpenAI, chat, multiSourceSearch, resetConversation, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
-const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock, evaluatePriceLevelProvenanceGate } = require('./decision-guards.cjs');
+const { initOpenAI, chat, multiSourceSearch, resetConversation, commitConversationTurn, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
+const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock, evaluatePriceLevelProvenanceGate, evaluateDebtQualityGate } = require('./decision-guards.cjs');
 const { createResearchRun, buildContractRepairRequest, evaluateContract: evaluateResearchContract } = require('./research-contract.cjs');
-const { buildEvidenceLedger: buildLedgerForRepair } = require('./decision-guards.cjs');
+const { buildEvidenceLedger: buildLedgerForRepair, extractBistTickers } = require('./decision-guards.cjs');
+
+// KONUŞMANIN SEMBOL KAPSAMI — kanıt değil, kapsam.
+// "BRSAN ve MEYSU karşılaştır" → "bilanço + fiyatlama karşılaştırması da yap"
+// dizisinde ikinci mesaj hiçbir kod içermez; sözleşme skoru iki şirketi
+// göremediği için tur yönetimsiz geçiyordu. Burada YALNIZ hangi sembollerin
+// konuşulduğu tutulur; ölçümler/kanıtlar her istekte sıfırdan toplanır.
+// resetConversation ile birlikte temizlenir.
+let conversationEntityScope = [];
+const CONVERSATION_ENTITY_SCOPE_LIMIT = 8;
 const { runDeterministicAgent } = require('./deterministic-agents.cjs');
 const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
@@ -1588,7 +1597,15 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
       // Bilinçli olarak oturum geneli DEĞİL: "THYAO analiz et" → "ASELS analiz
       // et" → "hangisi?" dizisinde ilk sorgunun kanıtı üçüncü sorgunun
       // gereksinimini sessizce tatmin ederdi. Yeni istek = yeni koşu.
-      const researchRun = createResearchRun({ userQuestion: payload.message || '' });
+      //
+      // KAPSAM taşınır, KANIT taşınmaz (yukarıdaki notun devamı):
+      // conversationEntityScope yalnız "hangi şirketler konuşuluyor" bilgisini
+      // tutar. Ölçülen vaka: "bilanço + fiyatlama karşılaştırması da yap"
+      // mesajında BRSAN/MEYSU yazmıyordu, skor 0 çıktı, sözleşme açılmadı.
+      const researchRun = createResearchRun({
+        userQuestion: payload.message || '',
+        priorEntities: conversationEntityScope,
+      });
       const commanderEmitActivity = (event) => {
         const stamped = event && event.timestamp ? event : { ...event, timestamp: Date.now() };
         commanderActivityLog.push(stamped);
@@ -1840,6 +1857,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             ].join('\n');
 
         response = await chat(retryMessage, {
+          // ONARIM TURU: kalıcı geçmişe yazılmaz (bkz. ai-service internalTurn).
+          internalTurn: true,
           perplexityKey: process.env.PERPLEXITY_API_KEY,
           supabaseClient,
           profileContext,
@@ -1887,6 +1906,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           ].join('\n');
 
           response = await chat(routingCompletionMessage, {
+          // ONARIM TURU: kalıcı geçmişe yazılmaz (bkz. ai-service internalTurn).
+          internalTurn: true,
             perplexityKey: process.env.PERPLEXITY_API_KEY,
             supabaseClient,
             profileContext,
@@ -1920,7 +1941,10 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           commanderEmitActivity({
             type: 'decision_gate',
             agent: 'commander',
-            detail: 'YÖNETİLMEMİŞ SIRALAMA: hisse sıralaması var ama araştırma taraması çalışmadı. Tamamlama denemesi başlatılıyor (1 kez).',
+            // Sabit metin kullanma: kapı "hiçbir araç çalışmadı" derken log'da
+            // web_search'ün 17 citation ile döndüğü vaka yaşandı. Monitör
+            // kapının KENDİ gerekçesini göstermeli, hikâyeyi değil.
+            detail: `YÖNETİLMEMİŞ SIRALAMA: ${rankingLock.reason} Tamamlama denemesi başlatılıyor (1 kez).`,
             timestamp: Date.now(),
           });
 
@@ -1936,6 +1960,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           ].join('\n');
 
           response = await chat(rankingCompletionMessage, {
+          // ONARIM TURU: kalıcı geçmişe yazılmaz (bkz. ai-service internalTurn).
+          internalTurn: true,
             perplexityKey: process.env.PERPLEXITY_API_KEY,
             supabaseClient,
             profileContext,
@@ -1983,6 +2009,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           ].join('\n');
 
           response = await chat(pricingCompletionMessage, {
+          // ONARIM TURU: kalıcı geçmişe yazılmaz (bkz. ai-service internalTurn).
+          internalTurn: true,
             perplexityKey: process.env.PERPLEXITY_API_KEY,
             supabaseClient,
             profileContext,
@@ -2030,6 +2058,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           ].join('\n');
 
           response = await chat(completionMessage, {
+          // ONARIM TURU: kalıcı geçmişe yazılmaz (bkz. ai-service internalTurn).
+          internalTurn: true,
             perplexityKey: process.env.PERPLEXITY_API_KEY,
             supabaseClient,
             profileContext,
@@ -2076,6 +2106,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           });
 
           response = await chat(repair.message, {
+          // ONARIM TURU: kalıcı geçmişe yazılmaz (bkz. ai-service internalTurn).
+          internalTurn: true,
             perplexityKey: process.env.PERPLEXITY_API_KEY,
             supabaseClient,
             profileContext,
@@ -2106,6 +2138,46 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
           timestamp: Date.now(),
         });
         response = priceLevelLock.response;
+      }
+
+      // BORÇ KALİTE KİLİDİ (seviye provenance ile aynı kademede)
+      // Borç azalmasını olumlu hükme bağlayan cevap, nakit akışı ayrıştırması
+      // olmadan çıkamaz. Kanıt "araç çalıştı" değil "kanıt üretti" ölçütüyle
+      // aranır; onarım turu AÇILMAZ çünkü hüküm zaten indiriliyor.
+      const debtQualityLock = evaluateDebtQualityGate(
+        payload.message,
+        response,
+        researchRun.events(),
+      );
+      if (debtQualityLock) {
+        commanderEmitActivity({
+          type: 'decision_gate',
+          agent: 'commander',
+          detail: `BORÇ KALİTESİ: ${debtQualityLock.reason}`,
+          timestamp: Date.now(),
+        });
+        response = debtQualityLock.response;
+      }
+
+      // NİHAİ CEVABI KALICI GEÇMİŞE YAZ (tur başına bir kez).
+      // Buraya kadar çalışan tüm kapılar `response`'u değiştirmiş olabilir;
+      // konuşmaya giren metin, kullanıcının GÖRDÜĞÜ metindir. Onarım turları
+      // internalTurn ile geçmişe hiç dokunmadı.
+      commitConversationTurn(response);
+
+      // KONUŞMA KAPSAMINI TAZELE (kanıt değil, sembol kümesi).
+      // Kaynak iki yerden: kullanıcının yazdığı kodlar ve bu turda kanıt
+      // toplanan entity'ler. Boşsa ÖNCEKİ kapsam korunur — araya giren alakasız
+      // bir mesaj ("teşekkürler") konuşmanın konusunu silmemeli.
+      const turnEntities = [
+        ...extractBistTickers(payload.message || ''),
+        ...researchRun.events().flatMap((e) => (Array.isArray(e.entities) ? e.entities : [])),
+      ]
+        .map((s) => String(s || '').trim().toUpperCase().replace(/\.IS$/i, ''))
+        .filter(Boolean);
+      if (turnEntities.length > 0) {
+        conversationEntityScope = [...new Set([...turnEntities, ...conversationEntityScope])]
+          .slice(0, CONVERSATION_ENTITY_SCOPE_LIMIT);
       }
 
       console.log(
@@ -2155,6 +2227,8 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
       // Sohbet sıfırlanıyorsa kanıt defteri de sıfırlanmalı: yeni oturumun
       // kapısı eski turun fiyat verisini "elde kanıt var" diye saymamalı.
       resetCommanderEvidenceLog();
+      // Sembol kapsamı da oturumla birlikte biter.
+      conversationEntityScope = [];
       return { status: 'ok', response: 'Sohbet sıfırlandı.' };
     }
 

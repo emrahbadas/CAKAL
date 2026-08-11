@@ -105,6 +105,81 @@ const FUNNEL_VERDICTS = Object.freeze({
   BLOCKED: 'BLOCKED',                 // huni tamamlanamadı (evren/kaynak)
 });
 
+// ── Kademe 0: istek kapısı ────────────────────────────────────────────
+// YENİ SINIFLANDIRICI YAZILMAZ.
+// Yol Haritası Adım 5'in açık talimatı: kademe 0, mevcut
+// `requiresResearchContract` niyet skoruna BAĞLANIR. İkinci bir niyet
+// sınıflandırıcısı kurmak, research-contract'takiyle zamanla ayrışır ve
+// Adım 4'te yaşanan "iki hesap, zıt etiket" hatasını huni tarafında yeniden
+// üretirdi. Skor orada hesaplanır, burada YORUMLANIR.
+//
+// Huni yalnız PİYASA-GENELİ ADAY ARAMASI için açılır. Kullanıcının adıyla
+// verdiği sembolleri karşılaştırmak aday seçimi değildir — aynı ayrım
+// sıralama kapısında da var (bkz. decision-guards, kullanıcı-adaylı kaçış).
+const FUNNEL_REQUEST_DECISIONS = Object.freeze({
+  OPEN: 'OPEN',                 // huni açılır
+  SKIP_NOT_SCREENING: 'SKIP_NOT_SCREENING',   // aday araması değil
+  SKIP_USER_SCOPED: 'SKIP_USER_SCOPED',       // semboller kullanıcıdan geldi
+});
+
+/**
+ * @param {object} complexity - requiresResearchContract() çıktısı
+ * @param {object} opts
+ * @param {boolean} opts.freshMarketScan - isCommanderFreshMarketScanRequest()
+ * @param {number}  opts.namedSymbolCount - KULLANICI KAPSAMINDAKİ sembol sayısı:
+ *   mesajda geçen kodlar VEYA konuşmadan devralınan kapsam (priorEntities).
+ *   Yalnız mesaja bakmak yetmez — "bilanço karşılaştırması da yap" mesajında
+ *   kod yazmaz ama semboller bir önceki turda kullanıcı tarafından verilmiştir
+ *   ve ortada yine aday seçimi yoktur.
+ */
+function buildFunnelRequestGate(complexity = {}, opts = {}) {
+  const score = Number(complexity.score) || 0;
+  const threshold = Number(complexity.threshold) || 0;
+  const signals = Array.isArray(complexity.signals) ? complexity.signals : [];
+  const freshMarketScan = opts.freshMarketScan === true;
+  const namedSymbolCount = Number(opts.namedSymbolCount) || 0;
+
+  // Kullanıcı sembolleri kendi verdiyse evren yok, dolayısıyla huni de yok.
+  if (namedSymbolCount > 0 && !freshMarketScan) {
+    return {
+      decision: FUNNEL_REQUEST_DECISIONS.SKIP_USER_SCOPED,
+      shouldOpen: false,
+      reason: `Semboller kullanıcı tarafından verildi (${namedSymbolCount}); aday seçimi yok, huni açılmaz.`,
+      score,
+      signals,
+    };
+  }
+
+  // Açık piyasa taraması talebi tek başına yeterlidir; skor eşiği aranmaz.
+  if (freshMarketScan) {
+    return {
+      decision: FUNNEL_REQUEST_DECISIONS.OPEN,
+      shouldOpen: true,
+      reason: 'Açık piyasa taraması / aday çıkarma talebi.',
+      score,
+      signals,
+    };
+  }
+
+  if (complexity.required === true && score >= threshold) {
+    return {
+      decision: FUNNEL_REQUEST_DECISIONS.OPEN,
+      shouldOpen: true,
+      reason: `Karar seviyesi araştırma (skor ${score}/${threshold}: ${signals.join(', ') || '-'}).`,
+      score,
+      signals,
+    };
+  }
+
+  return {
+    decision: FUNNEL_REQUEST_DECISIONS.SKIP_NOT_SCREENING,
+    shouldOpen: false,
+    reason: `Piyasa-geneli aday araması değil (skor ${score}/${threshold}).`,
+    score,
+    signals,
+  };
+}
+
 function normalizeSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase().replace(/\.IS$/i, '');
 }
@@ -434,6 +509,8 @@ function verifyAnswerSymbols(funnel, answerText, { stopwords = DEFAULT_SYMBOL_ST
 module.exports = {
   FUNNEL_STAGES,
   NARROWING_STAGES,
+  FUNNEL_REQUEST_DECISIONS,
+  buildFunnelRequestGate,
   STAGE_REJECTION_REASONS,
   ALL_REJECTION_REASONS,
   DATA_GAP_REASONS,

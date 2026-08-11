@@ -184,3 +184,72 @@ describe('giriş kaçsa bile çıkış yakalar (asıl emniyet supabı)', () => {
     });
   }
 });
+
+describe('kullanıcının adıyla verdiği semboller — karşılaştırma sıralama değildir', () => {
+  // GERÇEK VAKA (11 Ağustos 2026, ajan monitörü):
+  // "BRSAN ve MEYSU hakkında son haberleri tara ve karşılaştır" isteğinde
+  // web_search iki kez çalıştı (17 + 19 citation) ama cevaptaki "- BRSAN: İZLE"
+  // ve "1. BRSAN ve MEYSU için teknik seviye haritası" satırları sıralama
+  // çapalarına düştü. Kapı ateşledi, ikinci bir LLM turu boşuna yandı ve nihai
+  // cevap kullanıcının hiç istemediği bir sıralamayı "geri çekerek" başladı.
+  // Kapı ADAY SEÇİMİNİ yönetir; evren yoksa yönetilecek seçim de yoktur.
+  const newsComparison = [
+    '## Hızlı Özet',
+    '- BRSAN: Haber akışı kurumsal; bilanço ve kârlılık önde.',
+    '- MEYSU: Halka arz sonrası gelişmeler ve hukuki süreç.',
+    '',
+    '## Son karar',
+    '- BRSAN: İZLE',
+    '- MEYSU: RİSKLİ / BEKLE',
+    '',
+    'İstersen bir sonraki adımda:',
+    '1. BRSAN ve MEYSU için teknik seviye haritası',
+    '2. Bilanço haberlerinin fiyatlanma durumu',
+  ].join('\n');
+
+  it('kullanıcı iki sembolü de adıyla verdiyse kapı ateşlemez', () => {
+    const result = evaluateUngovernedRankingGate(
+      'BRSAN ve MEYSU hakkında son haberleri tara ve karşılaştır',
+      newsComparison,
+      [toolEvent('web_search'), toolEvent('get_stock_price')],
+    );
+    expect(result).toBeNull();
+  });
+
+  it('cevap kullanıcının vermediği bir kod getirirse kapı yine ateşler', () => {
+    // Evren genişledi: TUREX kullanıcıdan gelmedi → bu bir aday seçimidir.
+    const result = evaluateUngovernedRankingGate(
+      'BRSAN ve MEYSU hakkında son haberleri tara ve karşılaştır',
+      `${newsComparison}\n- TUREX: bunlardan daha iyi`,
+      [toolEvent('web_search'), toolEvent('get_stock_price')],
+    );
+    expect(result).toBeTruthy();
+    expect(result.status).toBe('BLOCKED_UNGOVERNED_RANKING');
+  });
+
+  it('açık sıralama talebinde kaçış kapalıdır', () => {
+    const result = evaluateUngovernedRankingGate(
+      'BRSAN ve MEYSU hisselerinden hangisi daha iyi, sırala',
+      newsComparison,
+      [toolEvent('web_search')],
+    );
+    expect(result).toBeTruthy();
+    expect(result.status).toBe('BLOCKED_UNGOVERNED_RANKING');
+  });
+
+  it('cevapta üstünlük dili varsa kaçış kapalıdır', () => {
+    const result = evaluateUngovernedRankingGate(
+      'BRSAN ve MEYSU karşılaştır',
+      `${newsComparison}\n\nBunlar bugünün en sağlam 2 hissesi.`,
+      [toolEvent('web_search')],
+    );
+    expect(result).toBeTruthy();
+    expect(result.status).toBe('BLOCKED_UNGOVERNED_RANKING');
+  });
+
+  it('kapı hâlâ sıralama olarak TANIR — sadece yönetim gereği düşer', () => {
+    // responseContainsEquityRanking davranışı değişmemeli: metin liste
+    // şeklindedir; kaçış kapının SONUCUNDA olur, tespitinde değil.
+    expect(responseContainsEquityRanking(newsComparison)).toBe(true);
+  });
+});
