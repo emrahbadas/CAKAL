@@ -50,5 +50,6 @@
       "dist/**/*",
       "electron/**/*"
     ]
-  }
+  },
+  "license": "BUSL-1.1"
 }

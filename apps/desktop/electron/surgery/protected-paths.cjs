@@ -26,6 +26,10 @@ const PROTECTED_PATHS = [
   // Ürünün kimliği ve anayasası — cerrah bunlara dokunamaz.
   'apps/desktop/electron/cakal-identity.cjs',
   'apps/desktop/electron/surgery/capability-policy.cjs',
+  // Lisans, anayasanın hukuki ikizidir: aynı sınırları sözleşmeyle bağlar.
+  // Anayasayı koruyup lisansı korumamak boşluk olurdu — mekanizma sökülemiyorsa
+  // yükümlülük de sökülememeli.
+  'LICENSE',
   // Cerrahi altyapının kendisi — cerrah kendi kapısını/kancasını ayarlayamaz
   'scripts/preflight.cjs',
   'apps/desktop/electron/surgery/protected-paths.cjs',

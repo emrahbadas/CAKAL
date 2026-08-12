@@ -15,28 +15,53 @@ Additional Use Grant
 
 Subject to the terms and conditions of this License, the Licensor hereby grants
 you the right to use, copy, modify, and redistribute the Licensed Work,
-provided that all of the following conditions are met:
+provided that all of the following conditions are met.
 
-1. **Project Name:** The name "ÇAKAL" (or "CAKAL") must not be removed or
-   replaced when distributing or deploying a modified version of the Licensed
-   Work. Any modified version must clearly state that it is a derivative of
-   ÇAKAL and must not misrepresent itself as the original work.
+These conditions mirror the product charter that is encoded in the Licensed
+Work itself, in `apps/desktop/electron/cakal-identity.cjs` (the `IMMUTABLE_CORE`
+list, referred to as the "ürün anayasası" / product constitution). The charter
+is enforced mechanically by the preflight gate and the protected-paths
+mechanism; these license conditions bind the same limits contractually, so that
+removing the mechanism does not remove the obligation.
 
-2. **Purpose:** The core purpose of the Licensed Work — a personal, single-user
-   AI-powered investment research and opportunity assistant — must not be
-   changed to a multi-tenant SaaS product, a fully automated trading system,
-   or any application that autonomously executes financial transactions on
-   behalf of users without explicit per-action user confirmation.
+1. **Project Name and Identity:** The name "ÇAKAL" (or "CAKAL") must not be
+   removed or replaced when distributing or deploying a modified version of the
+   Licensed Work. Any modified version must clearly state that it is a
+   derivative of ÇAKAL and must not misrepresent itself as the original work.
 
-3. **Surgical Pipeline Integrity:** The `surgery/` directory and its
-   `protected-paths` mechanism must not be removed, disabled, or circumvented
-   in any distributed or deployed version. The two-layer permission gate
-   (hard-block layer + user-confirmation layer) that governs source-code
-   modifications must remain fully operational.
+2. **Core Purpose:** The core purpose of the Licensed Work — a personal,
+   single-user AI-powered research and opportunity assistant that researches,
+   analyses and advises — must not be changed. In particular it must not be
+   turned into a multi-tenant SaaS product, a general-purpose autonomous
+   operator, or an automated trading system.
 
-4. **Decision Guards:** The deterministic decision locks (`decision-guards.cjs`,
-   `karar kilidi`) that prevent AL/SAT (BUY/SELL) verdicts without sufficient
-   fresh evidence must not be removed or weakened.
+3. **No Execution on Real Assets:** The Licensed Work must not be given the
+   ability to execute transactions on real money, securities, crypto assets or
+   financial accounts, nor to place, modify or cancel orders or transfers. This
+   condition is absolute: per-action user confirmation does not lift it. More
+   generally, the Licensed Work must not be extended to perform actions on the
+   user's behalf whose consequences are hard to reverse, public, financial or
+   legal in nature.
+
+4. **Evidence Discipline:** The deterministic decision locks (`decision-guards.cjs`,
+   "karar kilidi") that prevent AL/SAT (BUY/SELL) verdicts without sufficient
+   fresh evidence must not be removed or weakened. Financial assessments must
+   continue to carry source, evidence and confidence; where data is insufficient,
+   the Licensed Work must continue to withhold a definite verdict rather than
+   produce one.
+
+5. **Security and Permission Gates:** The following must not be removed,
+   disabled or circumvented in any distributed or deployed version: the
+   `surgery/` directory and its `protected-paths` mechanism; the two-layer
+   permission gate (hard-block layer + user-confirmation layer) that governs
+   source-code modifications; the sandbox plugin runner; the Secret Broker; the
+   preflight gate; and the safe-path and command guards. The Licensed Work must
+   not be enabled to modify its own source code directly, and any coding agent
+   used for maintenance must remain a temporary surgeon rather than becoming a
+   persistent agent or a second identity.
+
+6. **Audit Integrity:** Audit and activity records must not be deleted, hidden
+   or rendered unverifiable.
 
 ---
 

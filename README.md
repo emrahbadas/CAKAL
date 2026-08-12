@@ -156,7 +156,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 888 birim testi (68 dosya)
+npm test               # 895 birim testi (69 dosya)
 cd apps/desktop && npm run dev
 ```
 
@@ -225,16 +225,20 @@ Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama C
 
 [Business Source License 1.1](LICENSE) — 1 Ocak 2030'da **MIT**'e döner.
 
-Kopyalama, değiştirme ve yeniden dağıtım serbest; dört şartla:
+Kopyalama, değiştirme ve yeniden dağıtım serbest; altı şartla:
 
 | Şart | Ne demek |
 |---|---|
-| **İsim** | "ÇAKAL" adı kaldırılamaz. Türev sürüm kendini orijinal gibi gösteremez |
-| **Amaç** | Tek kullanıcılık kişisel araştırma asistanı olarak kalır. Çok kiracılı SaaS'a, tam otomatik alım-satım sistemine veya kullanıcı onayı olmadan finansal işlem yapan bir uygulamaya dönüştürülemez |
-| **Cerrahi hat** | `surgery/` dizini ve `protected-paths` mekanizması kaldırılamaz, devre dışı bırakılamaz. İki katmanlı izin kapısı çalışır durumda kalmalı |
-| **Karar kilitleri** | `decision-guards.cjs` içindeki deterministik kilitler — yeterli taze kanıt olmadan AL/SAT çıkmasını engelleyen kapılar — kaldırılamaz veya zayıflatılamaz |
+| **İsim ve kimlik** | "ÇAKAL" adı kaldırılamaz. Türev sürüm kendini orijinal gibi gösteremez |
+| **Amaç** | Tek kullanıcılık kişisel araştırma asistanı olarak kalır. Çok kiracılı SaaS'a, genel amaçlı otonom operatöre veya otomatik alım-satım sistemine dönüştürülemez |
+| **Gerçek varlıkta işlem yok** | Para, menkul kıymet, kripto veya finansal hesap üzerinde işlem yeteneği eklenemez. **Koşulsuzdur** — her işlemde kullanıcı onayı alınması bu yasağı kaldırmaz |
+| **Kanıt disiplini** | `decision-guards.cjs` kilitleri — yeterli taze kanıt olmadan AL/SAT çıkmasını engelleyen kapılar — kaldırılamaz, zayıflatılamaz. Veri yetersizse hüküm üretilmemeye devam eder |
+| **Güvenlik kapıları** | `surgery/` + `protected-paths`, iki katmanlı izin kapısı, sandbox plugin çalıştırıcı, Secret Broker, preflight, safe-path ve komut korumaları çalışır kalmalı. ÇAKAL kendi kaynak kodunu doğrudan değiştiremez; cerrah geçici kalır |
+| **Denetim bütünlüğü** | Denetim ve aktivite kayıtları silinemez, gizlenemez, doğrulanamaz hâle getirilemez |
 
-Son iki şart tesadüfi değil: bu depodaki güvenlik değeri kapıların varlığından gelir. Kapıları sökülmüş bir ÇAKAL, ÇAKAL değildir.
+Bu şartlar keyfî değil: **ürün anayasasının hukuki ikizi**. Aynı sınırlar `apps/desktop/electron/cakal-identity.cjs` içindeki `IMMUTABLE_CORE` listesinde kodla, preflight ve protected-paths ile mekanik olarak zorlanıyor. Lisans aynı sınırları sözleşmeyle bağlar — böylece mekanizmayı sökmek yükümlülüğü söküp atmaz. İkisinin ayrışması `license-charter-alignment.test.mjs` ile testte yakalanır; `LICENSE` de cerrahın dokunamayacağı korunan yollardadır.
+
+Kapıları sökülmüş bir ÇAKAL, ÇAKAL değildir.
 
 Şartların dışında bir kullanım için Lisans Verenden ticari lisans alınmalıdır.
 
