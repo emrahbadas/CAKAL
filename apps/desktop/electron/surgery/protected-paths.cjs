@@ -28,8 +28,12 @@ const PROTECTED_PATHS = [
   'apps/desktop/electron/surgery/capability-policy.cjs',
   // Lisans, anayasanın hukuki ikizidir: aynı sınırları sözleşmeyle bağlar.
   // Anayasayı koruyup lisansı korumamak boşluk olurdu — mekanizma sökülemiyorsa
-  // yükümlülük de sökülememeli.
+  // yükümlülük de sökülememeli. SECURITY_BOUNDARIES.md lisansın 3. şartı
+  // tarafından atıfla bağlayıcıdır: korunan işlevlerin listesi oradadır, yani
+  // o dosyayı düzenlemek lisans şartını düzenlemekle aynı şeydir.
   'LICENSE',
+  'SECURITY_BOUNDARIES.md',
+  'TRADEMARKS.md',
   // Cerrahi altyapının kendisi — cerrah kendi kapısını/kancasını ayarlayamaz
   'scripts/preflight.cjs',
   'apps/desktop/electron/surgery/protected-paths.cjs',

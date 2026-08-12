@@ -156,7 +156,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 895 birim testi (69 dosya)
+npm test               # 906 birim testi (69 dosya)
 cd apps/desktop && npm run dev
 ```
 
@@ -225,22 +225,24 @@ Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama C
 
 [Business Source License 1.1](LICENSE) — 1 Ocak 2030'da **MIT**'e döner.
 
-Kopyalama, değiştirme ve yeniden dağıtım serbest; altı şartla:
+**Kopyalama, değiştirme, türev üretme ve non-production kullanım koşulsuz serbesttir** — BUSL bu hakları zaten verir. Şartlar yalnızca **Production Use**'a (canlı, gerçek kullanım) bağlıdır:
 
 | Şart | Ne demek |
 |---|---|
-| **İsim ve kimlik** | "ÇAKAL" adı kaldırılamaz. Türev sürüm kendini orijinal gibi gösteremez |
-| **Amaç** | Tek kullanıcılık kişisel araştırma asistanı olarak kalır. Çok kiracılı SaaS'a, genel amaçlı otonom operatöre veya otomatik alım-satım sistemine dönüştürülemez |
-| **Gerçek varlıkta işlem yok** | Para, menkul kıymet, kripto veya finansal hesap üzerinde işlem yeteneği eklenemez. **Koşulsuzdur** — her işlemde kullanıcı onayı alınması bu yasağı kaldırmaz |
-| **Kanıt disiplini** | `decision-guards.cjs` kilitleri — yeterli taze kanıt olmadan AL/SAT çıkmasını engelleyen kapılar — kaldırılamaz, zayıflatılamaz. Veri yetersizse hüküm üretilmemeye devam eder |
-| **Güvenlik kapıları** | `surgery/` + `protected-paths`, iki katmanlı izin kapısı, sandbox plugin çalıştırıcı, Secret Broker, preflight, safe-path ve komut korumaları çalışır kalmalı. ÇAKAL kendi kaynak kodunu doğrudan değiştiremez; cerrah geçici kalır |
-| **Denetim bütünlüğü** | Denetim ve aktivite kayıtları silinemez, gizlenemez, doğrulanamaz hâle getirilemez |
+| **Tek kullanıcı** | Kişisel, tek kullanıcılık uygulama olarak çalıştırılır; çok kiracılı, barındırılan, yönetilen veya SaaS teklifi olarak sunulmaz |
+| **Finansal işlem yok** | Gerçek para, menkul kıymet, kripto veya finansal hesap üzerinde emir/transfer/işlem yapılamaz; broker, borsa veya ödeme sistemine bu amaçla bağlanamaz. **Koşulsuzdur** — kullanıcı onayı almak bu şartı karşılamaz |
+| **Güvenlik korumaları** | [SECURITY_BOUNDARIES.md](SECURITY_BOUNDARIES.md)'de sürüm bazında tanımlanan korumalar kaldırılamaz, atlatılamaz, zayıflatılamaz. Bileşenler **yeniden adlandırılabilir veya taşınabilir** — eşdeğer ya da daha güçlü koruma çalışır kaldığı sürece |
+| **Atıf** | Değiştirilmiş canlı dağıtım açıkça şunu belirtmeli: *"Derived from ÇAKAL — this is not an official version."* |
 
-Bu şartlar keyfî değil: **ürün anayasasının hukuki ikizi**. Aynı sınırlar `apps/desktop/electron/cakal-identity.cjs` içindeki `IMMUTABLE_CORE` listesinde kodla, preflight ve protected-paths ile mekanik olarak zorlanıyor. Lisans aynı sınırları sözleşmeyle bağlar — böylece mekanizmayı sökmek yükümlülüğü söküp atmaz. İkisinin ayrışması `license-charter-alignment.test.mjs` ile testte yakalanır; `LICENSE` de cerrahın dokunamayacağı korunan yollardadır.
+Bu şartlar keyfî değil: **ürün anayasasının hukuki ikizi**. Aynı sınırlar `cakal-identity.cjs` içindeki `IMMUTABLE_CORE` listesinde kodla, preflight ve protected-paths ile mekanik olarak zorlanıyor. Lisans işlevi bağlar, `SECURITY_BOUNDARIES.md` işlevi tanımlar, uygulamayı yalnız yol gösterici olarak listeler — böylece bir dosyayı yeniden adlandırmak koruma kaldırmakla aynı ihlal sayılmaz. Üç belgenin ayrışması `license-charter-alignment.test.mjs` ile testte yakalanır; üçü de cerrahın dokunamayacağı korunan yollardadır.
 
-Kapıları sökülmüş bir ÇAKAL, ÇAKAL değildir.
+**Marka ayrıdır.** BUSL kod için hak verir, isim için vermez — bkz. [TRADEMARKS.md](TRADEMARKS.md). Fork kendi adını alır, nereden türediğini söyler. Bir fork'u aynı adı taşımaya *zorlamak* kullanıcıyı yanıltırdı: korumaları sökülmüş bir sürüm "ÇAKAL" diye dolaşır, itibar zararı asıl esere dönerdi.
 
-Şartların dışında bir kullanım için Lisans Verenden ticari lisans alınmalıdır.
+**Dürüst olmak gerekirse:** Change Date'te (2030-01-01) eser MIT'e döner ve **bu şartlar lisans yükümlülüğü olmaktan çıkar**. BUSL'nin tasarımı budur; MIT özgürlük verir, muhafızlara sadakat yemini ettirmez. O tarihten sonra kalan tek koruma markadır — kilitleri sökülmüş bir türev dağıtılabilir, ama ona "ÇAKAL" denemez.
+
+Şartların dışında bir Production Use için Lisans Verenden ticari lisans alınmalıdır: emrahbadas@gmail.com
+
+> Bu bir hukukçu incelemesinden geçmemiştir. Ticari yayım öncesi fikrî mülkiyet/yazılım lisansları alanında çalışan bir avukatın gözden geçirmesi önerilir.
 
 ---
 
