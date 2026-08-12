@@ -3,9 +3,23 @@
 // Sprint 10+15: Real Data Pipeline + Cookie Persistence
 // ============================================================
 
-const { BrowserWindow, app, session } = require('electron');
 const fs = require('fs');
 const path = require('path');
+
+/**
+ * Electron TEMBEL yükleniyor: modülün YÜKLENMESİ binary'ye bağlı olmamalı.
+ * `require('electron')` yalnız bir yol dizesi döndürür ama index.js binary
+ * yoksa "Electron failed to install correctly" diye PATLAR. Bu modülden
+ * yalnız saf fonksiyonları test eden bir dosya bile, sırf import zinciri
+ * yüzünden binary'ye muhtaç kalıyordu (CI'da ölçüldü: 65 dosya geçti,
+ * marketplace-scrapers.test.mjs bu yüzden düştü). Tarayıcı gerçekten
+ * açılana kadar electron'a dokunmuyoruz.
+ */
+let electronModule = null;
+function electron() {
+  if (!electronModule) electronModule = require('electron');
+  return electronModule;
+}
 
 // ── Scraper Pool ──
 let scraperWindow = null;
@@ -13,10 +27,19 @@ let isScraperBusy = false;
 const SCRAPER_TIMEOUT = 25000; // 25 saniye max
 
 // ── Cookie Persistence ──
-const SCRAPER_USER_DATA_DIR = app?.getPath
-  ? app.getPath('userData')
-  : path.resolve(process.cwd(), '.cakal-sandbox', 'runtime');
-const COOKIE_FILE = path.join(SCRAPER_USER_DATA_DIR, 'scraper-cookies.json');
+// Yol da tembel: app.getPath ancak Electron ayaktayken anlamlı.
+let scraperUserDataDir = null;
+function cookieFile() {
+  if (!scraperUserDataDir) {
+    let fromApp = null;
+    try {
+      const { app } = electron();
+      if (app && typeof app.getPath === 'function') fromApp = app.getPath('userData');
+    } catch (_) { /* Electron yoksa sandbox altına düşülür */ }
+    scraperUserDataDir = fromApp || path.resolve(process.cwd(), '.cakal-sandbox', 'runtime');
+  }
+  return path.join(scraperUserDataDir, 'scraper-cookies.json');
+}
 
 /**
  * Load saved cookies into the scraper session.
@@ -24,8 +47,8 @@ const COOKIE_FILE = path.join(SCRAPER_USER_DATA_DIR, 'scraper-cookies.json');
  */
 async function loadCookies(win) {
   try {
-    if (!fs.existsSync(COOKIE_FILE)) return 0;
-    const raw = fs.readFileSync(COOKIE_FILE, 'utf-8');
+    if (!fs.existsSync(cookieFile())) return 0;
+    const raw = fs.readFileSync(cookieFile(), 'utf-8');
     const cookies = JSON.parse(raw);
     if (!Array.isArray(cookies) || cookies.length === 0) return 0;
     const ses = win.webContents.session;
@@ -68,8 +91,8 @@ async function saveCookies(win, domain) {
     // Existing saved cookies (other domains)
     let existing = [];
     try {
-      if (fs.existsSync(COOKIE_FILE)) {
-        existing = JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf-8'));
+      if (fs.existsSync(cookieFile())) {
+        existing = JSON.parse(fs.readFileSync(cookieFile(), 'utf-8'));
         if (!Array.isArray(existing)) existing = [];
       }
     } catch { existing = []; }
@@ -79,7 +102,7 @@ async function saveCookies(win, domain) {
     // Add fresh cookies for this domain
     const domainCookies = allCookies.filter(c => c.domain.includes(domainRoot));
     const merged = [...otherDomains, ...domainCookies];
-    fs.writeFileSync(COOKIE_FILE, JSON.stringify(merged, null, 2), 'utf-8');
+    fs.writeFileSync(cookieFile(), JSON.stringify(merged, null, 2), 'utf-8');
     console.log(`[Scraper:Cookies] Saved ${domainCookies.length} cookies for ${domainRoot} (total: ${merged.length})`);
     return domainCookies.length;
   } catch (e) {
@@ -93,8 +116,8 @@ async function saveCookies(win, domain) {
  */
 function hasSavedCookies(domain) {
   try {
-    if (!fs.existsSync(COOKIE_FILE)) return false;
-    const raw = fs.readFileSync(COOKIE_FILE, 'utf-8');
+    if (!fs.existsSync(cookieFile())) return false;
+    const raw = fs.readFileSync(cookieFile(), 'utf-8');
     const cookies = JSON.parse(raw);
     const domainRoot = domain.replace(/^www\./, '');
     return cookies.some(c => c.domain.includes(domainRoot));
@@ -111,7 +134,7 @@ function getScraperWindow() {
     return { win: scraperWindow, isNew: false };
   }
 
-  scraperWindow = new BrowserWindow({
+  scraperWindow = new (electron().BrowserWindow)({
     width: 1280,
     height: 800,
     show: false, // Gizli pencere
