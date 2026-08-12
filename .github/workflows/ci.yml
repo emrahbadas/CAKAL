@@ -7,10 +7,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Bu job typecheck + vitest + audit çalıştırır; hiçbiri Electron
+      # binary'sine dokunmaz (testler electron modülünü import etmiyor,
+      # TypeScript tipleri npm paketinden geliyor). Postinstall'ın GitHub'dan
+      # ~100 MB binary indirmesi yalnız süre ve kırılganlık ekliyordu:
+      # 2026-08-12'de "RequestError: socket hang up" ile npm ci düştü,
+      # testler hiç başlamadı. İndirmeyi atlayınca bu hata sınıfı kalkıyor.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      # DİKKAT: node-version bilerek 20. Uygulama CI'ın Node'unda değil
+      # Electron 31.3.1'in gömülü Node 20'sinde çalışıyor; CI'ı 22'ye çıkarmak
+      # @supabase/* EBADENGINE uyarısını susturur ama CI'ı üretimden uzaklaştırır.
+      # Node 22'ye geçiş Electron 35+ yükseltmesine bağlı — bkz. README yol haritası.
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm

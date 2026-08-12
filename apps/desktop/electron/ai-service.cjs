@@ -218,11 +218,21 @@ async function getChartJSScripts() {
 let electronNet = null;
 let electronSession = null;
 let scraper = null;
+// scraper.cjs artık electron'u tembel yüklüyor, bu yüzden net/session'dan AYRI
+// require ediliyor. Eskiden ikisi aynı try bloğundaydı: Electron binary'si
+// yoksa require('electron') patlıyor, catch scraper'ı da null bırakıyordu ve
+// determineOpportunitySources sessizce 'akakce' kaynağını düşürüyordu. Yani
+// yönlendirme, bir import'un kazara başarılı olmasına bağlıydı. Scraper'ın
+// çalışma anındaki başarısı çağrı yerinde zaten try/catch ile ele alınıyor.
+try {
+  scraper = require('./scraper.cjs');
+} catch (e) {
+  console.warn('[AI] scraper.cjs yüklenemedi:', e.message);
+}
 try {
   const electron = require('electron');
   electronNet = electron.net;
   electronSession = electron.session;
-  scraper = require('./scraper.cjs');
 } catch (e) {
   // Not in Electron context — fallback to Node fetch
 }
