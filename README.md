@@ -4,9 +4,36 @@
   <img src="docs/assets/cakal-logo.png" alt="ÇAKAL Finans Asistanım" width="720">
 </p>
 
+<p align="center">
+  <a href="https://github.com/emrahbadas/CAKAL/actions/workflows/ci.yml"><img src="https://github.com/emrahbadas/CAKAL/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BUSL--1.1-blue.svg" alt="License: BUSL-1.1"></a>
+  <img src="https://img.shields.io/badge/Electron-31-47848F.svg?logo=electron&logoColor=white" alt="Electron 31">
+  <img src="https://img.shields.io/badge/agent-58%20tools-black.svg" alt="58 tools">
+  <img src="https://img.shields.io/badge/arayüz-Türkçe-e30a17.svg" alt="Türkçe">
+</p>
+
 > Kurt gibi konuşur; sermayeye yaklaşırken liman başkanı gibi evrak ister.
 
 ÇAKAL, tek kullanıcı için tasarlanmış, Electron tabanlı bir **kişisel yapay zekâ araştırma ve fırsat asistanıdır**. BIST, döviz, altın, kripto, emlak ve e-ticaret fırsatlarını çoklu kaynaktan araştırır; teknik görünüm, bilanço, haber akışı ve riskleri birlikte değerlendirir — ama yatırım kararını asla kullanıcının yerine vermez.
+
+**Ayırt edici yanı tek cümlede:** yapay zekâ ajanının "AL" diyebilmesi için, o iddiayı destekleyen kanıtı gerçekten bir aracın üretmiş olması gerekir — bu bir prompt talimatı değil, **deterministik kapı**dır. Kanıt yoksa hüküm de yoktur.
+
+<details>
+<summary><b>🇬🇧 In English</b></summary>
+
+**ÇAKAL** is a single-user desktop **AI financial research assistant** — an Electron app driving an LLM tool-calling agent over the Turkish stock market (BIST), FX, gold, crypto, real estate and e-commerce sources.
+
+Its point of difference is a **deterministic evidence gate**. The agent cannot emit a BUY/SELL verdict unless real tools actually produced fresh, entity-matched evidence for that specific claim. This is not a system-prompt instruction the model can talk its way around — it is a machine-checked **research contract**: the plan is locked before execution, evidence is recorded in a ledger with per-class TTL and entity scope, and coverage is computed from the ledger rather than from what the model claims it did.
+
+Three ideas you may find reusable regardless of the finance domain:
+
+- **Evidence classes, not tool names.** A guard that asks "did `get_price` run?" is trivially fooled. Ours asks "does a `CURRENT_EQUITY_PRICE` measurement exist, for *this* ticker, within its TTL?"
+- **Partial degradation instead of refusal.** Missing evidence does not silence the answer; it downgrades the *verdict* (BUY → REVIEW) while qualitative findings survive.
+- **Plan-lock with a free path.** The required evidence is locked; the route to it is not. A blocked source can be replaced via an amendment — but the bar can never be lowered mid-run.
+
+The UI, prompts and documentation are in Turkish. The architecture notes below are Turkish as well; the code and identifiers are English.
+
+</details>
 
 ## Çakalın Doğası
 
@@ -156,7 +183,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 906 birim testi (69 dosya)
+npm test               # 907 birim testi (69 dosya)
 cd apps/desktop && npm run dev
 ```
 

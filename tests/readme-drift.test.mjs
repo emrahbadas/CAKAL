@@ -43,12 +43,21 @@ describe('README — araç sayısı', () => {
   });
 
   it('README\'de geçen HER araç sayısı gerçek sayıya eşit', () => {
-    // Sayı iki yerde geçiyor: yetenek maddesi ve mimari diyagramı. İkisi de
-    // güncellenmeli — biri güncellenip diğeri unutulursa bu test düşer.
+    // Sayı üç yerde geçiyor: yetenek maddesi, mimari diyagramı ve rozet.
+    // Hepsi güncellenmeli — biri güncellenip diğeri unutulursa bu test düşer.
     const mentions = [...readme.matchAll(/(\d+)\s+tool/g)].map((m) => Number(m[1]));
     expect(mentions.length).toBeGreaterThan(0);
     for (const mentioned of mentions) {
       expect(mentioned, `README ${mentioned} tool diyor, gerçek ${defined}`).toBe(defined);
+    }
+  });
+
+  it('rozetteki sayı da kilitli (URL kodlaması boşluğu gizliyordu)', () => {
+    // shields.io rozeti boşluğu %20 olarak kodluyor: "agent-58%20tools".
+    // Üstteki \s+ kalıbı bunu görmez — rozet sessizce eskiyebilirdi.
+    const badges = [...readme.matchAll(/-(\d+)%20tools?-/g)].map((m) => Number(m[1]));
+    for (const badge of badges) {
+      expect(badge, `Rozet ${badge} tool diyor, gerçek ${defined}`).toBe(defined);
     }
   });
 });
