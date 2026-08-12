@@ -2127,10 +2127,24 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
       // aranır. Canlı testte KCHOL'e "stop ₺182.1" verilmişti; bu sayıyı
       // hiçbir araç üretmemişti ve karar kilidi düz kelime araması olduğu için
       // "stop" yazılmış olması yeterli sayılıyordu.
+      // Sözleşme durumu ONARIM TURUNDAN SONRA yeniden hesaplanır: onarım kanıt
+      // eklemiş olabilir, kapıya bayat kapanış vermek haksız blok üretirdi.
+      let finalResearchStatus = null;
+      const contractAtClose = researchRun.get();
+      if (contractAtClose.planned) {
+        finalResearchStatus = evaluateResearchContract(
+          contractAtClose,
+          buildLedgerForRepair(researchRun.events(), Date.now()),
+          Date.now(),
+        ).status;
+      }
+
       const priceLevelLock = evaluatePriceLevelProvenanceGate(
         payload.message,
         response,
         researchRun.events(),
+        Date.now(),
+        { researchStatus: finalResearchStatus },
       );
       if (priceLevelLock) {
         commanderEmitActivity({

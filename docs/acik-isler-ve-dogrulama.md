@@ -40,8 +40,10 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 
 ### 3.2 Kanıt kalitesi
 
-- **Seviye provenance derinleşmedi.** Kapı hâlâ "o sembolde ölçüm var mı" soruyor, "**bu rakam o ölçümden mi türedi**" sormuyor. Canlı vakadaki hata buradan geldi: 555 TL'ye "MA20 altı" dendi, oysa MA50 ≈ 553'tü ve o turda MA20 hiç ölçülmemişti.
-- **ChatGPT'nin 3 numaralı kabul testi UYGULANMADI:** `research_status != COMPLETE` **ve** istek giriş/stop/hedef içeriyorsa **rakamsal seviye üretilememeli**. Bugün yalnız AL/SAT hükmü iniyor; giriş/stop rakamları hâlâ çıkabiliyor. Listedeki en değerli tekil kural buydu, açık kaldı.
+- ~~**Seviye provenance derinleşmedi.**~~ **YAPILDI (12 Ağustos 2026).** Kanıt olayı artık `measurements: { SEMBOL: [sayılar] }` taşıyor (`extractMeasurements`); kapı ikinci soruyu soruyor: cevaptaki rakam, o sembolde ölçülen bir değerle **aynı büyüklük mertebesinde mi**. Değilse `notDerivedSymbols` ile bloklanıyor. Canlı vakadaki "553 TL'lik hissede stop 1 TL" sınıfı hata artık geçmiyor.
+  **SINIR — abartılmasın:** bu bir çapa kontrolüdür, türetim İSPATI değildir. Band bilerek geniş (ölçümün 0.5×–2× aralığı), çünkü dar band meşru hedefi/stopu bloklar ve kapıyı gürültüye çevirir. Tam ispat modelin formülü bildirmesini gerektirir; o yapılmadı. Ölçüm değeri taşımayan eski olaylarda eski davranış korunur (yanlış pozitif üretmemek için).
+- ~~**ChatGPT'nin 3 numaralı kabul testi UYGULANMADI**~~ **YAPILDI (12 Ağustos 2026).** `evaluatePriceLevelProvenanceGate` artık `opts.researchStatus` alıyor; `COMPLETE` değilse kanıt tam olsa bile somut giriş/stop/hedef rakamı çıkamıyor. `main.cjs` bu durumu **onarım turundan sonra** yeniden hesaplayıp geçiriyor (bayat kapanış haksız blok üretirdi). Yazılı kuraldan bilerek daha geniş uygulandı: kural "istek giriş/stop içeriyorsa" diyordu, koşul "cevap somut seviye içeriyorsa" oldu — zarar isteğin şeklinden değil, cevaptaki rakamdan doğar. Sözleşme kurulmayan basit turlarda (`researchStatus` null) kural devreye girmez.
+  Test: `tests/level-derivation.test.mjs` (16 test).
 - **Kaynak otorite katmanı yok.** Alan adı tekilleştirmesi var; otorite derecesi ve ortak köken tespiti yok — 31 farklı alan adı hâlâ 31 bağımsız kaynak demek değil.
 - **`evidenceConfidence` sabit** (`success ? 0.78 : 0.35`). Gerçek ölçüm olmadan `dataConfidence` kapısı ayırt etmiyor.
 - **Eşik kalibrasyonu için geriye dönük test motoru yok** (`backtests/` altında yalnız örnek JSON).

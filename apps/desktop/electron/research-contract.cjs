@@ -684,6 +684,46 @@ function extractAsOf(result) {
  * sözcükleri hisse sanan yanlış pozitifler doğar. Çözümleme, bilinen sembol
  * kümesine sahip olan aracın kendi sınırında yapılır.
  */
+// Bir aracın ürettiği SAYISAL ölçümler, sembol bazında.
+// NEDEN: kanıt defteri "ölçüm YAPILDI MI" sorusunu cevaplıyordu; "cevaptaki bu
+// RAKAM o ölçümden mi geldi" sorusunu cevaplayamıyordu. Canlı vakada 555 TL'ye
+// "MA20 altı" dendi; MA50 ≈ 553'tü ve o turda MA20 hiç ölçülmemişti. Ölçüm
+// vardı, rakam ondan türememişti — kapı geçirdi. Değerler kaydedilmeden bu
+// ayrım yapılamaz.
+const MEASUREMENT_FIELDS = Object.freeze([
+  'price', 'currentPrice', 'lastPrice', 'last', 'close', 'previousClose',
+  'ma20', 'ma50', 'periodHigh', 'periodLow', 'high', 'low',
+]);
+
+function extractMeasurements(args = {}, result = null) {
+  const out = {};
+  const push = (symbol, value) => {
+    const s = String(symbol || '').trim().toUpperCase().replace(/\.IS$/i, '');
+    const n = Number(value);
+    if (!/^[A-Z0-9]{3,8}$/.test(s)) return;
+    if (!Number.isFinite(n) || n <= 0) return;
+    (out[s] = out[s] || []).push(n);
+  };
+
+  const data = result?.data || {};
+  // Tek sembollü sonuçta üst düzey ölçümler o sembole aittir.
+  const single = data.symbol || args.symbol || args.asset;
+  if (single) {
+    for (const field of MEASUREMENT_FIELDS) push(single, data[field]);
+    if (Array.isArray(data.recentCloses)) data.recentCloses.forEach((c) => push(single, c));
+    if (Array.isArray(data.levels)) data.levels.forEach((l) => push(single, l?.price));
+  }
+  // Pano/çoklu sonuçta her satır KENDİ sembolüne yazılır — entity boyutunun
+  // kanıt defterinde olduğu gibi, ölçüm de sembolüne bağlı olmalı.
+  const items = data.items || data.stocks;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      for (const field of MEASUREMENT_FIELDS) push(item?.symbol, item?.[field]);
+    }
+  }
+  return out;
+}
+
 function extractEntities(args = {}, result = null) {
   const out = new Set();
   const push = (v) => {
@@ -775,6 +815,7 @@ function createResearchRun(opts = {}) {
         type: 'tool_call',
         tool: toolName,
         entities: extractEntities(args, result),
+        measurements: extractMeasurements(args, result),
         evidenceClasses,
         universeScope: universeScopeFor(toolName),
         observedCount: Array.isArray(result?.data?.items) ? result.data.items.length : null,

@@ -169,7 +169,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 907 birim testi (69 dosya)
+npm test               # 923 birim testi (70 dosya)
 cd apps/desktop && npm run dev
 ```
 
@@ -218,7 +218,7 @@ Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama C
 ### Diğer
 
 - [ ] **Kaynak otorite katmanı:** alan adı tekilleştirmesi var, otorite derecesi ve ortak köken tespiti yok — 31 farklı alan adı hâlâ 31 bağımsız kaynak demek değil
-- [ ] **Seviye türetimi:** kapı şu an "o sembolde ölçüm var mı" soruyor; "bu rakam o ölçümden mi türedi" sormuyor
+- [x] **Seviye türetimi:** kapı artık İKİ soru soruyor. Kanıt olayı `measurements: { SEMBOL: [sayılar] }` taşıyor; cevaptaki rakam o sembolde ölçülen bir değerle aynı büyüklük mertebesinde değilse bloklanıyor (`notDerivedSymbols`). Ayrıca sözleşme `COMPLETE` değilse kanıt tam olsa bile somut giriş/stop/hedef rakamı çıkamıyor — hüküm kelimesi inse de rakam kaçabiliyordu, oysa "AL demedim ama stop 553 yaz" da uygulanabilir bir işlem talimatıdır. SINIR: bu çapa kontrolüdür, türetim ispatı değildir; band bilerek geniş (0.5×–2×) çünkü dar band meşru hedefi bloklar. Tam ispat modelin formülü bildirmesini gerektirir. ESKİ HÂLİ: kapı yalnız "o sembolde ölçüm var mı" soruyordu; canlı vakada 555 TL'ye "MA20 altı" dendi, MA50 ≈ 553'tü ve o turda MA20 hiç ölçülmemişti — ölçüm vardı, rakam ondan türememişti
 - [ ] **Sesli asistan — konuşma dışı ses:** süre kapısı tek öksürüğü eliyor; sürekli ritmik gürültü (masa tempo) hâlâ STT'ye gidiyor. Alt bant enerji oranı denendi ve ölçümle çürütüldü (konuşma 0.17, gürültü 0.07–0.30 — ayırmıyor). Gerçek çözüm periyodiklik/perde tespiti
 - [x] Değerleme girdileri (`get_valuation_multiples`) — net kâr/özkaynak artık gerçekten çıkarılıyor. İki bağımsız kusur vardı: aranan anahtar adları (`netKar`, `ozkaynak`) kalem tablosunda hiç tanımlı değildi (gerçekleri `netDonemKari`, `ozkaynaklar`), ve sektör argümanı geçilmediği için UFRS/UFRS_K gruplarında adaptör BANK'a düşüyordu. Hisse adedi gerektiren **mutlak** çarpanlar (F/K, PD/DD) hâlâ üretilmiyor — bu bilinçli, veri güvenilir değil
 - [x] **Sözleşme kapsamı konuşmadan devralınır:** `createResearchRun({ priorEntities })` → `requiresResearchContract(message, { priorEntities })`. **KAPSAM taşınır, KANIT taşınmaz** — hangi şirketler konuşuluyor bilgisi devreder, hangi ölçümler elde var bilgisi her istekte sıfırdan toplanır. Mesaj kendi sembolünü söylüyorsa devralma yapılmaz (kullanıcı kapsamı yeniden çizmiştir); devralma tek başına yetmez, yanına işlem/karşılaştırma/sıralama niyeti şart. Ayrıca `COMMANDER_FINANCE_DOMAIN_RE`'ye temel analiz sözlüğü (bilanço, mali tablo, değerleme, temettü, özkaynak, net borç, F/K, PD/DD, FAVÖK) ve `TICKER_STOPWORDS`'e döviz pariteleri eklendi. Ölçülen: "bilanço + fiyatlama karşılaştırması da yap" skor 0 → **skor 4, `coklu sirket (2, baglamdan)`**

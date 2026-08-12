@@ -1319,36 +1319,151 @@ function extractQuotedPriceLevels(response = '') {
   return found;
 }
 
-function evaluatePriceLevelProvenanceGate(message, response, events = [], now = Date.now()) {
+/**
+ * Cevaptaki seviye satırından SAYILARI çıkarır.
+ * Yüzdeler önce silinir: "%8 aşağıda" bir seviye değil, bir mesafedir.
+ */
+const CONCRETE_PRICE_SCAN_RE = new RegExp(CONCRETE_PRICE_RE.source, 'g');
+
+function parseLevelNumbers(line = '') {
+  const text = String(line || '').replace(/%\s?\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s?%/g, ' ');
+  const out = [];
+  for (const match of text.matchAll(CONCRETE_PRICE_SCAN_RE)) {
+    const raw = match[0]
+      .replace(/₺|TL/gi, '')
+      .trim()
+      .replace(/\.(?=\d{3}\b)/g, '') // binlik ayıracı
+      .replace(',', '.');
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) out.push(n);
+  }
+  return out;
+}
+
+/** Bir sembol için araçların GERÇEKTEN ürettiği sayısal ölçümler. */
+function collectMeasuredValues(events = [], symbol = '') {
+  const want = normalizeEntity(symbol);
+  const values = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event || event.type !== 'tool_call') continue;
+    const list = event.measurements?.[want];
+    if (!Array.isArray(list)) continue;
+    for (const value of list) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) values.push(n);
+    }
+  }
+  return values;
+}
+
+// ÇAPA BANDI. Bir seviyenin ölçümden türediğini KANITLAMAZ — tam ispat için
+// modelin formülü bildirmesi gerekirdi. Yaptığı şey daha mütevazı ve yine de
+// canlı hatayı yakalar: rakam, ölçülen bir değerle aynı büyüklük mertebesinde
+// olmalı. 553 TL'lik bir hissede "stop 1 TL" hiçbir ölçümden türeyemez.
+// Band bilerek geniş: %40 aşağıda bir stop da, %80 yukarıda bir hedef de
+// meşrudur; dar band meşru cevabı bloklar ve kapıyı gürültüye çevirir.
+const LEVEL_ANCHOR_MIN_RATIO = 0.5;
+const LEVEL_ANCHOR_MAX_RATIO = 2;
+
+function isAnchored(value, measured) {
+  return measured.some((m) => value >= m * LEVEL_ANCHOR_MIN_RATIO && value <= m * LEVEL_ANCHOR_MAX_RATIO);
+}
+
+/**
+ * @param {object} [opts]
+ * @param {string} [opts.researchStatus] Sözleşme kapanış durumu (COMPLETE/PARTIAL/BLOCKED...).
+ *   Verilirse ve COMPLETE değilse hiçbir somut seviye geçemez.
+ */
+function evaluatePriceLevelProvenanceGate(message, response, events = [], now = Date.now(), opts = {}) {
   if (isCommanderProductMarketplaceMessage(message)) return null;
   const quoted = extractQuotedPriceLevels(response);
   if (quoted.size === 0) return null;
 
+  // KURAL A — sözleşme kapanmadan seviye yok.
+  // Hüküm kelimesi (AL/SAT) zaten iniyordu ama RAKAM kaçabiliyordu. Kullanıcı
+  // açısından "AL demedim ama stop 553 yaz" ile "AL" arasında pratik fark yok:
+  // ikisi de uygulanabilir bir işlem talimatıdır.
+  // Yazılı kuraldan daha GENİŞ uygulanıyor: kural "istek giriş/stop içeriyorsa"
+  // diyordu, buradaki koşul "cevap somut seviye içeriyorsa". Sebep: zarar
+  // isteğin şeklinden değil, cevaptaki rakamdan doğar.
+  const researchStatus = opts.researchStatus ? String(opts.researchStatus).toUpperCase() : null;
+  const contractIncomplete = researchStatus !== null && researchStatus !== 'COMPLETE';
+
   const ledger = buildEvidenceLedger(events, now);
-  const unsupported = [];
-  for (const symbol of quoted.keys()) {
+  const noEvidence = [];
+  const notDerived = [];
+
+  for (const [symbol, lines] of quoted) {
     const supported = PRICE_LEVEL_EVIDENCE_CLASSES.some(
       (klass) => hasFreshEvidenceForEntity(ledger, klass, symbol, now),
     );
-    if (!supported) unsupported.push(symbol);
+    if (!supported) { noEvidence.push(symbol); continue; }
+
+    // KURAL B — ölçüm VAR ama rakam ondan türemiş mi?
+    const measured = collectMeasuredValues(events, symbol);
+    // Ölçüm değeri kaydedilmemişse eski davranış korunur: sınıf kanıtı yeter.
+    // Yeni kapıyı, değer taşımayan eski olaylar üzerinden ateşlemek yanlış
+    // pozitif üretirdi.
+    if (measured.length === 0) continue;
+    const numbers = lines.flatMap(parseLevelNumbers);
+    if (numbers.length === 0) continue;
+    if (numbers.some((n) => !isAnchored(n, measured))) notDerived.push(symbol);
   }
-  if (unsupported.length === 0) return null;
+
+  const blocked = contractIncomplete
+    ? [...quoted.keys()]
+    : [...new Set([...noEvidence, ...notDerived])];
+  if (blocked.length === 0) return null;
+
+  const explanation = [];
+  if (contractIncomplete) {
+    explanation.push(
+      `Araştırma sözleşmesi ${researchStatus} durumunda kapandı; somut giriş/stop/hedef rakamı verilemez.`,
+      'Eksik kanıtla üretilen seviye, hüküm kelimesi kullanılmasa bile uygulanabilir',
+      'bir işlem talimatıdır. Sözleşme COMPLETE olmadan rakam yerine niteliksel',
+      'ifade kullan ("teyit beklenir", "seviye için ölçüm gerekli").',
+    );
+  } else {
+    if (noEvidence.length) {
+      explanation.push(
+        `Şu semboller için somut seviye verildi ama o sembole ait ölçüm kanıtı yok: ${noEvidence.join(', ')}.`,
+      );
+    }
+    if (notDerived.length) {
+      explanation.push(
+        `Şu semboller için verilen rakam, o sembolde ölçülen hiçbir değerle bağdaşmıyor: ${notDerived.join(', ')}.`,
+        'Ölçümün VARLIĞI yetmez; rakamın o ölçümden TÜREMESİ gerekir.',
+      );
+    }
+    explanation.push(
+      'Seviye rakamı üretmek ölçüm yapmak değildir. Giriş/stop için ilgili sembolde',
+      'analyze_finance_signal veya get_stock_price çalışmalı ve seviye o çıktıdan türetilmelidir.',
+      'Ölçüm yoksa seviye verme; "teyit beklenir" gibi niteliksel ifade kullan.',
+    );
+  }
 
   const lockedResponse = [
     neutralizeEquityVerdicts(response),
     '',
     '---',
     '⚖️ SEVİYE PROVENANCE KİLİDİ (deterministik):',
-    `Şu semboller için somut giriş/stop seviyesi verildi ama o sembole ait ölçüm kanıtı yok: ${unsupported.join(', ')}.`,
-    'Seviye rakamı üretmek ölçüm yapmak değildir. Giriş/stop için ilgili sembolde',
-    'analyze_finance_signal veya get_stock_price çalışmalı ve seviye o çıktıdan türetilmelidir.',
-    'Ölçüm yoksa seviye verme; "teyit beklenir" gibi niteliksel ifade kullan.',
+    ...explanation,
   ].join('\n');
+
+  const reason = contractIncomplete
+    ? `Sözleşme ${researchStatus}: seviye üretilemez (${blocked.join(', ')})`
+    : [
+      noEvidence.length ? `Kanıtsız seviye: ${noEvidence.join(', ')}` : null,
+      notDerived.length ? `Türetilemeyen seviye: ${notDerived.join(', ')}` : null,
+    ].filter(Boolean).join(' | ');
 
   return {
     status: 'price_level_locked',
-    reason: `Kanıtsız seviye: ${unsupported.join(', ')}`,
-    unsupportedSymbols: unsupported,
+    reason,
+    unsupportedSymbols: blocked,
+    noEvidenceSymbols: noEvidence,
+    notDerivedSymbols: notDerived,
+    contractIncomplete,
     response: lockedResponse,
   };
 }
@@ -1366,6 +1481,8 @@ module.exports = {
   entitiesWithEvidence,
   hasAnyFreshEvidence,
   describeStaleEvidence,
+  collectMeasuredValues,
+  parseLevelNumbers,
   evaluatePriceLevelProvenanceGate,
   extractQuotedPriceLevels,
   RISK_GATE_THRESHOLDS,
