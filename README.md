@@ -156,7 +156,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 866 birim testi (65 dosya)
+npm test               # 878 birim testi (66 dosya)
 cd apps/desktop && npm run dev
 ```
 
@@ -171,6 +171,7 @@ apps/desktop/
     decision-guards.cjs     # Kanıt sınıfları, TTL, karar kapıları
     execution-contract.cjs  # Kod görevleri için plan→doğrula döngüsü
     earnings-pricing.cjs    # Bilanço–fiyat köprüsü (fiyat uzaması ölçümü)
+    supabase-realtime-transport.cjs  # Node 20'de ws transport enjeksiyonu
     surgery/                # Copilot cerrahi hattı + izin kapısı
   src/               # React renderer: Chat, Dashboard, Ayarlar, Sesli Asistan
 packages/            # Paylaşılan çekirdek (ör. investment-research policy-core)
@@ -213,6 +214,7 @@ Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama C
 - [x] **Model yönlendirmesi düzeltildi:** `deep_analysis` deseninden Türkçe gövdelerin sondaki `\b` sınırı kaldırıldı (`karşılaştır` artık "karşılaştırması"yı yakalıyor); ayrıca `TRADE_LEVEL_QUERY_RE` eklendi — giriş/stop/destek/direnç talebi finans bağlamıyla birlikte geldiğinde tur koşulsuz `deep_analysis`'e gider. İşlem seviyesi üreten istek asla zayıf modele düşemez. Bağlam şartı, "müşteri desteği" gibi cümlelerin pahalı modele düşmesini engeller. ESKİ HÂLİ: `TASK_DETECTION_PATTERNS.deep_analysis` deseni `karşılaştır\b` — "karşılaştır**ması**" eşleşmiyor. Canlı vakada giriş/stop seviyesi üretilen tur bu yüzden `quick` sınıfına düşüp en zayıf modele gitti. İşlem seviyesi üreten istek asla `quick` olamaz
 - [x] **Nakit akışı kanıt sınıfı eklendi:** `get_cash_flow_breakdown` aracı (aynı MaliTablo satırlarından okur, ek ağ isteği yok) işletme/yatırım/finansman nakit akışlarını ve pay ihracı/borçlanma kaynaklı girişleri ayrıştırıp `classifyDebtImprovementSource` ile kaynağı sınıflar: `OPERATIONS` / `EQUITY_ISSUANCE` / `FINANCING` / `MIXED` / `UNKNOWN`. Yeni kanıt sınıfı `CASH_FLOW_BREAKDOWN` (TTL 90 gün) ve yeni kapı `evaluateDebtQualityGate`: cevap borç azalmasını OLUMLU hükme bağlıyorsa nakit akışı kanıtı şart, yoksa hüküm indirilir (bulgu ve rakam kalır). `investable_candidate` için kabul edilir ama ZORUNLU değildir — her yatırım sorusu borçluluk yorumu içermez, zorunlu kılmak kapanamayan duvar üretirdi. ESKİ HÂLİ: net borç yalnız bilançodan (`finansalBorclar − nakit`) kuruluyor. Borç iyileşmesinin operasyondan mı sermaye girişinden mi geldiği ayrılamıyor; MEYSU vakasında halka arz nakdi "operasyonel kalite artısı" gibi sunuldu. `CASH_FLOW_BREAKDOWN` sınıfı ve onu üreten araç gerekiyor — o gelene kadar bu kural yetenek boşluğudur
 - [x] **Bulunamayan sembol kanıt kredisi almıyor:** `extractEntities` `args.symbols`'daki HER sembolü kanıtlı sayıyordu; `get_bist_board` [BRSAN, MEYSU, XU100] isteğine 2 satır + `notFound: ['XU100']` dönerken XU100 dört kanıt sınıfı birden alıyordu. Bu, Adım 2'nin sınıf düzeyinde kapattığı hastalığın entity düzeyi. Artık `notFound`/`missingEntities` entity kümesinden düşülüyor; aktivite önizlemesine de `BULUNAMADI=` etiketi eklendi (monitörde yalnız `count=2` görünüyordu)
+- [ ] **Node 22'ye geçiş Electron yükseltmesine bağlı:** `@supabase/*` paketleri `engines: node >=22` bildiriyor, uygulama ise Electron 31.3.1'in gömülü **Node 20**'sinde çalışıyor — `npm ci` her koşuda `EBADENGINE` uyarısı basıyor. CI'ı Node 22'ye çıkarmak uyarıyı susturur ama CI'ı üretimden uzaklaştırır (CI'ın Node 20'si üretimi doğru taklit ediyor, geliştirme makinesinin Node 22'si etmiyor); bu yüzden `ci.yml` bilerek 20'de tutuluyor. Somut tek Node 22 gereksinimi — `realtime-js`'in global `WebSocket` beklentisi — `ws` transport enjeksiyonuyla kapatıldı. Gerçek çözüm Node 22 taşıyan **Electron 35+**'a çıkmak; cerrahi hattındaki `ELECTRON_RUN_AS_NODE` çözümlerine dokunduğu için ayrı bir iş
 - [ ] FSM genişlemesi: kontrollü POST, zincirli API çağrıları, JSON dönüşüm DSL'i
 - [ ] `ai-service.cjs` monolitinin modüllere bölünmesi (~10k satır)
 - [ ] MCP gateway: tool'ların policy kapısı arkasında dış ajanlara açılması

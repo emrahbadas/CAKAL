@@ -21,6 +21,7 @@ const { TelegramReader } = require('./telegram-reader.cjs');
 const { ensureDefaultUserProfile, consolidateUserLearning } = require('./user-learning.cjs');
 const { storeSecret, hasSecret, listSecretRefs, listSecretRequests, fulfillSecretRequest } = require('./secret-broker.cjs');
 const { resolveAnalysisArtifact } = require('./analysis-artifacts.cjs');
+const { resolveRealtimeTransport, buildRealtimeClientOptions, describeRealtimeTransport } = require('./supabase-realtime-transport.cjs');
 const surgeryReview = require('./surgery/review-service.cjs');
 const { createSessionManager } = require('./surgery/session-manager.cjs');
 
@@ -476,23 +477,24 @@ async function initSupabase() {
     });
     // Electron 31 = Node 20: global WebSocket yok. realtime-js'in
     // "Ensure you are running Node.js 22+..." uyarısını ws paketi ile
-    // transport sağlayarak gideriyoruz.
-    let realtimeOptions;
-    try {
-      realtimeOptions = { transport: require('ws') };
-    } catch (_) { /* ws yoksa realtime sadece uyarı verir, REST etkilenmez */ }
+    // transport sağlayarak gideriyoruz. Çözümleme ayrı modülde; başarısızlık
+    // sessizce yutulmuyor, uyarı olarak yazılıyor (bkz. modül başlığı).
+    const realtimeResolution = resolveRealtimeTransport();
+    const realtimeWarning = describeRealtimeTransport(realtimeResolution);
+    if (realtimeWarning) console.warn(realtimeWarning);
+    const realtimeOptions = buildRealtimeClientOptions(realtimeResolution);
     // RLS aktif: public tablolara anon erişimi kapalı. Main process güvenilir
     // katman olduğundan ana istemci service role ile çalışır (renderer'a asla geçmez).
     supabaseClient = createClient(url, serviceKey || key, {
       auth: { persistSession: false },
       global: { fetch: boundedFetch },
-      ...(realtimeOptions ? { realtime: realtimeOptions } : {}),
+      ...realtimeOptions,
     });
     if (serviceKey) {
       supabaseServiceClient = createClient(url, serviceKey, {
         auth: { persistSession: false },
         global: { fetch: boundedFetch },
-        ...(realtimeOptions ? { realtime: realtimeOptions } : {}),
+        ...realtimeOptions,
       });
     } else {
       console.warn('[DB] SUPABASE_SERVICE_ROLE_KEY not set — RLS altında DB erişimi kısıtlı olabilir');
