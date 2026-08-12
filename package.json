@@ -2,6 +2,7 @@
   "name": "core-opportunity-engine",
   "version": "2.0.0",
   "private": true,
+  "license": "BUSL-1.1",
   "description": "Çakal Çekirdeği — Kişisel Fırsat Motoru",
   "workspaces": [
     "apps/*",

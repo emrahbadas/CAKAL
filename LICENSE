@@ -1,0 +1,121 @@
+Business Source License 1.1
+
+Licensor:             Emrah Badas
+Licensed Work:        ÇAKAL — Kişisel Fırsat ve Araştırma Motoru
+                      The Licensed Work is (c) 2024–2026 Emrah Badas
+Change Date:          2030-01-01
+Change License:       MIT
+
+For information about alternative licensing arrangements for the Licensed Work,
+please contact the Licensor.
+
+---
+
+Additional Use Grant
+
+Subject to the terms and conditions of this License, the Licensor hereby grants
+you the right to use, copy, modify, and redistribute the Licensed Work,
+provided that all of the following conditions are met:
+
+1. **Project Name:** The name "ÇAKAL" (or "CAKAL") must not be removed or
+   replaced when distributing or deploying a modified version of the Licensed
+   Work. Any modified version must clearly state that it is a derivative of
+   ÇAKAL and must not misrepresent itself as the original work.
+
+2. **Purpose:** The core purpose of the Licensed Work — a personal, single-user
+   AI-powered investment research and opportunity assistant — must not be
+   changed to a multi-tenant SaaS product, a fully automated trading system,
+   or any application that autonomously executes financial transactions on
+   behalf of users without explicit per-action user confirmation.
+
+3. **Surgical Pipeline Integrity:** The `surgery/` directory and its
+   `protected-paths` mechanism must not be removed, disabled, or circumvented
+   in any distributed or deployed version. The two-layer permission gate
+   (hard-block layer + user-confirmation layer) that governs source-code
+   modifications must remain fully operational.
+
+4. **Decision Guards:** The deterministic decision locks (`decision-guards.cjs`,
+   `karar kilidi`) that prevent AL/SAT (BUY/SELL) verdicts without sufficient
+   fresh evidence must not be removed or weakened.
+
+---
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited production
+use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and the rights granted in the paragraph above
+terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work, and the Change Date may vary
+for each version of the Licensed Work released by the Licensor.
+
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or modified
+form from a third party, the terms and conditions set forth in this License
+apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other versions
+of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of Licensor
+or its affiliates (provided that you may use a trademark or logo of Licensor as
+expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
+
+MariaDB hereby grants you permission to use this License's text to license
+your works, and to refer to it using the trademark "Business Source License",
+as long as you comply with the Covenants of Licensor below.
+
+---
+
+Covenants of Licensor
+
+In consideration of the right to use this License's text and the "Business
+Source License" name and trademark, Licensor covenants to MariaDB, and to all
+who receive notice of this covenanting, that:
+
+1. Licensor will specify as the Change License the GPL Version 2.0 or any
+   later version, or a license that is compatible with GPL Version 2.0 or a
+   later version, where "compatible" means that software provided under the
+   Change License can be included in a program with software provided under
+   GPL Version 2.0 or a later version. Licensor may specify additional Change
+   Licenses without limitation.
+
+2. Licensor will not use the Business Source License to limit the right of
+   users to run the Licensed Work, unless the Additional Use Grant permits such
+   limitation.
+
+3. Licensor will not use the Business Source License to limit distribution to a
+   single person or entity.
+
+---
+
+Notice
+
+The Business Source License (this document, or the "License") is not an Open
+Source license. However, the Licensed Work will eventually be made available
+under an Open Source License, as stated in this License.
+
+For more information on the use of the Business Source License generally,
+please visit the MariaDB Open Source License FAQ at:
+https://mariadb.com/bsl-faq-adopting/
