@@ -221,6 +221,23 @@ Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama C
 - [ ] MCP gateway: tool'ların policy kapısı arkasında dış ajanlara açılması
 - [ ] Gerçek kod yürütme ihtiyacı doğarsa: izole executor (container/WASM) — o güne kadar deklaratif kalır
 
+## Lisans
+
+[Business Source License 1.1](LICENSE) — 1 Ocak 2030'da **MIT**'e döner.
+
+Kopyalama, değiştirme ve yeniden dağıtım serbest; dört şartla:
+
+| Şart | Ne demek |
+|---|---|
+| **İsim** | "ÇAKAL" adı kaldırılamaz. Türev sürüm kendini orijinal gibi gösteremez |
+| **Amaç** | Tek kullanıcılık kişisel araştırma asistanı olarak kalır. Çok kiracılı SaaS'a, tam otomatik alım-satım sistemine veya kullanıcı onayı olmadan finansal işlem yapan bir uygulamaya dönüştürülemez |
+| **Cerrahi hat** | `surgery/` dizini ve `protected-paths` mekanizması kaldırılamaz, devre dışı bırakılamaz. İki katmanlı izin kapısı çalışır durumda kalmalı |
+| **Karar kilitleri** | `decision-guards.cjs` içindeki deterministik kilitler — yeterli taze kanıt olmadan AL/SAT çıkmasını engelleyen kapılar — kaldırılamaz veya zayıflatılamaz |
+
+Son iki şart tesadüfi değil: bu depodaki güvenlik değeri kapıların varlığından gelir. Kapıları sökülmüş bir ÇAKAL, ÇAKAL değildir.
+
+Şartların dışında bir kullanım için Lisans Verenden ticari lisans alınmalıdır.
+
 ---
 
 *Tasarım ve ürün sahibi: Emrah Badaş — uzakyol gemi kaptanı.*
