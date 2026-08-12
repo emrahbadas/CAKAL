@@ -45,7 +45,7 @@ Bu depodaki her karar kapısı — fiyatlanma kilidi, hüküm-kanıt kilidi, ris
 
 ## Öne Çıkan Yetenekler
 
-- **Commander ajanı** — GPT tabanlı, görev tipine göre model yönlendiren (quick/chat/deep_analysis/code_gen) çok araçlı orkestra: 57 tool (finans verisi, emlak, scraping, Telegram, öz-gelişim, cerrahi hat).
+- **Commander ajanı** — GPT tabanlı, görev tipine göre model yönlendiren (quick/chat/deep_analysis/code_gen) çok araçlı orkestra: 58 tool (finans verisi, emlak, scraping, Telegram, öz-gelişim, cerrahi hat).
 - **Otonom entegrasyon akışı (tek onay):** eksik yetenek tespiti → gap kaydı → öneri → kullanıcı onayı → plugin manifesti → Secret Broker'da hazır anahtar alanı → anahtar girilince otomatik test → hata varsa düzelt-tekrar dene döngüsü.
 - **Sandbox Plugin FSM:** manifest tabanlı, deklaratif (yalnızca HTTPS GET) plugin çalıştırıcı. Serbest kod yürütme yok.
 - **Araştırma sözleşmesi:** karmaşık finans sorularında yürütmeden önce kilitlenen, makine tarafından denetlenen kanıt planı (aşağıda ayrı bölüm).
@@ -106,7 +106,7 @@ Her araç çalıştığında yapılandırılmış kayıt tutulur — performans 
 ```mermaid
 flowchart TD
     UI["Electron Renderer<br/>(React + Zustand)"] -->|IPC| MAIN["Main Process<br/>(main.cjs)"]
-    MAIN --> AI["ai-service.cjs<br/>Commander + 57 tool"]
+    MAIN --> AI["ai-service.cjs<br/>Commander + 58 tool"]
     AI --> RC["research-contract.cjs<br/>Plan kilidi + kanıt defteri"]
     RC --> GUARDS["decision-guards.cjs<br/>Kanıt sınıfları + karar kapıları"]
     AI --> GUARDS
@@ -121,7 +121,7 @@ flowchart TD
 
 | Kaynak | Ne verir | Not |
 |---|---|---|
-| Mynet canlı borsa (`get_bist_board`) | Tek istekte 628 enstrüman: fiyat, %değişim, hacim, işlem hacmi (TL), XU030/XU050/XU100 **üyeliği**, seans durumu | Gecikmeli. Üyelik ağırlık değildir |
+| Mynet canlı borsa (`get_bist_board`) | Tek istekte tüm pano (2026-08 ölçümü: 628 enstrüman): fiyat, %değişim, hacim, işlem hacmi (TL), XU030/XU050/XU100 **üyeliği**, seans durumu | Gecikmeli. Üyelik ağırlık değildir |
 | Yahoo Finance | Teknik seri: MA, çok dönemli getiri, volatilite | `dailyChangePercent` pencereden bağımsız; `volatility` günlük getiri std sapması, `rangeWidthPercent` ayrı alan |
 | İş Yatırım MaliTablo | Bilanço + gelir tablosu; sektör adaptörleri (sanayi/banka/sigorta/holding/GYO) | Sektör satırın **varlığına** değil önemliliğine bakar |
 | `get_valuation_multiples` | Değerleme girdileri (net kâr, özkaynak, güncel fiyat, dönem) | `VALUATION` sınıfının tek üreticisi |
@@ -171,6 +171,7 @@ apps/desktop/
     decision-guards.cjs     # Kanıt sınıfları, TTL, karar kapıları
     execution-contract.cjs  # Kod görevleri için plan→doğrula döngüsü
     earnings-pricing.cjs    # Bilanço–fiyat köprüsü (fiyat uzaması ölçümü)
+    candidate-funnel.cjs    # Aday hunisi sözleşmesi (kademe grameri, soy zinciri)
     supabase-realtime-transport.cjs  # Node 20'de ws transport enjeksiyonu
     surgery/                # Copilot cerrahi hattı + izin kapısı
   src/               # React renderer: Chat, Dashboard, Ayarlar, Sesli Asistan
