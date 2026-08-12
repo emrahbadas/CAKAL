@@ -20,7 +20,14 @@ import { readdirSync, readFileSync } from 'node:fs';
  * `npx vitest run` çıktısıdır.
  */
 
-const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+// İki README var: README.md (İngilizce, global vitrin) ve README.tr.md
+// (Türkçe tam sürüm). Sayılar İKİSİNDE de geçiyor, ikisi de eskiyebilir —
+// yalnız birini kontrol etmek kontrolün yarısını kör bırakır.
+const readmeFiles = {
+  'README.md': readFileSync(new URL('../README.md', import.meta.url), 'utf8'),
+  'README.tr.md': readFileSync(new URL('../README.tr.md', import.meta.url), 'utf8'),
+};
+const readme = Object.values(readmeFiles).join('\n');
 const aiService = readFileSync(new URL('../apps/desktop/electron/ai-service.cjs', import.meta.url), 'utf8');
 
 /** ai-service.cjs içindeki TOOLS dizisinde tanımlı benzersiz araç adları. */
@@ -63,11 +70,24 @@ describe('README — araç sayısı', () => {
 });
 
 describe('README — test sayıları', () => {
-  it('dosya sayısı gerçek dosya sayısına eşit', () => {
-    const match = readme.match(/(\d+)\s+birim testi\s*\((\d+)\s+dosya\)/);
-    expect(match, 'README kurulum bölümündeki test satırı bulunamadı').toBeTruthy();
-    expect(Number(match[2]), `README ${match[2]} dosya diyor, gerçek ${testFiles.length}`)
-      .toBe(testFiles.length);
+  it('dosya sayısı her iki README\'de de gerçek sayıya eşit', () => {
+    // Türkçe: "907 birim testi (69 dosya)" — İngilizce: "907 unit tests (69 files)"
+    const patterns = [
+      /(\d+)\s+birim testi\s*\((\d+)\s+dosya\)/,
+      /(\d+)\s+unit tests\s*\((\d+)\s+files\)/,
+    ];
+    let seen = 0;
+    for (const [name, text] of Object.entries(readmeFiles)) {
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (!match) continue;
+        seen += 1;
+        expect(Number(match[2]), `${name}: ${match[2]} dosya diyor, gerçek ${testFiles.length}`)
+          .toBe(testFiles.length);
+      }
+    }
+    // Her iki README de sayıyı taşımalı; biri sessizce düşerse fark edilmeli.
+    expect(seen, 'test sayısı satırı iki README\'de de bulunamadı').toBe(2);
   });
 
   it('bildirilen toplam, kaynaktaki literal it/test sayısının ALTINDA değil', () => {
