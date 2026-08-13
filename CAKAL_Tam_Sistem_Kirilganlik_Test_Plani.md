@@ -1,7 +1,7 @@
 # ÇAKAL Tam Sistem ve Kırılganlık Test Planı
 
 **Hazırlanma tarihi:** 11 Ağustos 2026  
-**Son güncelleme:** 11 Ağustos 2026 — baseline tazelendi, koşum düzlemi (headless/canlı) ayrımı eklendi.  
+**Son güncelleme:** 14 Ağustos 2026 — **ilk canlı tur koşuldu** (13 Ağustos gecesi, 8 test). Sonuçlar ve bulunan üç hata aşağıda §4.0'da.  
 **GitHub baseline:** `emrahbadas/CAKAL` → `main` → `49d1812c255f7d9ef03f4e150e2146f4c531e51c`  
 **Baseline durumu:** `fcc6448` (PR #3: ses korumaları + entity kapsamı + huni sözleşmesi) üzerine `49d1812` (PR #4: karar kapısı kanıt zinciri) birleşti. Aday hunisi kademe 0 bağlı; kademe 5–7 (DEEP_RESEARCH, FINAL_GATE) hâlâ canlı akışa bağlı değil.  
 **Birim testi durumu:** 73 dosya / 953 test, tamamı yeşil (`npx vitest run`, 12 Ağustos 2026 20:24). Son ekleme: `supabase-realtime-transport.test.mjs` (12 test) — bildirilmemiş `ws` bağımlılığı ve sessiz yutulan transport hatası.  
@@ -122,6 +122,35 @@ Bu listedeki hiçbir test headless’a çevrilmeye çalışılmamalı. “Model 
 5. Canlı verinin doğru değeri önceden ezberlenmesin; kaynak ekranı/API sonucu ile aynı anda karşılaştırılsın.
 6. Piyasa açık, piyasa kapalı ve hafta sonu için ayrı tur çalıştırılsın.
 7. Push öncesi baseline sonuçları saklansın. Push sonrası aynı ID’ler değiştirilmeden yeniden çalıştırılsın.
+
+---
+
+## 4.0 İlk canlı tur — 13 Ağustos 2026 (commit `3f8ad0a`)
+
+Electron CDP üzerinden gerçek pencere sürülerek 8 tur koşuldu, BIST kapalı (Istanbul 22:26–23:12).
+
+| Test | Kapsadığı ID | Sonuç |
+|---|---|---|
+| Nakit akışı + araç çağrısı | ~FIN-11~ | ✅ araç gerçek veri döndürdü, borç yorumundan ÖNCE çağrıldı |
+| YoY karşılaştırması | FIN-02 | ✅ `yoyAvailable: true`, 2026/6 ↔ 2025/6 |
+| Dönem penceresi | FIN-01 | ✅ `2026/6` ile başladı, 2026/3'e düşmedi |
+| Sözleşme tetikleme | ~ROU-09~ | ✅ değerleme timeout oldu, onarım turu tamamladı, `COMPLETE` |
+| Kapsam brifingi | RES-15, RES-16 | ✅ brifing ateşledi, `HÜKÜM İNDİRİLDİ` çıkmadı — model uydu |
+| Seviye kuralı A | TEK-07 | ✅ PARTIAL sözleşmede model rakam vermeyi reddetti |
+| Yanlış pozitif avı | TEK-10 | ✅ COMPLETE sözleşmede meşru stop bloklanmadı |
+| Basit soru regresyonu | ROU-01 | ✅ sözleşme yok, brifing yok |
+
+### Turda bulunan üç hata
+
+1. **`analyze_earnings_pricing` tüm getirileri `-%100` üretiyordu** — `Number(null) === 0`. Sınıflandırma buna rağmen "veri güveni: high" diyordu. **Kapı değil, ÇAKAL kendi cevabında yakaladı.** Düzeltildi.
+2. **Sembol dedektörü Türkçe kelimeleri hisse sanıyordu** — `YILIN`, `AYNI` → sahte "3 şirket" → gereksiz sözleşme → 81 saniye. Sicil (allowlist) kuruldu. Düzeltildi.
+3. **Nakit akışı yanlış satırı okuyordu** — yatırım gelirini yatırım nakit akışı sanıyor, finansman satırını hiç yakalamıyordu. Düzeltildi.
+
+**Ders:** üçü de birim testleri yeşilken üretimde vardı. Canlı tur, headless turun göremediğini gösterdi — §2.1'deki "canlı gereken %40" ayrımı doğrulanmış oldu.
+
+### Turdan çıkan YENİ test ihtiyacı
+
+`levels_must_remain_blocked_when_only_session_is_missing_but_derivation_evidence_is_absent` — `MARKET_SESSION_STATUS` tamamlansa bile salınım/ATR/yöntem/risk-getiri kanıtı yoksa giriş/stop/hedef kapısı KAPALI kalmalı. Bugün kapı doğru sonucu yanlış gerekçeyle veriyor.
 
 ---
 
