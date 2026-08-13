@@ -9214,9 +9214,27 @@ async function fetchCompanyFinancials(bistCode) {
 // hesabına) karışmamalı; oradaki "Finansal Borçlar" mantığı bilanço satırına
 // dayanır, buradakiler nakit akış tablosu satırlarıdır.
 const FINANCIAL_KEY_ITEM_PATTERNS_CASHFLOW = [
-  { key: 'isletmeNakitAkisi', label: 'İşletme Faaliyetlerinden Nakit Akışı', re: /^işletme faaliyetlerinden/ },
-  { key: 'yatirimNakitAkisi', label: 'Yatırım Faaliyetlerinden Nakit Akışı', re: /^yatırım faaliyetlerinden/ },
-  { key: 'finansmanNakitAkisi', label: 'Finansman Faaliyetlerinden Nakit Akışı', re: /^finansman faaliyetlerinden/ },
+  // CANLI HATA (13 Ağustos 2026) — iki ayrı kusur, ikisi de ölçüldü:
+  //
+  // 1) YATIRIM yanlış satırı seçiyordu. `^yatırım faaliyetlerinden` deseni
+  //    BRSAN 2026/6 tablosunda ÜÇ satıra uyuyor ve `rows.find` ilkini alıyor:
+  //      "Yatırım Faaliyetlerinden Gelirler"           =    143.888.000  ← seçilen
+  //      "Yatırım Faaliyetlerinden Giderler (-)"       =             0
+  //      "Yatırım Faaliyetlerinden Kaynaklanan Nakit"  = -3.554.310.000  ← doğrusu
+  //    İlki GELİR TABLOSU kalemi (temettü/yatırım geliri), nakit akışı değil.
+  //    yatirim_geliri ≠ yatirim_nakit_akisi. Nakit köprüsü bu yüzden kapanmıyordu.
+  //
+  // 2) FİNANSMAN hiç eşleşmiyordu. İş Yatırım satırı "Finansman
+  //    FaaliyetlerDEN Kaynaklanan Nakit" yazıyor — "Faaliyetlerinden" değil.
+  //    Eski desen bu satırı HİÇ yakalayamıyordu; finansman ayağı sessizce
+  //    boş kalıyor, "borç iyileşmesi nereden geldi" sorusu tek ayak üstünde
+  //    cevaplanıyordu. Ölçülen gerçek değer: -194.124.000.
+  //
+  // Ayırt edici "kaynaklanan ... nakit": gelir/gider kalemlerini eler,
+  // (in)? eki İş Yatırım'ın iki yazımını da kapsar.
+  { key: 'isletmeNakitAkisi', label: 'İşletme Faaliyetlerinden Kaynaklanan Nakit', re: /^işletme faaliyetler(in)?den kaynaklanan.*nakit/ },
+  { key: 'yatirimNakitAkisi', label: 'Yatırım Faaliyetlerinden Kaynaklanan Nakit', re: /^yatırım faaliyetler(in)?den kaynaklanan.*nakit/ },
+  { key: 'finansmanNakitAkisi', label: 'Finansman Faaliyetlerinden Kaynaklanan Nakit', re: /^finansman faaliyetler(in)?den kaynaklanan.*nakit/ },
   { key: 'payIhraciNakitGirisi', label: 'Pay İhracından Nakit Girişi', re: /pay ihra[çc]/ },
   { key: 'borclanmaNakitGirisi', label: 'Borçlanmadan Nakit Girişi', re: /borçlanmadan kaynaklanan nakit giriş/ },
   { key: 'borcOdemesi', label: 'Borç Ödemesine İlişkin Nakit Çıkışı', re: /borç ödemelerine ilişkin nakit çıkış/ },

@@ -90,7 +90,7 @@ git clone https://github.com/emrahbadas/CAKAL.git
 cd CAKAL
 npm install
 cp .env.example .env    # OpenAI, Perplexity, Supabase, Telegram keys
-npm test                # 942 unit tests (72 files)
+npm test                # 953 unit tests (73 files)
 cd apps/desktop && npm run dev
 ```
 

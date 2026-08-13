@@ -92,12 +92,20 @@ describe('borç kalite kapısı', () => {
 });
 
 describe('nakit akışı ayrıştırması', () => {
+  // FIXTURE TAŞINDI (13 Ağustos 2026). Buradaki satır adları UYDURULMUŞTU
+  // ("İşletme Faaliyetlerinden Nakit Akışları"); İş Yatırım'ın gerçek
+  // adları ölçüldü ve farklı çıktı:
+  //   "İşletme Faaliyetlerinden Kaynaklanan Net Nakit"
+  //   "Yatırım Faaliyetlerinden Kaynaklanan Nakit"
+  //   "Finansman FaaliyetlerDEN Kaynaklanan Nakit"   ← "-inden" değil
+  // Uydurma fixture, gevşek desenin yanlış satırı seçtiğini gizliyordu.
+  // Test verisi kaynağı taklit etmiyorsa test, kodu değil kendini doğrular.
   const row = (code, desc, v1) => ({ itemCode: code, itemDescTr: desc, value1: v1, value2: null, value3: null, value4: null });
 
   it('MEYSU deseni: sermaye girişi kaynaklı iyileşme tespit edilir', () => {
     const items = extractCashFlowItems([
-      row('1', 'İşletme Faaliyetlerinden Nakit Akışları', -36400000),
-      row('2', 'Finansman Faaliyetlerinden Nakit Akışları', 794900000),
+      row('1', 'İşletme Faaliyetlerinden Kaynaklanan Net Nakit', -36400000),
+      row('2', 'Finansman Faaliyetlerden Kaynaklanan Nakit', 794900000),
       row('3', 'Pay İhracından Kaynaklanan Nakit Girişleri', 912500000),
     ]);
     expect(items).toHaveLength(3);
@@ -110,16 +118,16 @@ describe('nakit akışı ayrıştırması', () => {
 
   it('operasyonel nakit üreten şirket OPERATIONS sayılır', () => {
     const items = extractCashFlowItems([
-      row('1', 'İşletme Faaliyetlerinden Nakit Akışları', 1200000000),
-      row('2', 'Finansman Faaliyetlerinden Nakit Akışları', -300000000),
+      row('1', 'İşletme Faaliyetlerinden Kaynaklanan Net Nakit', 1200000000),
+      row('2', 'Finansman Faaliyetlerden Kaynaklanan Nakit', -300000000),
     ]);
     expect(classifyDebtImprovementSource(items).source).toBe('OPERATIONS');
   });
 
   it('finansman kaynaklı iyileşme ayrı sınıflanır', () => {
     const items = extractCashFlowItems([
-      row('1', 'İşletme Faaliyetlerinden Nakit Akışları', -50000000),
-      row('2', 'Finansman Faaliyetlerinden Nakit Akışları', 600000000),
+      row('1', 'İşletme Faaliyetlerinden Kaynaklanan Net Nakit', -50000000),
+      row('2', 'Finansman Faaliyetlerden Kaynaklanan Nakit', 600000000),
     ]);
     expect(classifyDebtImprovementSource(items).source).toBe('FINANCING');
   });

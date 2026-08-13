@@ -413,20 +413,49 @@ function extractEvidenceProducingToolNames(events = []) {
 // çalışmadı — açıkça bir alım sorusu olmasına rağmen. Cevabın iyi çıkması
 // modelin kendi disiplinine kalmıştı, sisteme değil.
 const BIST_TICKER_RE = /(^|[^A-ZÇĞİÖŞÜ0-9])([A-Z]{4,6})(?![A-ZÇĞİÖŞÜ])/g;
+
+// KARA LİSTE ARTIK TEK SAVUNMA DEĞİL — sicil (allowlist) otoritedir.
+// Bu küme yalnız sicil yüklenemezse devreye giren yedek olarak duruyor.
+// ÖLÇÜLEN CANLI HATA (13 Ağustos 2026): kara liste yaklaşımı yapısal olarak
+// yetersizdi, çünkü Türkçede büyük harfli kelime kümesi SINIRSIZ.
+//   "BRSAN'ın son dönemini GEÇEN YILIN AYNI DÖNEMİYLE karşılaştır"
+//   → ['BRSAN', 'YILIN', 'AYNI'] → "coklu sirket (3)" → skor 4/4
+//   → gereksiz araştırma sözleşmesi → tek şirketlik soru 81 saniye sürdü.
+// Kullanıcı üç şirket sormadı; dedektör Türkçe kelimeleri hisse sandı.
 const TICKER_FALSE_POSITIVES = new Set([
   'BIST', 'BORSA', 'VIOP', 'TEFAS', 'TCMB', 'BDDK', 'TUIK', 'IMKB', 'ENDEKS',
   'TAMAM', 'MERHABA', 'SELAM', 'LUTFEN', 'TESEKKUR', 'EVET', 'HAYIR', 'PEKI',
   'ANCAK', 'FAKAT', 'VERI', 'ANALIZ', 'RAPOR', 'TOPLAM', 'ORTALAMA', 'HISSE',
 ]);
 
-/** Metinde geçen (yanlış pozitifleri elenmiş) hisse kodları. */
+let symbolRegistry = null;
+try {
+  symbolRegistry = require('./bist-symbol-registry.cjs');
+} catch (_) {
+  symbolRegistry = null; // sicil yoksa kara listeye düşülür (aşağıda)
+}
+
+/**
+ * Metinde geçen hisse kodları.
+ *
+ * Sicil varsa ALLOWLIST uygulanır: sicilde olmayan büyük harfli dizi sembol
+ * SAYILMAZ. Yeni halka arz edilmiş bir şirket, sicil tazelenene kadar
+ * görülmez — bu bilinçli bir tercih. Eksik tetikleme, her Türkçe cümlede
+ * sahte şirket saymaktan iyidir; başarısızlık yönü güvenli tarafta olmalı.
+ * XU100/XU030/XU050 gibi endeksler sicilde yoktur ve şirket sayılmamalıdır.
+ */
 function extractBistTickers(message = '') {
   const text = String(message || '');
   BIST_TICKER_RE.lastIndex = 0;
   const found = new Set();
   let m;
   while ((m = BIST_TICKER_RE.exec(text)) !== null) {
-    if (!TICKER_FALSE_POSITIVES.has(m[2])) found.add(m[2]);
+    const token = m[2];
+    if (symbolRegistry) {
+      if (symbolRegistry.isKnownBistSymbol(token)) found.add(token);
+    } else if (!TICKER_FALSE_POSITIVES.has(token)) {
+      found.add(token);
+    }
   }
   return [...found];
 }

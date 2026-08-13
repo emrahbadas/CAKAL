@@ -39,6 +39,7 @@ const {
   isCommanderFreshMarketScanRequest,
   COMMANDER_RANKING_REQUEST_RE,
   containsBistTicker,
+  extractBistTickers,
 } = require('./decision-guards.cjs');
 
 // Kapalı kanıt sözlüğü: yalnız bir aracın gerçekten emit ettiği sınıflar.
@@ -510,16 +511,21 @@ const TICKER_STOPWORDS = new Set([
   'HISSE', 'PIYASA', 'FIYAT', 'HEDEF', 'YATIRIM', 'PORTFOY', 'BILANCO',
 ]);
 
+/**
+ * Mesajda kaç FARKLI şirket geçiyor?
+ *
+ * ÖNCEDEN BURADA AYRI BİR UYGULAMA VARDI ve bu, sistemdeki ÜÇÜNCÜ sembol
+ * dedektörüydü (decision-guards `extractBistTickers`, seviye kapısındaki
+ * başlık tarayıcısı ve bu). Üçü ayrı stopword listesi taşıyordu; biri
+ * düzelince diğerleri eski davranışta kalıyordu.
+ *
+ * ÖLÇÜLEN CANLI HATA (13 Ağustos 2026): `extractBistTickers` sicile bağlandı
+ * ve ['BRSAN'] döndürmeye başladı, ama skor HÂLÂ "coklu sirket (3)" diyordu —
+ * çünkü sayım buradan geçiyordu ve burası hâlâ kara liste kullanıyordu.
+ * Tek doğruluk kaynağı: decision-guards.
+ */
 function countDistinctTickers(message) {
-  const found = new Set();
-  const text = String(message || '');
-  let match;
-  TICKER_RE.lastIndex = 0;
-  while ((match = TICKER_RE.exec(text)) !== null) {
-    const token = match[2];
-    if (!TICKER_STOPWORDS.has(token)) found.add(token);
-  }
-  return found.size;
+  return extractBistTickers(message).length;
 }
 
 /**
