@@ -835,6 +835,55 @@ function createResearchRun(opts = {}) {
  * run_investment_research_scan çalıştırdı — o araç MARKET_MOVERS üretmiyor.
  * Sözleşme doğru hedefi hesaplıyordu ama kimse okumuyordu; artık okunuyor.
  */
+/**
+ * Composer'a cevabı YAZMADAN ÖNCE verilecek kapsam brifingi.
+ *
+ * NEDEN: kapsam eskiden yalnız cevaptan SONRA hesaplanıyordu. Model bloke alt
+ * soru hakkında rahatça hüküm kuruyor, deterministik kapı sonra o hükmü
+ * indiriyordu; aynı cevapta "sosyal kanıtı kapattım" ile "sosyal kanıt
+ * BLOCKED" yan yana durabiliyordu.
+ *
+ * SINIR: brifing bir kapı DEĞİLDİR, bir bilgilendirmedir. Modelin uymasını
+ * umar; garanti etmez. Deterministik indirme (neutralizeEquityVerdicts) ve
+ * seviye kapısı yerinde kalır. Model sözü kanıt değildir.
+ */
+function buildCoverageBriefing(coverage) {
+  const describe = (sq) => {
+    const missing = (sq.missingEvidence || []).length > 0
+      ? ` — eksik: ${sq.missingEvidence.join(', ')}`
+      : '';
+    return `- [${sq.id}] ${sq.question} → ${sq.status}${missing}`;
+  };
+
+  const complete = (coverage.subQuestions || []).filter((sq) => sq.status === 'COMPLETE');
+  const partial = (coverage.subQuestions || []).filter((sq) => sq.status === 'PARTIAL');
+  const blocked = (coverage.subQuestions || []).filter((sq) => sq.status === 'BLOCKED');
+
+  return [
+    '[ÇEKİRDEK ZORUNLULUK — KAPSAM BRİFİNGİ]',
+    `Araştırma sözleşmesi ${coverage.status} durumunda. Bu bilgi kanıt defterinden`,
+    'deterministik olarak hesaplandı; senin beyanın değil, araçların gerçekte ürettiği kanıt.',
+    '',
+    complete.length ? 'KANITI TAM olan alt sorular (bunlarda hüküm kurabilirsin):' : 'KANITI TAM alt soru YOK.',
+    ...complete.map(describe),
+    '',
+    partial.length ? 'KANITI KISMİ alt sorular (bulguyu yaz, KESİN hüküm kurma):' : '',
+    ...partial.map(describe),
+    '',
+    blocked.length ? 'KANITI BLOKE alt sorular (bu konuda hüküm kurma, eksikliği açıkça yaz):' : '',
+    ...blocked.map(describe),
+    '',
+    'Cevabını bu kapsamla YENİDEN yaz:',
+    '1. Kanıtı tam olmayan alt soru için kesin AL/SAT hükmü kurma.',
+    '2. Kanıtı tam olmayan sembol için somut giriş/stop/hedef RAKAMI verme.',
+    '   ("AL demedim ama stop 553 yaz" da uygulanabilir bir işlem talimatıdır.)',
+    '3. Kanıtı tam olan alt sorulardaki bulguları OLDUĞU GİBİ koru — eksik bir',
+    '   katman yüzünden tüm araştırmayı çöpe atma.',
+    '4. Eksik olanı sakla değil, açıkça söyle: hangi kanıt yok, neden hüküm yok.',
+    '5. Yeni araç çağırma; bu bir yeniden yazım turu.',
+  ].filter((line) => line !== '').join('\n');
+}
+
 function buildContractRepairRequest(userMessage, coverage) {
   if (!coverage || coverage.status === CONTRACT_STATUS.COMPLETE || coverage.status === CONTRACT_STATUS.PLAN_REQUIRED) return null;
 
@@ -871,6 +920,7 @@ function buildContractRepairRequest(userMessage, coverage) {
 
 module.exports = {
   buildContractRepairRequest,
+  buildCoverageBriefing,
   createResearchRun,
   universeScopeFor,
   OUTPUT_KIND_ADMISSIBLE_EVIDENCE,

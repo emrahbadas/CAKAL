@@ -1,6 +1,6 @@
 # Açık İşler ve Doğrulama Listesi
 
-**Son güncelleme:** 2026-08-11
+**Son güncelleme:** 2026-08-12
 **Bağlam:** 11 Ağustos 2026 tarihli canlı BRSAN/MEYSU oturumunun ajan log'undan çıkan kusur zinciri temizlendi. Bu dosya, o çalışmanın **kapanmayan** ve **kanıtlanmayan** kısımlarını tutar. Kapanan maddeler README'deki Yol Haritası'ndadır.
 
 Kural: bir madde buradan ancak **ölçülmüş kanıtla** çıkar. "Yazıldı" yeterli değil, "çalıştığı görüldü" gerekir.
@@ -28,6 +28,7 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 | 2.2 | Router daha çok turu `deep_analysis`'e (gpt-5.4) yolluyor | Token maliyeti artışı; "işlem seviyesi asla zayıf modele düşmez" kuralının bedeli kabul edilebilir mi |
 | 2.3 | `internalTurn` + `commitConversationTurn` | Çok kapılı gerçek bir turdan sonra geçmişte **2 kayıt** kaldığı görülmeli. Şu an yalnız *kaynak sözleşmesi* testle sabit, **davranış değil** |
 | 2.4 | Volatilite tavanı core'da 35 → 5 | Core tarafı canlı hattan çağrılmadığı için etkisi bugün YOK; Adım 4'ün kalanı yapılınca eleme oranı ölçülmeli |
+| 2.5 | Kapsam brifingi: kapanmayan her sözleşmede bir ek `tool_choice:'none'` çağrısı | Ek gecikme ve token maliyeti; brifing sonrası cevabın gerçekten düzelip düzelmediği (deterministik indirme hâlâ ateşliyor mu) |
 
 ## 3. Kapanmayan işler
 
@@ -36,7 +37,10 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 - **Adım 5 — kademe 5–7 (`DEEP_RESEARCH`, `FINAL_GATE`) yok.** `run_investment_research_scan` charter → evren → eleme yapıp derin kademeleri `nextRequiredStates` ile devrediyor. Huni sözleşmesi `FINAL_GATE`'e ulaşmayan huniyi doğru şekilde `BLOCKED` sayıyor.
 - **`CANDIDATE_FUNNEL` kanıt sınıfı kaydedilmedi.** Adım 2 kilidi kalktı ama üretilemeyen bir sınıfı plana açmak kapanamayan duvar üretir. Derin kademeler gelince kaydedilecek.
 - **Adım 4'ün kalanı:** `runInvestmentScreening` hâlâ canlı hattan çağrılmıyor. Volatilite *semantiği* tekleşti, **skorlayıcı gövdeleri hâlâ iki yerde**. Aynı çağrı zincirini değiştirdiği için Adım 5 ile birlikte yapılmalı.
-- **Kapanışın nihai çözümü.** Bugün hüküm cevap üretildikten *sonra* indiriliyor. Doğrusu: composer `coverage.answerableIds/blockedIds/partialIds` bilgisini cevap üretmeden **ÖNCE** almalı. Sözleşme hâlâ tam anlamıyla kapı değil, sonradan müdahale eden bir kademe.
+- ~~**Kapanışın nihai çözümü.**~~ **YAPILDI (12 Ağustos 2026).** `buildCoverageBriefing(coverage)` alt soruları TAM / KISMİ / BLOKE diye ayırıp eksik kanıt sınıflarıyla birlikte composer'a veriyor; `ai-service.cjs` cevap taslağı hazır olduğunda ve kapanış COMPLETE değilse tek bir yeniden yazım turu açıyor (`tool_choice: 'none'` — araç açılsaydı kapsam brifingden sonra değişir ve brifing yalan olurdu). Kapsam bir kez hesaplanıp hem brifingde hem kapanış raporunda kullanılıyor; iki ayrı hesap ayrışabilirdi.
+  **SINIR:** brifing bir KAPI DEĞİL, bilgilendirmedir — modelin uymasını umar, garanti etmez. `neutralizeEquityVerdicts` ve seviye kapısı yerinde kaldı. Model sözü kanıt değildir; brifing kapının yerine geçmez, önüne geçer. Brifing turu başarısız olursa eski davranışa düşülür.
+  **MALİYET:** kapanmayan her sözleşmede bir ek LLM çağrısı. Canlıda ölçülmeli (bkz. bölüm 2).
+  Test: `tests/coverage-briefing.test.mjs` (13 test).
 
 ### 3.2 Kanıt kalitesi
 

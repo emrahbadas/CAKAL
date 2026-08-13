@@ -11448,6 +11448,67 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
       }
     }
 
+    // ── SÖZLEŞME BRİFİNGİ — kapsam cevaptan ÖNCE ─────────────────────
+    // ÖLÇÜLEN KUSUR: kapsam yalnız cevap üretildikten SONRA hesaplanıyordu.
+    // Model bloke alt soru hakkında rahatça hüküm kuruyor, deterministik kapı
+    // sonra o hükmü indiriyordu. Aynı cevapta "sosyal kanıtı kapattım" ile
+    // "sosyal kanıt BLOCKED" yan yana durabiliyordu — sözleşme kapı değil,
+    // cevaptan sonra tutanak tutan zabit gibi çalışıyordu.
+    //
+    // Artık kapsam composer'a ÖNCE veriliyor. Kritik nokta: bu brifing
+    // deterministik indirmenin YERİNE GEÇMEZ, önüne geçer. Brifing modelin
+    // uymasını UMAR; aşağıdaki kapı garanti eder. Model sözü kanıt değildir —
+    // bu depodaki her kapının varlık sebebi bu.
+    let contractCoverage = null;
+    const plannedContract = researchContract.get();
+    if (plannedContract.planned) {
+      contractCoverage = researchContractLib.evaluateContract(
+        plannedContract,
+        buildEvidenceLedger(researchContract.events(), Date.now()),
+        Date.now(),
+      );
+    }
+
+    const draftContent = typeof assistantMessage?.content === 'string' ? assistantMessage.content.trim() : '';
+    if (contractCoverage && contractCoverage.status !== 'COMPLETE' && draftContent) {
+      const briefing = researchContractLib.buildCoverageBriefing(contractCoverage);
+      if (onActivity) {
+        onActivity({
+          type: 'research_contract',
+          detail: `Kapsam brifingi: cevap ${contractCoverage.status} kapsamıyla yeniden yazılıyor`
+            + ` (bloke: ${contractCoverage.blockedIds.join(', ') || 'yok'})`,
+          timestamp: Date.now(),
+        });
+      }
+      try {
+        const briefed = await createChatCompletionWithFallback(openai, {
+          model: activeModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...workingHistory,
+            { role: 'assistant', content: draftContent },
+            { role: 'user', content: briefing },
+          ],
+          tools: availableTools(),
+          // Araç YOK: bu bir yeniden yazım turu, yeni kanıt toplama turu değil.
+          // Araç açılsaydı kapsam brifingden sonra değişir ve brifing yalan olurdu.
+          tool_choice: 'none',
+          temperature: 0.4,
+          max_completion_tokens: 2048,
+        }, 'contract_briefing');
+        const rewritten = briefed.response?.choices?.[0]?.message?.content;
+        if (typeof rewritten === 'string' && rewritten.trim()) {
+          assistantMessage = { ...assistantMessage, content: rewritten.trim() };
+          activeModel = briefed.modelUsed;
+        }
+      } catch (briefErr) {
+        // Brifing turu başarısızsa eski davranışa düşülür: deterministik kapı
+        // zaten aşağıda hükmü indirir. Kapsam bilgisi kaybolmaz, sadece model
+        // onu önceden okumamış olur.
+        console.warn('[AI] Kapsam brifingi başarısız:', briefErr?.message || briefErr);
+      }
+    }
+
     // Final text response — auto-append any visual blocks the AI forgot to include
     let finalContent = (typeof assistantMessage?.content === 'string' ? assistantMessage.content.trim() : '');
     if (!finalContent) {
@@ -11563,8 +11624,14 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
       // yapılandırılmış kayıttan kurulur. _toolTimings performans ölçümüdür;
       // ondan türetmek her olaya "şimdi" damgası basıp TTL'i devre dışı
       // bırakıyordu ve sembol bilgisi hiç yoktu.
-      const ledger = buildEvidenceLedger(researchContract.events(), Date.now());
-      const coverage = researchContractLib.evaluateContract(finalContract, ledger, Date.now());
+      // Brifing için zaten hesaplandıysa YENİDEN hesaplama: iki ayrı hesap iki
+      // farklı sonuç verirse kullanıcıya gösterilen kapsam ile modele verilen
+      // brifing ayrışır. Brifing turunda araç açılmadığı için defter değişmez.
+      const coverage = contractCoverage || researchContractLib.evaluateContract(
+        finalContract,
+        buildEvidenceLedger(researchContract.events(), Date.now()),
+        Date.now(),
+      );
 
       if (onActivity) {
         onActivity({
