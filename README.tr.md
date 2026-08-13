@@ -169,7 +169,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 936 birim testi (71 dosya)
+npm test               # 942 birim testi (72 dosya)
 cd apps/desktop && npm run dev
 ```
 
@@ -217,6 +217,7 @@ Bekleyen önkoşullar: KAP adaptörü (`packages/sources/kap`) yazılmış ama C
 
 ### Diğer
 
+- [x] **Fiyatlanma kanıtı sıfırla kirleniyordu (canlıda bulundu, 13 Ağustos 2026):** `analyze_earnings_pricing` tüm getirileri tam `-%100` üretiyordu. Kök neden `Number(null) === 0`: `toFinite(null)` sıfır döndürüyor, Yahoo'nun `close: null` gönderdiği seans-içi bar `close: 0` olarak içeri girip son bar olduğu için çapa seçiliyordu. Sınıflandırma buna rağmen "veri güveni: high" diyordu — çöp veriye yüksek güven. Kapı değil, **ÇAKAL kendi cevabında yakaladı**. `toFinite` null/''/undefined'ı açıkça eliyor, `normalizeBars` sıfır ve negatif kapanışı da atıyor.
 - [ ] **Kaynak otorite katmanı:** alan adı tekilleştirmesi var, otorite derecesi ve ortak köken tespiti yok — 31 farklı alan adı hâlâ 31 bağımsız kaynak demek değil
 - [x] **Seviye türetimi:** kapı artık İKİ soru soruyor. Kanıt olayı `measurements: { SEMBOL: [sayılar] }` taşıyor; cevaptaki rakam o sembolde ölçülen bir değerle aynı büyüklük mertebesinde değilse bloklanıyor (`notDerivedSymbols`). Ayrıca sözleşme `COMPLETE` değilse kanıt tam olsa bile somut giriş/stop/hedef rakamı çıkamıyor — hüküm kelimesi inse de rakam kaçabiliyordu, oysa "AL demedim ama stop 553 yaz" da uygulanabilir bir işlem talimatıdır. SINIR: bu çapa kontrolüdür, türetim ispatı değildir; band bilerek geniş (0.5×–2×) çünkü dar band meşru hedefi bloklar. Tam ispat modelin formülü bildirmesini gerektirir. ESKİ HÂLİ: kapı yalnız "o sembolde ölçüm var mı" soruyordu; canlı vakada 555 TL'ye "MA20 altı" dendi, MA50 ≈ 553'tü ve o turda MA20 hiç ölçülmemişti — ölçüm vardı, rakam ondan türememişti
 - [ ] **Sesli asistan — konuşma dışı ses:** süre kapısı tek öksürüğü eliyor; sürekli ritmik gürültü (masa tempo) hâlâ STT'ye gidiyor. Alt bant enerji oranı denendi ve ölçümle çürütüldü (konuşma 0.17, gürültü 0.07–0.30 — ayırmıyor). Gerçek çözüm periyodiklik/perde tespiti

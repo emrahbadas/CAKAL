@@ -39,7 +39,20 @@ const LEGACY_PRICING_CLASSIFICATION_ALIASES = Object.freeze({
 
 const EXPECTATION_SURPRISE_VALUES = Object.freeze(['below', 'in_line', 'above']);
 
+// CANLI HATA (13 Ağustos 2026): `Number(null)` === 0 ve `Number.isFinite(0)`
+// true olduğu için toFinite(null) SIFIR döndürüyordu. Yahoo, seansı süren veya
+// yeni açılmamış günün barını `close: null` (hacim dolu) olarak gönderiyor;
+// o bar `close: 0` diye içeri giriyor, dizinin SONUNCUSU olduğu için çapa
+// seçiliyordu. Sonuç: bütün getiriler tam -%100, MA50 uzaklığı -%100 ve
+// MA50'nin kendisi sıfırla kirlenmiş.
+// ÇAKAL bunu kendi cevabında bildirdi ("kanıt satırları bariz bozuk").
+// Tehlikeli kısmı: sınıflandırma yine de `NOT_EXTENDED` + "veri güveni: high"
+// diyordu — çöp veriye yüksek güven etiketi. Bu etiket fiyatlanma kapısının
+// zamanlama hükmüne izin verip vermediğini belirliyor.
+// Aynı hata sınıfı daha önce closes null-filtresinde de görülmüştü: null'ın
+// sayı kılığında geçmesi.
 function toFinite(value) {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -65,7 +78,10 @@ function normalizeBars(bars) {
       close: toFinite(bar?.close),
       volume: toFinite(bar?.volume),
     }))
-    .filter((bar) => /^\d{4}-\d{2}-\d{2}$/.test(bar.time) && bar.close !== null)
+    // İKİNCİ SAVUNMA: sıfır veya negatif kapanış geçerli bir hisse fiyatı
+    // değildir. toFinite düzeltildi ama kaynak gerçekten 0 gönderirse de
+    // aynı -%100 zinciri kurulurdu; fiyatın kendisi elenmeli.
+    .filter((bar) => /^\d{4}-\d{2}-\d{2}$/.test(bar.time) && bar.close !== null && bar.close > 0)
     .sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 }
 

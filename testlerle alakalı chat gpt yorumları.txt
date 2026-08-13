@@ -1,0 +1,824 @@
+Kaptan, hüküm net: ÇAKAL’ın ana sonucu doğru, fakat bunu elindeki tool çıktısıyla kanıtlamamış. Tesadüfen doğru limana yanaşmış.
+
+Resmî nakit köprüsü şöyle:
+
+2026 ilk yarı	Nakit etkisi
+İşletme faaliyetleri	+7,695 mlr TL
+Yatırım faaliyetleri	−3,554 mlr TL
+Finansman faaliyetleri	−0,194 mlr TL
+Kur çevrim etkisi	−0,014 mlr TL
+Net nakit artışı	+3,933 mlr TL
+
+Dolayısıyla kesin cevap:
+
+Net borç iyileşmesi finansmandan değil, işletme faaliyetlerinden yaratılan nakitten geldi. Finansman faaliyetleri net olarak nakit girişi değil, 194 milyon TL çıkış üretti.
+
+Bu rakamlar Borusan’ın yayımladığı 30 Haziran 2026 finansal raporundaki nakit akış tablosunda açıkça mevcut.
+
+ÇAKAL’daki gerçek sorun
+
+get_cash_flow_breakdown, “yatırım faaliyetlerinden gelirler” 143,9 milyon TL kalemini döndürmüş. Fakat bu, yatırım nakit akışının toplamı değil; yalnızca temettü geliri satırı.
+
+Gerçek yatırım nakit akışı −3,554 milyar TL.
+
+Yani parser veya tool eşlemesi yanlış seviyeyi çekiyor:
+
+investment_income ≠ cash_flow_from_investing
+dividend_income ≠ net_investing_cash_flow
+
+ÇAKAL da şunu yapmış:
+
+Tam nakit köprüsünü alamamış.
+Eksikliği doğru fark etmiş.
+Buna rağmen “güçlü şekilde işletmeden geldi” ve “finansmanla makyaj yok” demiş.
+
+Bu, kanıt sınıfının çıkarıma yükseltilmesi. Sonuç doğru olsa bile araştırma disiplini açısından kusurlu.
+
+Net borç rakamında ikinci mesele
+
+Resmî tablodaki nominal rakamlarla:
+
+Metrik	2025/12	2026/6	Değişim
+Nakit	5,460	9,393	+3,933 mlr TL
+Toplam finansal borç	13,253	16,781	+3,528 mlr TL
+Net borç	7,793	7,388	−0,405 mlr TL
+
+ÇAKAL’ın 9,18 → 7,39 milyar TL hesabı muhtemelen İş Yatırım’ın geçmiş dönemi Haziran 2026 satın alma gücüne taşıdığı düzeltilmiş seriyle yapılmış. Bu kullanılabilir; fakat açıkça:
+
+“2025/12 karşılaştırması enflasyonla Haziran 2026’ya taşınmıştır.”
+
+demeliydi. Yoksa kullanıcı bunu resmî tablonun ham rakamı sanır.
+
+Daha derindeki finansal gerçek
+
+“İşletme nakdi” doğru, fakat kalite kusursuz değil. İşletme nakdi içinde:
+
+Faaliyetle ilgili diğer yükümlülük artışı: +9,236 mlr TL
+Ticari borç artışı: +1,581 mlr TL
+Stok artışı: −6,396 mlr TL
+
+Yani nakit üretimi yalnızca kârdan gelmemiş; müşteri avansları/operasyonel yükümlülükler ve tedarikçi finansmanı ciddi rol oynamış. Bu nedenle:
+
+“Bu, finansman oyunundan daha sağlıklı bir tablo.”
+
+cümlesi biraz fazla cilalı. Daha doğru ifade:
+
+“İyileşme banka finansmanından değil operasyonel nakit akışından geldi; ancak nakit üretiminin önemli kısmı işletme sermayesi ve müşteri avansı niteliğindeki yükümlülük artışına dayanıyor. Bu nedenle sürdürülebilirliği sonraki dönemlerde izlenmeli.”
+
+Mimari teşhis
+
+Bu vaka yeni seviye kapısının hatası değil; o kapı giriş/stop/hedef rakamlarını koruyor. Burada eksik olan ayrı bir nedensellik/attribution gate:
+
+cashFlowAttribution: {
+  operating: 7695330,
+  investing: -3554310,
+  financing: -194124,
+  fxEffect: -13853,
+  bridgeDelta: 3933043,
+  balanceDelta: 3933043,
+  reconciled: true
+}
+
+reconciled !== true olduğunda composer:
+
+“işletmeden geldi” diyememeli,
+“finansmanla makyaj yok” diyememeli,
+araştırma onarım turuna dönmeli,
+onarım başarısızsa “kaynak belirlenemedi” demeli.
+
+Son puanım: finansal sonuç 8/10, araştırma yöntemi 5/10. Doğru cevap verdi ama kanıtı tool’dan çıkaramadı; üstelik resmî tabloda kanıt burnunun dibindeydi. Öncelik 2’ye eklenecek çok temiz bir canlı test vakası bu.
+
+SEN
+22:29
+BRSAN için bilanço, değerleme, teknik görünüm ve uzman/sosyal kanıtı birlikte değerlendir; erişemediğin katmanı açıkça yaz.
+ÇAKAL
+22:32
+Tamam Kaptan. Bu tur yeniden yazım yapıyorum; yeni veri çekmiyorum.
+Araştırma durumu PARTIAL ve bunu aynen koruyorum: teknik, bilanço, uzman/sosyal bağlam COMPLETE; değerleme ve fiyatlanma PARTIAL.
+
+Hızlı Özet
+
+BRSAN’da bilanço kalitesi olumlu, teknik görünüm yukarı ama giriş kalitesi tartışmalı, uzman/sosyal tarafta olumlu bağlam var fakat güçlü tek konsensüs yok.
+Değerleme ve bilançonun ne kadar fiyatlandığı başlıklarında eksik piyasa-seans kanıtı olduğu için kesin pahalı/ucuz ya da zamanlama hükmü kurmuyorum.
+Net sonuç: Şirket kalitesi tarafı olumlu; işlem zamanlaması tarafı tam kapanmış değil.
+
+1) Teknik görünüm — COMPLETE
+Kanıt
+
+Son kapanış verisine göre:
+
+Fiyat: 628 TL
+Günlük değişim: -%0.16
+MA20: 570.5
+MA50: 576.63
+MA20 üstü: +%10.08
+MA50 üstü: +%8.91
+5 günlük getiri: %7.72
+20 günlük getiri: %9.12
+Trend: YUKARI
+Hacim oranı: 1.22
+Hacim yönü: DISTRIBUTION
+3 aylık bant pozisyonu: 90
+Volatilite: %3.25
+
+Endeks kıyası:
+
+XU100 5 günlük getiri: %2.42
+BRSAN kısa vadede endeksten daha güçlü performans göstermiş.
+Teknik yorum
+
+Burada tablo iki parçalı:
+
+Pozitif: fiyat hareketli ortalamaların üstünde, kısa vadeli relatif güç iyi, trend yukarı.
+Negatif: hisse kısa vadede ortalamalardan belirgin uzaklaşmış, bant üstüne yakın ve hacim yönü distribution.
+Teknik hüküm
+
+Teknik görünüm pozitif ama temiz değil.
+Yani “zayıf hisse” değil; fakat “rahat giriş kalitesi” de vermiyor.
+
+2) Son finansal performans ve bilanço kalitesi — COMPLETE
+Kanıt
+
+Son görülen finansal dönemde:
+
+Hasılat: 43.59 mlr TL
+Brüt kâr: 4.59 mlr TL
+Faaliyet kârı: 2.63 mlr TL
+Net dönem kârı: 1.80 mlr TL
+Özkaynak: 43.40 mlr TL
+Toplam varlık: 97.62 mlr TL
+Nakit: 9.39 mlr TL
+Net borç: 7.39 mlr TL
+İşletme faaliyetlerinden nakit akışı: 7.70 mlr TL
+Bilanço yorumu
+
+Buradaki en güçlü nokta:
+
+Nakit üretimi operasyonlardan geliyor.
+Yani bilanço kalitesi sadece muhasebe kârına dayanmıyor; iş nakit de üretiyor.
+Bilanço hükmü
+
+Olumlu.
+
+Gerekçe
+Karlılık var
+Faaliyet kârı var
+Operasyonel nakit akışı güçlü
+Net borç baskısı kontrol dışı görünmüyor
+Sınırlama
+Bu yorum sayısal finansal veri katmanına dayanıyor; doğrudan ham rapor çözümlemesi değil.
+3) Uzman ve sosyal kanıt — COMPLETE
+Kanıt
+
+Doğrulanabilir bağlam tarafında:
+
+BRSAN için çeşitli kurum ve piyasa kaynaklarında olumlu hedef fiyatlar yer alıyor.
+Öne çıkan örnekler:
+828.42 TL
+809 TL
+703 TL
+Genel ton pozitif, fakat hedef fiyatlar arasında belirgin saçılma var.
+Yorum
+
+Bu ne demek?
+
+Şirket hakkında piyasada olumlu ilgi var.
+Ama bu ilgi tek sesli, çok güçlü, tartışmasız bir konsensüs değil.
+Sosyal/uzman hükmü
+
+Karışık-pozitif bağlam.
+
+Sınırlama
+Kaynakların önemli kısmı ikincil derleme/haber niteliğinde.
+Ayrıca gerçek zamanlı bazı sosyal akış katmanlarına erişim yoktu; bu yüzden “sahadaki anlık duygu” tarafı tam değil.
+4) Değerleme — PARTIAL
+Ne biliyoruz?
+Güncel fiyat 628 TL civarında.
+Net kâr ve özkaynak verisi mevcut.
+Şirketin finansal tabanı boş değil; bilanço desteği var.
+Ne eksik?
+
+Bu alt soruda eksik olan kanıt:
+
+Piyasa seans durumu
+
+Bu eksik olduğu için şu tür kesin hükümleri kurmuyorum:
+
+“BRSAN şu an net ucuz”
+“BRSAN şu an net pahalı”
+“Buradan alınır / alınmaz”
+Değerleme için doğru ifade
+
+Değerleme tarafında ilk bakışta aşırı bozulmuş bir tablo görünmüyor; ancak eksik piyasa-seans kanıtı nedeniyle kesin pahalı/ucuz hükmü yok.
+
+5) Bilançonun fiyat tarafından ne kadar fiyatlandığı — PARTIAL
+Ne biliyoruz?
+Fiyatlanma analizinde çıkan sınıflandırma:
+NOT_EXTENDED
+
+Bu, hissenin bilanço/fiyat ilişkisi açısından “aşırı uzamış” sınıfta görünmediğini ima eder.
+
+Ne eksik?
+
+Bu alt soruda da eksik olan kanıt:
+
+Piyasa seans durumu
+
+Bu yüzden şu tür kesin zamanlama hükümleri kurmuyorum:
+
+“Bilanço henüz fiyatlanmamış, fırsat var”
+“Bilanço tamamen fiyatlanmış, geç kaldın”
+Fiyatlanma için doğru ifade
+
+Mevcut bulgu, aşırı fiyat uzaması olmadığını düşündürüyor; fakat eksik piyasa-seans kanıtı nedeniyle bunun üzerinden kesin zamanlama hükmü kurulamıyor.
+
+Toplu Sonuç
+Katman	Durum	Sonuç
+Teknik görünüm	COMPLETE	Yukarı trend var, ama görünüm temiz değil
+Bilanço kalitesi	COMPLETE	Olumlu
+Uzman/sosyal bağlam	COMPLETE	Karışık-pozitif
+Değerleme	PARTIAL	Kesin pahalı/ucuz hükmü yok
+Fiyatlanma	PARTIAL	Kesin zamanlama hükmü yok
+Nihai yorum
+
+BRSAN’da şirket kalitesi tarafı güçlü, piyasa ilgisi mevcut, teknik trend bozuk değil.
+Ama değerleme ve fiyatlanma zamanlaması katmanları tam kapanmadığı için bunu kesin işlem hükmüne çevirmiyorum.
+
+Net etiket
+
+İNCELE / İZLE
+
+Neden?
+Olumlu olanı çöpe atmıyorum:
+bilanço iyi
+teknik trend yukarı
+uzman bağlamı pozitif eğilimli
+Ama eksik olanı da saklamıyorum:
+değerleme için kesin pahalı/ucuz hükmü yok
+fiyatlanma için kesin “şimdi doğru zaman mı” hükmü yok
+
+İstersen bir sonraki adımda bunu tek sayfalık yatırım komitesi özeti formatında daha da sıkıştırırım.
+
+📋 ARAŞTIRMA SÖZLEŞMESİ KAPSAMI (deterministik, plan v1): PARTIAL
+✓ [s1] BRSAN'ın güncel teknik görünümü nedir? (comparison): COMPLETE
+✓ [s2] BRSAN'ın son finansal performansı ve bilanço kalitesi nedir? (thesis): COMPLETE
+◐ [s3] BRSAN bugün/şu aşamada değerleme olarak pahalı mı ucuz mu? (investable_candidate): PARTIAL — eksik: MARKET_SESSION_STATUS
+◐ [s4] BRSAN bilançosu fiyat tarafından önceden ne kadar fiyatlanmış görünüyor? (investable_candidate): PARTIAL — eksik: MARKET_SESSION_STATUS
+✓ [s5] BRSAN hakkında uzman ve sosyal kanıt tarafında doğrulanabilir bağlam nedir? (thesis): COMPLETE
+Kanıtı tamamlanmamış alt sorular (s3, s4) için hüküm verilmedi. Eksik kanıtı toplayacak araçlar: get_bist_board.
+Kapsanan alt sorulardaki bulgular geçerlidir; eksik katman yüzünden tüm araştırma geçersiz sayılmaz.
+
+22:29:58Ajan BaşlatıldıCOMMANDER ajanı devreye girdi
+🗄️22:29:58DB SorguProfil ve strateji verileri alınıyor...
+✅22:30:00DB SonuçProfil: ✓, Index: 26, Pattern: 5
+🧠22:30:00LLM Başladıgpt-5.4 düşünüyor... (görev: deep_analysis)
+🔧22:30:07Tool ÇağrılarıAraçlar çağrılıyor (paralel): submit_research_plan
+⚡22:30:07Tool Çağrısıplan kilitlendi: 5 alt soru (v1)
+📋22:30:07Tool Sonucusubmit_research_plan → Başarılı
+🔄22:30:07LLM Devamgpt-5.4 sonuçları değerlendiriyor (iterasyon 1)...
+🔧22:30:11Tool ÇağrılarıAraçlar çağrılıyor (paralel): analyze_finance_signal, get_financial_statements, get_cash_flow_breakdown, get_valuation_multiples, analyze_earnings_pricing, web_search, search_youtube_insights, read_telegram_channels
+⚡22:30:11Tool ÇağrısıFinans sinyali: BRSAN
+⚡22:30:11Tool ÇağrısıFinansal tablolar çekiliyor: BRSAN (İş Yatırım MaliTablo)
+⚡22:30:11Tool ÇağrısıNakit akışı ayrıştırılıyor: BRSAN
+⚡22:30:11Tool ÇağrısıDeğerleme çarpanları: BRSAN
+⚡22:30:11Tool ÇağrısıBilanço fiyatlanma analizi: BRSAN (güncel mod)
+⚡22:30:11Tool ÇağrısıPerplexity web_search: "BRSAN analist hedef fiyat araştırma raporu 2026 2025 Borusan Mannesmann"
+⚡22:30:11Tool ÇağrısıYouTube'da aranıyor: "BRSAN analiz Borusan Mannesmann bilanço teknik hedef" (borsa, son 30 gün)...
+📋22:30:11Tool Sonucuread_telegram_channels → Kanal listesi boş. channel_ids belirt veya Ayarlar'dan kanal ekle.
+📋22:30:11Tool Sonucuget_financial_statements → source=is_yatirim_malitablo
+📋22:30:11Tool Sonucuget_cash_flow_breakdown → source=is_yatirim_malitablo
+⚡22:30:12Tool Çağrısı2 YouTube videosu bulundu
+📋22:30:12Tool Sonucusearch_youtube_insights → YouTube'da "BRSAN analiz Borusan Mannesmann bilanço teknik hedef" için 2 video bulundu (son 30 gün)....
+📋22:30:12Tool Sonucuget_valuation_multiples → source=is_yatirim_malitablo+yahoo_finance
+📋22:30:12Tool Sonucuanalyze_finance_signal → source=yahoo_finance
+⚡22:30:13Tool Çağrısısınıflandırma: NOT_EXTENDED (veri güveni: high, beklenti sürprizi: UNKNOWN)
+📋22:30:13Tool Sonucuanalyze_earnings_pricing → source=yahoo_finance_ohlc
+⚡22:30:17Tool ÇağrısıPerplexity sonucu: ok, citations=20
+📋22:30:17Tool Sonucuweb_search → source=perplexity | citations=20 | **BRSAN için 2025–2026 hedef fiyatlarda kurumlara göre geniş bir ...
+🔄22:30:17LLM Devamgpt-5.4 sonuçları değerlendiriyor (iterasyon 2, task:deep_analysis)...
+📎22:30:51research_contractKapsam brifingi: cevap PARTIAL kapsamıyla yeniden yazılıyor (bloke: yok)
+✨22:31:12Cevap HazırCOMMANDER cevap üretti (5227 karakter)
+📊22:31:12Strateji Analizi⚡ Yavaş istek analizi: Toplam süre: 72.3s → Tool sayısı: 9 (4 cache hit) → En yavaş: web_search (5.9s)
+📎22:31:12research_contractSözleşme kapanışı: PARTIAL — tam: s2; kısmi: s1, s3, s4, s5; bloke: yok
+📎22:31:12research_contractSözleşme onarımı: s1→CURRENT_EQUITY_PRICE, s3→CURRENT_EQUITY_PRICE/MARKET_SESSION_STATUS, s4→CURRENT_EQUITY_PRICE/MARKET_SESSION_STATUS, s5→RESEARCH_EVIDENCE
+🧠22:31:12LLM Başladıgpt-5.4 düşünüyor... (görev: deep_analysis)
+🔧22:31:16Tool ÇağrılarıAraçlar çağrılıyor (paralel): get_stock_price, verify_claim
+⚡22:31:16Tool ÇağrısıFiyat sorgusu: BRSAN, XU100
+⚡22:31:16Tool Çağrısıİddia araştırılıyor: "BRSAN için analist hedef fiyat ve olumlu/olumsuz uzman görüş..."
+⚡22:31:16Tool ÇağrısıDestekleyici kanıtlar aranıyor...
+📋22:31:19Tool Sonucuget_stock_price → source=yahoo_finance | count=2
+⚡22:31:25Tool ÇağrısıÇürütücü kanıtlar aranıyor...
+⚡22:31:34Tool ÇağrısıUzman görüşleri aranıyor...
+📋22:31:38Tool Sonucuverify_claim → Bu iddia 3 farklı açıdan (destekleyici, çürütücü, uzman) araştırıldı. 60 atıf, 16 FARKLI ALAN ADI (t...
+🔄22:31:38LLM Devamgpt-5.4 sonuçları değerlendiriyor (iterasyon 1, task:deep_analysis)...
+📎22:32:12research_contractKapsam brifingi: cevap PARTIAL kapsamıyla yeniden yazılıyor (bloke: yok)
+✨22:32:30Cevap HazırCOMMANDER cevap üretti (5300 karakter)
+📊22:32:30Strateji Analizi⚡ Yavaş istek analizi: Toplam süre: 78.5s → Tool sayısı: 2 (0 cache hit) → En yavaş: verify_claim (21.9s)
+📎22:32:30research_contractSözleşme kapanışı: PARTIAL — tam: s1, s2, s5; kısmi: s3, s4; bloke: yok
+
+Kaptan, bu çıktı öncekinin üstüne çıkmış ama Öncelik 2’nin neden şart olduğunu canlı yayında ispatlamış. Kapsam kapısı çalışıyor; araştırma akışı hâlâ ters sırada.
+
+Doğru çalışanlar
+Sözleşme PARTIAL durumunu cevaba taşımış.
+Kesin AL/SAT, giriş, stop veya hedef üretmemiş.
+Eksik katmanları görünür göstermiş.
+Onarım turundan sonra s1 ve s5 durumları güncellenmiş.
+İNCELE / İZLE ihtiyatlı bir etiket; eylem kararı değil.
+
+Yani yeni kapı boşa yapılmamış. Model artık “her şey tamam” numarası çekemiyor.
+
+Kritik mimari hata: cevap onarımdan önce üretilmiş
+
+Log sırası açık:
+
+Dokuz araç çalışıyor.
+İlk cevap üretiliyor: 72,3 saniye
+Sözleşme eksikleri ancak bundan sonra kapanıyor.
+Onarım turu başlıyor.
+İki yeni araç çağrılıyor.
+İkinci cevap üretiliyor: 78,5 saniye
+
+Gerçek toplam yaklaşık 151 saniye ve iki tam kompozisyon.
+
+Bu, Öncelik 2’nin henüz kurulmadığının doğrudan kanıtı:
+
+flowchart TD
+    A["Araştırma"] --> B["İlk cevap"]
+    B --> C["Eksik kanıt tespiti"]
+    C --> D["Onarım"]
+    D --> E["İkinci cevap"]
+Kaptan, bu şimdiye kadarki testler içinde çıktı güvenliği bakımından en iyi sonuç: ÇAKAL uydurma giriş/stop/hedef vermemiş. Fakat yine doğru şeyi yanlış gerekçeyle yapmış.
+
+Ana hüküm
+
+Seviye kapısı PASS; araştırma sözleşmesi hâlâ FAIL.
+
+Çünkü seviyeler yalnızca MARKET_SESSION_STATUS eksik diye engellenmiş. Oysa asıl eksik olan, seviyelerin teknik türetim kanıtı.
+
+1. Güvenlik kapısı gerçekten çalıştı
+
+Sistem:
+
+AL/SAT demedi.
+Giriş, stop ve hedef üretmedi.
+PARTIAL durumunu kullanıcıya gösterdi.
+Mevcut teknik verileri saklamadı.
+
+Bu, THYAO testindeki uydurma 299–305 TL seviyelerine göre açık ilerleme.
+
+2. Ama eksik kanıt yanlış teşhis edildi
+
+Sözleşme yalnızca şunu eksik görüyor:
+
+MARKET_SESSION_STATUS
+
+Oysa giriş/stop/hedef için ayrıca gerekli:
+
+Son salınım dipleri ve tepeleri
+Yatay destek/direnç bölgeleri
+ATR veya eşdeğer volatilite tamponu
+Giriş yöntemi: destekten dönüş mü, kırılım mı?
+Hedef yöntemi: teknik direnç mi, temel değer mi?
+Risk/getiri oranı
+İşlem vadesi
+Seviyelerin formülü ve dayanak kanıt kimlikleri
+
+Bunların hiçbiri görünür biçimde üretilmedi. Dolayısıyla get_bist_board çağrılıp seans durumu alınsa bile s1 COMPLETE olmamalı.
+
+Asıl tehlike şu:
+
+Mevcut sözleşmeye göre yalnız seans verisi gelince kapı açılabilir ve model yine ölçümsüz seviyeler uydurabilir.
+
+3. Repair router yine yarım çalışmış
+
+Sistem sonunda açıkça:
+
+Eksik kanıtı toplayacak araç: get_bist_board
+
+diyor. Fakat onarım turunda çağırdığı araçlar:
+
+get_stock_price
+search_youtube_insights
+
+get_bist_board yine çağrılmamış.
+
+13 Ağustos seansı zaten kapanmıştı; MEYSU 11,72 TL kapanışı ve yaklaşık 18:10 işlem zamanı dışarıdan doğrulanabiliyor. MEYSU tarihsel fiyatları
+
+Yani erişilemeyen kanıt değil; yönlendirilemeyen araç var.
+
+4. Seansın kapalı olması seviye analizini bütünüyle engellememeli
+
+Seans kapalıysa sistem:
+
+“Bugün işlem yapılamaz; aşağıdaki plan son kapanışa göre bir sonraki seans için koşulludur.”
+
+diyebilir.
+
+MARKET_SESSION_STATUS, seviyelerin türetim kanıtı değildir. Yalnızca fiyatın:
+
+canlı fiyat mı,
+gecikmeli fiyat mı,
+son kapanış mı
+
+olduğunu belirler.
+
+Bu nedenle seans durumu, çıktının zaman etiketini değiştirir; tek başına teknik planı geçersiz kılmaz.
+
+5. NOT_EXTENDED hâlâ karara sızıyor
+
+Aynı analyze_earnings_pricing aracı THYAO’da ham olarak -%100 anomalileri üretmişti. MEYSU için ham evidenceLines henüz görülmeden:
+
+NOT_EXTENDED → “aşırı şişmiş görünmüyor”
+
+deniyor.
+
+MEYSU çıktısı gerçekten sağlam olabilir; fakat aynı tool’daki doğrulanmış genel hata nedeniyle aksi kanıtlanana kadar güvenilmemeli. Önce ham satırlar ve kullanılan referans kapanış kontrol edilmeli.
+
+Ayrıca NOT_EXTENDED yalnız teknik fiyat uzamasını anlatabilir; temel anlamda “ucuz” veya “pahalı değil” demek değildir.
+
+6. Uzman ve sosyal katman haksız yere COMPLETE
+
+İlk YouTube çağrısı fetch failed; onarımda yalnız sekiz video bulundu. “Video bulundu” ile “içeriği incelendi” aynı şey değil.
+
+Cevapta şunlar yok:
+
+Uzmanın/kurumun adı
+Görüş tarihi
+Rapor veya içerik bağlantısı
+Olumlu/olumsuz görüşün dayandığı tez
+İncelenen sosyal paylaşım sayısı
+Platform dağılımı
+Etkileşim ağırlığı
+Tekrarlanan içeriklerin ayıklanması
+
+Yakın tarihli bazı video başlıkları perakende ve heyecanlı tonu destekliyor; örneğin “portföyümün %50’si” dili gerçekten spekülatif tona işaret ediyor. Fakat tekil başlıklar genel konsensüsü kanıtlamaz. Yakın tarihli YouTube örneği
+
+Doğru ayrım:
+
+EXPERT_RESEARCH_EVIDENCE: UNAVAILABLE veya PARTIAL
+SOCIAL_SENTIMENT_EVIDENCE: PARTIAL
+YOUTUBE_SEARCH_METADATA: COMPLETE
+
+Arama metadata’sının tamamlanması, sosyal duyarlılık analizinin tamamlandığı anlamına gelmez.
+
+7. Temel yorum izlenebilir değil
+
+Cevap:
+
+“Net kâr zayıf”
+“İşletme nakit akışı negatif”
+
+diyor fakat rakam ve dönem vermiyor.
+
+İş Yatırım sayfasında son görünen net kâr 4,7 milyon TL, özkaynak 4,582 milyar TL civarında; bu gerçekten zayıf kârlılık sinyalidir. Ancak dönem karşılaştırması cevapta açıkça gösterilmeliydi. İş Yatırım MEYSU şirket kartı
+
+Her temel hüküm şu biçimde izlenebilir olmalı:
+
+{
+  claim: "PROFITABILITY_WEAK",
+  currentPeriod: "2026/6",
+  currentValue: 4.7,
+  comparisonPeriod: "...",
+  comparisonValue: "...",
+  sourceEvidenceId: "..."
+}
+8. Orkestrasyon hâlâ pahalı ve ters
+
+Akış yaklaşık 3 dakika 34 saniye sürmüş:
+
+Plan reddediliyor.
+Plan yeniden kuruluyor.
+On araç ve beş iterasyon çalışıyor.
+İlk cevap yazılıyor.
+Sözleşme ancak sonra değerlendiriliyor.
+Onarım başlıyor.
+İkinci cevap yazılıyor.
+
+Öncelik 2 hâlâ şart:
+
+Plan → Araştırma → Kanıt doğrulama → Onarım → Son kapsam → Tek composer
+Test sonucu
+Kontrol	Sonuç
+Eksik kanıtla seviye vermemesi	PASS
+PARTIAL durumunu göstermesi	PASS
+Eksik kanıtı doğru tanımlaması	FAIL
+Seviye türetimini doğrulaması	FAIL
+Repair tool yönlendirmesi	FAIL
+Bozuk kanıt soyunu dışlaması	FAIL/DOĞRULANMADI
+Uzman/sosyal COMPLETE doğruluğu	FAIL
+Tek composer akışı	FAIL
+
+En doğru özet:
+
+ÇAKAL bu defa ateş etmedi; güzel. Ama hedefi neden vuramayacağını hâlâ yanlış teşhis ediyor.
+
+Bu test regresyon paketine şu adla girmeli:
+
+levels_must_remain_blocked_when_only_session_is_missing_but_derivation_evidence_is_absent
+
+Yani MARKET_SESSION_STATUS tamamlansa bile OHLC destekleri, ATR, yöntem ve risk/getiri kanıtı yoksa giriş/stop/hedef kapısı kapalı kalmalı.
+
+EN
+23:08
+THYAO kaç TL?
+ÇAKAL
+23:08
+THYAO: ₺308,00.
+
+Kısa not:
+- Değişim: %-0,24
+- Kaynak: Yahoo Finance
+- Zaman: 2026-08-13 kapanış referansı
+
+İstersen bir üst adımda THYAO teknik analizini de çıkarırım. Yatırım tavsiyesi değildir.
+
+Fırsat ara, strateji sor...
+
+
+Metin seçip kopyalayabilirsin. Uzun yanıtlar otomatik satır kırar.
+
+
+Ajan Aktivite Monitörü
+9
+
+
+🚀
+23:08:24
+Ajan Başlatıldı
+COMMANDER ajanı devreye girdi
+🗄️
+23:08:24
+DB Sorgu
+Profil ve strateji verileri alınıyor...
+✅
+23:08:25
+DB Sonuç
+Profil: ✓, Index: 26, Pattern: 5
+🧠
+23:08:25
+LLM Başladı
+gpt-5.4-mini düşünüyor... (görev: chat)
+🔧
+23:08:30
+Tool Çağrıları
+Araçlar çağrılıyor (paralel): get_stock_price
+⚡
+23:08:30
+Tool Çağrısı
+Fiyat sorgusu: THYAO
+📋
+23:08:32
+Tool Sonucu
+get_stock_price → source=yahoo_finance | count=1
+🔄
+23:08:32
+LLM Devam
+gpt-5.4-mini sonuçları değerlendiriyor (iterasyon 1, task:quick)...
+✨
+23:08:34
+Cevap Hazır
+COMMANDER cevap üretti (216 karakter)
+
+Kaptan, bu test temiz PASS.
+
+Basit fiyat sorusu araştırma sözleşmesini tetiklemedi.
+Yalnız gerekli araç çağrıldı.
+308,00 TL doğru.
+Önceki kapanış 308,75 TL olduğundan -%0,24 hesabı da doğru.
+“13 Ağustos kapanış referansı” ifadesi fiyat zamanı ile sorgu zamanını karıştırmıyor.
+Gereksiz analiz, karar veya seviye üretmedi.
+
+Bu, Kural A’daki önemli ayrımın çalıştığını kanıtlıyor:
+
+“THYAO kaç TL?” serbest; “THYAO bugün alınır mı?” araştırma sözleşmesine tabi.
+
+Tek iyileştirme performans tarafında: Bu kadar deterministik bir sorguda profil/strateji DB’si ve iki LLM geçişi gereksiz. Fiyat sorguları için doğrudan hızlı yol kurulabilir:
+
+PRICE_SINGLE_FACT → get_stock_price → deterministik formatter
+
+Böylece yaklaşık 10 saniye yerine 2–3 saniyelik cevap hedeflenebilir. “Yatırım tavsiyesi değildir” satırı da basit fiyat sorgusunda gereksiz ama zararsız.
+
+Test hükmü: doğruluk PASS, kapsam PASS, zaman etiketi PASS, verimlilik geliştirilebilir.
+
+SEN
+23:10
+BRSAN'ın son açıklanan mali tablo dönemini GEÇEN YILIN AYNI DÖNEMİYLE karşılaştır. Kullandığın iki dönemi de açıkça yaz. yoyAvailable alanı ne döndü?
+ÇAKAL
+23:12
+Kaptan, net cevap:
+
+- Son açıklanan dönem: 2026/6
+- Geçen yılın aynı dönemi: 2025/6
+- yoyAvailable alanı: true
+
+Kısa karşılaştırma, İş Yatırım verisine göre:
+
+| Kalem | 2026/6 | 2025/6 | Yıllık değişim |
+|---|---:|---:|---:|
+| Hasılat | 43.592.538.000 | 29.173.910.000 | +%49,4 |
+| Brüt kâr | 4.593.232.000 | 2.431.875.000 | +%88,9 |
+| Faaliyet kârı | 2.627.110.000 | 1.166.279.000 | +%125,3 |
+| Net dönem kârı | 1.796.800.000 | 597.853.000 | +%200,5 |
+
+Ek not:
+- Tool’un döndürdüğü yoyPeriods: ["2026/6","2025/6","2024/6","2023/6"]
+- Tool notu da bunu destekliyor: “Yıl öncesi aynı çeyrek karşılaştırması mevcut”
+
+Kaynak: İş Yatırım MaliTablo verisi  
+Veri zamanı: 2026-08-13T22:11:52.977Z
+
+İstersen bir sonraki adımda bunu çeyreksel (2026/3 → 2026/6 farkı) ve marj bazında da açarım.
+
+---
+📋 ARAŞTIRMA SÖZLEŞMESİ KAPSAMI (deterministik, plan v1): COMPLETE
+✓ [s1] BRSAN'ın son açıklanan mali tablo dönemini geçen yılın aynı dönemiyle karşılaştır ve kullanılan iki dönemi açıkça yaz; yoyAvailable alanının ne döndüğünü tespit et. (single_fact): COMPLETE
+
+Fırsat ara, strateji sor...
+
+
+Metin seçip kopyalayabilirsin. Uzun yanıtlar otomatik satır kırar.
+
+
+Ajan Aktivite Monitörü
+20
+
+
+🚀
+23:10:30
+Ajan Başlatıldı
+COMMANDER ajanı devreye girdi
+🗄️
+23:10:30
+DB Sorgu
+Profil ve strateji verileri alınıyor...
+✅
+23:10:53
+DB Sonuç
+Profil: ✓, Index: 26, Pattern: 5
+📎
+23:10:53
+research_contract
+Araştırma sözleşmesi zorunlu (skor 4/4: coklu sirket (3), coklu sirket karsilastirmasi)
+🧠
+23:10:53
+LLM Başladı
+gpt-5.4 düşünüyor... (görev: deep_analysis)
+🔧
+23:11:20
+Tool Çağrıları
+Araçlar çağrılıyor (paralel): get_financial_statements
+⚡
+23:11:20
+Tool Çağrısı
+Araştırma sözleşmesi gerekli (skor 4): get_financial_statements bekletildi.
+📋
+23:11:20
+Tool Sonucu
+get_financial_statements → Bu istek arastirma sozlesmesi gerektiriyor (karmasiklik 4/4: coklu sirket (3), coklu sirket karsilas...
+🔄
+23:11:20
+LLM Devam
+gpt-5.4 sonuçları değerlendiriyor (iterasyon 1, task:deep_analysis)...
+🔧
+23:11:28
+Tool Çağrıları
+Araçlar çağrılıyor (paralel): submit_research_plan
+⚡
+23:11:28
+Tool Çağrısı
+plan kilitlendi: 1 alt soru (v1)
+📋
+23:11:28
+Tool Sonucu
+submit_research_plan → Başarılı
+🔄
+23:11:28
+LLM Devam
+gpt-5.4 sonuçları değerlendiriyor (iterasyon 2)...
+🔧
+23:11:31
+Tool Çağrıları
+Araçlar çağrılıyor (paralel): get_financial_statements
+⚡
+23:11:31
+Tool Çağrısı
+Finansal tablolar çekiliyor: BRSAN (İş Yatırım MaliTablo)
+📋
+23:11:52
+Tool Sonucu
+get_financial_statements → source=is_yatirim_malitablo
+🔄
+23:11:52
+LLM Devam
+gpt-5.4 sonuçları değerlendiriyor (iterasyon 3, task:deep_analysis)...
+✨
+23:12:14
+Cevap Hazır
+COMMANDER cevap üretti (851 karakter)
+📊
+23:12:14
+Strateji Analizi
+⚡ Yavaş istek analizi: Toplam süre: 81.4s → Tool sayısı: 3 (2 cache hit) → En yavaş: get_financial_statements (21.0s) → Öneriler: 3 iterasyon kullandı — ilk prompt daha net olsaydı daha az tur dönerdi
+📎
+23:12:14
+research_contract
+Sözleşme kapanışı: COMPLETE — tam: s1; kısmi: yok; bloke: yok
+
+Kaptan, cevabın finansal içeriği doğru; yönlendirme katmanı ise bariz hatalı.
+
+Resmî Borusan raporu da karşılaştırmayı doğruluyor: 1 Ocak–30 Haziran 2026 ile 1 Ocak–30 Haziran 2025 karşılaştırılmış. Hasılat, brüt kâr, esas faaliyet kârı ve net kâr rakamları cevapla birebir uyumlu. Borusan Boru 2026 yarıyıl finansal raporu
+
+Çıktı doğruluğu
+Kontrol	Sonuç
+Son dönem: 2026/6	PASS
+Karşılaştırma dönemi: 2025/6	PASS
+yoyAvailable: true	PASS
+Hasılat değişimi: +%49,4	PASS
+Brüt kâr değişimi: +%88,9	PASS
+Esas faaliyet kârı: +%125,3	PASS
+Net kâr değişimi: +%200,5	PASS
+
+Burada yalnız terminoloji düzeltmesi gerekiyor: Bunlar Q2 tek çeyrek rakamları değil, altı aylık kümülatif rakamlar:
+
+2026/6 = 01.01.2026–30.06.2026
+2025/6 = 01.01.2025–30.06.2025
+
+Tool’un “aynı çeyrek” notu yerine “geçen yılın aynı raporlama dönemi” demesi daha doğru.
+
+Asıl yakalanan hata: tek şirketi üç şirket sanmış
+
+Log:
+
+coklu sirket (3), coklu sirket karsilastirmasi
+
+diyor. Promptta yalnızca BRSAN var.
+
+Çok kuvvetli ihtimalle sembol algılayıcı büyük harfle yazılmış Türkçe kelimeleri hisse kodu sanıyor:
+
+BRSAN
+YILIN
+AYNI
+
+Belki normalizasyon sonrası GEÇEN de aday oluyor. Ham [A-Z]{3,5} benzeri regex, ticker doğrulaması olmadan şirket sayıyor.
+
+Düzeltme:
+
+const candidates = extractUppercaseTokens(text);
+const symbols = candidates.filter(token =>
+  bistSymbolRegistry.has(token)
+);
+
+
+const companyCount = new Set(symbols).size;
+
+Yani büyük harfli kelime yalnız aday olabilir; gerçek şirket sayılması için BIST sembol sicilinde bulunmalı.
+
+Gereksiz sözleşme ve 81 saniyelik gecikme
+
+Bu sorgu:
+
+Tek şirket
+İki açık dönem
+Tek finansal tablo aracı
+Karar/AL/SAT/seviye talebi yok
+
+Dolayısıyla araştırma sözleşmesine ihtiyacı yoktu. İlk tool çağrısı gereksiz yere bekletilmiş, sonra plan kurulmuş ve aynı tool tekrar çağrılmış.
+
+Olması gereken hızlı yol:
+
+FINANCIAL_YOY_SINGLE_COMPANY
+→ get_financial_statements
+→ yoyAvailable kontrolü
+→ deterministik karşılaştırma tablosu
+
+Profil/strateji DB sorgusu da gereksiz. Yaklaşık 81 saniye yerine 20–25 saniye, cache varsa birkaç saniye yeterli olurdu.
+
+İki küçük sunum düzeltmesi
+
+“Veri zamanı” olarak yazılan:
+
+2026-08-13T22:11:52.977Z
+
+finansal tablonun tarihi değil, tool’un veriyi aldığı zaman. Şöyle ayrılmalı:
+
+Rapor dönemi: 2026/6
+Karşılaştırma dönemi: 2025/6
+Verinin alınma zamanı: 2026-08-13T22:11:52.977Z
+
+Ayrıca tablo başlığına birim eklenmeli:
+
+Tutarlar: TL
+
+veya daha okunaklı biçimde 43,59 mlr TL.
+
+Regresyon testi
+expect(classify(
+  "BRSAN'ın son dönemini GEÇEN YILIN AYNI DÖNEMİYLE karşılaştır"
+)).toMatchObject({
+  symbols: ["BRSAN"],
+  companyCount: 1,
+  queryType: "FINANCIAL_YOY_SINGLE_COMPANY",
+  researchContractRequired: false
+});
+
+Nihai hüküm: Finansal cevap 9/10, dönem açıklığı 8/10, intent/entity sınıflandırması FAIL, performans FAIL. Bu test araştırma kapısını değil, büyük harfli Türkçe kelimeleri hisse sanan sembol dedektörünü yakaladı.

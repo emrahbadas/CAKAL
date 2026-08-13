@@ -7,16 +7,16 @@ Kural: bir madde buradan ancak **ölçülmüş kanıtla** çıkar. "Yazıldı" y
 
 ---
 
-## 1. Canlıda doğrulanması gereken (ağ gerektirir)
+## 1. Canlı doğrulama — TAMAMLANDI (13 Ağustos 2026)
 
-Bu değişiklikler birim testleriyle kapsanıyor ama **gerçek kaynağa karşı hiç çalıştırılmadı**. Hepsinin başarısızlık yolu güvenli tarafta bırakıldı; yine de ilk canlı çalıştırmada log'dan teyit edilmeli.
+Dördü de gerçek kaynağa karşı çalıştırıldı ve **PASS** verdi. Koşum: commit `3f8ad0a`, Electron CDP üzerinden sürülen gerçek pencere, BIST kapalı (Istanbul 22:26–23:12).
 
-| # | Ne | Nasıl doğrulanır | Yanlışsa ne olur |
-|---|---|---|---|
-| 1.1 | **YoY isteği** — `sameQuarterAcrossYears` ile atılan ikinci MaliTablo isteği (`2026/6, 2025/6, 2024/6, 2023/6`) | Bir bilanço sorusu sor, sonuçta `yoyAvailable: true` ve dolu `yoyKeyItems` var mı bak | Ana tablo düşmez; `yoyAvailable: false` döner ve cevap "aracım o kolonu getiremedi" der |
-| 1.2 | **İleriden geriye prob** — pencere `2026/6` ile başlıyor, boşsa geri kayıyor | Erken yayımlayan (BRSAN) ve geç yayımlayan bir şirketi aynı turda sor; `dönem=` alanları farklı çeyrek gösterebilir, ikisi de dolu olmalı | En kötü ihtimalle iki fazladan istek atılır, sonuç eskisiyle aynı olur |
-| 1.3 | **Nakit akışı satır adları** — `FINANCIAL_KEY_ITEM_PATTERNS_CASHFLOW` desenleri gerçek `itemDescTr` değerlerine karşı doğrulanmadı | `get_cash_flow_breakdown` çağır, `cashFlowItems` boş mu dolu mu bak | Boş dönerse `status: NO_DATA` + `missingInputs`; **ama borç kalite kapısı o zaman HER borç yorumunu bloklar → gürültü riski.** Bu maddenin önceliği yüksek |
-| 1.4 | **Aracın gerçekten çağrılması** — model `get_cash_flow_breakdown`'ı borç yorumundan önce çağırıyor mu | Bir bilanço/borçluluk sorusunda aktivite monitörüne bak | Çağırmazsa borç kalite kapısı ateşler ve hüküm iner (güvenli ama tur israfı) |
+| # | Ne | Canlı sonuç |
+|---|---|---|
+| 1.1 | **YoY isteği** | ✅ **PASS** — `yoyAvailable: true`, `yoyPeriods: ["2026/6","2025/6","2024/6","2023/6"]`. BRSAN 2026/6 ↔ 2025/6 gerçek karşılaştırma döndü (hasılat +%49,4, net kâr +%200,5) |
+| 1.2 | **İleriden geriye prob** | ✅ **PASS** — pencere `2026/6` ile başladı, 2026/3'e düşmedi. 45 günlük varsayımın kalkışı canlıda doğrulandı |
+| 1.3 | **Nakit akışı satır adları** | ✅ **PASS** — en riskli maddeydi. `get_cash_flow_breakdown` gerçek veri döndürdü (`source=is_yatirim_malitablo`), `NO_DATA` DEĞİL. İşletme nakdi 7,70 mlr TL çıkarıldı, kaynak `OPERATIONS` sınıflandı. Desenler gerçek `itemDescTr` değerleriyle tutuyor; korkulan "her borç yorumu bloklanır" senaryosu gerçekleşmedi |
+| 1.4 | **Aracın gerçekten çağrılması** | ✅ **PASS** — model `get_cash_flow_breakdown`'ı borç yorumundan ÖNCE çağırdı; borç kalite kapısının ateşlemesi gerekmedi |
 
 ## 2. Ölçülmesi gereken maliyet/davranış değişiklikleri
 
@@ -28,7 +28,7 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 | 2.2 | Router daha çok turu `deep_analysis`'e (gpt-5.4) yolluyor | Token maliyeti artışı; "işlem seviyesi asla zayıf modele düşmez" kuralının bedeli kabul edilebilir mi |
 | 2.3 | `internalTurn` + `commitConversationTurn` | Çok kapılı gerçek bir turdan sonra geçmişte **2 kayıt** kaldığı görülmeli. Şu an yalnız *kaynak sözleşmesi* testle sabit, **davranış değil** |
 | 2.4 | Volatilite tavanı core'da 35 → 5 | Core tarafı canlı hattan çağrılmadığı için etkisi bugün YOK; Adım 4'ün kalanı yapılınca eleme oranı ölçülmeli |
-| 2.5 | Kapsam brifingi: kapanmayan her sözleşmede bir ek `tool_choice:'none'` çağrısı | Ek gecikme ve token maliyeti; brifing sonrası cevabın gerçekten düzelip düzelmediği (deterministik indirme hâlâ ateşliyor mu) |
+| 2.5 | Kapsam brifingi | **ÖLÇÜLDÜ (13 Ağustos).** Brifing çalışıyor ve ETKİLİ: hiçbir turda `HÜKÜM İNDİRİLDİ` ateşlemedi, yani model brifingi okuyup uydu. MEYSU turunda modelin kendi cümlesi brifing metninden birebir geldi ("uygulanabilir işlem talimatıdır"). **MALİYET GERÇEK:** brifing `chat()` başına çalıştığı için tek kullanıcı isteğinde birden çok kez tetiklenebiliyor — MEYSU turunda 4 sözleşme kapanışı + 2 brifing görüldü, süre 481s. Basit sorularda hiç tetiklenmiyor (THYAO kaç TL → 42s, brifing yok). Optimizasyon adayı: brifingi istek başına tekle |
 
 ## 3. Kapanmayan işler
 
@@ -43,6 +43,12 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
   Test: `tests/coverage-briefing.test.mjs` (13 test).
 
 ### 3.2 Kanıt kalitesi
+
+- ~~**`analyze_earnings_pricing` kanıt satırları bozuk.**~~ **CANLIDA BULUNDU VE DÜZELTİLDİ (13 Ağustos 2026).** Tüm getiriler tam `-%100` çıkıyordu. Kök neden: `Number(null) === 0` ve `Number.isFinite(0) === true` olduğu için `toFinite(null)` SIFIR döndürüyordu. Yahoo, seansı süren günün barını `close: null` (hacim dolu) gönderiyor; o bar `close: 0` diye içeri girip dizinin SONUNCUSU olduğu için ÇAPA seçiliyordu. MA50 de sıfırla kirleniyordu.
+  **Neden tehlikeliydi:** sınıflandırma yine de `NOT_EXTENDED` + "veri güveni: **high**" diyordu — çöp veriye yüksek güven etiketi. O etiket fiyatlanma kapısının zamanlama hükmüne izin verip vermediğini belirliyor.
+  **Nasıl bulundu:** kapı yakalamadı, **ÇAKAL kendi cevabında bildirdi**: "aynı araçta kanıt satırları bariz bozuk görünüyor (-100% gibi anomali var), bu yüzden stop kararında onu ana dayanak yapmıyorum." Sektör tespiti hatasından sonra ikinci kez kendi kusurunu raporladı.
+  Düzeltme: `toFinite` null/undefined/'' değerlerini açıkça eleyor; `normalizeBars` ayrıca sıfır ve negatif kapanışı atıyor (ikinci savunma). Canlı doğrulama: aynı sorgu düzeltmeden sonra `-%1,7 / -%7,4 / +%2,9` döndü, referans tarih son GEÇERLİ kapanış (`2026-08-12`).
+  Test: `tests/earnings-pricing-null-close.test.mjs` (6 test).
 
 - ~~**Seviye provenance derinleşmedi.**~~ **YAPILDI (12 Ağustos 2026).** Kanıt olayı artık `measurements: { SEMBOL: [sayılar] }` taşıyor (`extractMeasurements`); kapı ikinci soruyu soruyor: cevaptaki rakam, o sembolde ölçülen bir değerle **aynı büyüklük mertebesinde mi**. Değilse `notDerivedSymbols` ile bloklanıyor. Canlı vakadaki "553 TL'lik hissede stop 1 TL" sınıfı hata artık geçmiyor.
   **SINIR — abartılmasın:** bu bir çapa kontrolüdür, türetim İSPATI değildir. Band bilerek geniş (ölçümün 0.5×–2× aralığı), çünkü dar band meşru hedefi/stopu bloklar ve kapıyı gürültüye çevirir. Tam ispat modelin formülü bildirmesini gerektirir; o yapılmadı. Ölçüm değeri taşımayan eski olaylarda eski davranış korunur (yanlış pozitif üretmemek için).
