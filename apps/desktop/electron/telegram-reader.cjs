@@ -8,6 +8,71 @@ const { StringSession } = require('telegram/sessions');
 const path = require('path');
 const fs = require('fs');
 
+/**
+ * Telegram'ın "bu yetki artık geçerli değil" dediği hata kodları.
+ *
+ * ÖLÇÜLEN CANLI HATA (15 Ağustos 2026): kayıtlı oturum dizesi 369 karakterdi,
+ * yani "dolu" görünüyordu; ama `users.GetUsers` çağrısı 401 SESSION_REVOKED
+ * döndürdü. Eski `isAuthenticated()` yalnızca dizenin uzunluğuna baktığı için
+ * ayarlar ekranı "Telegram hesabı bağlı" diyordu ve giriş formunu gizliyordu —
+ * kullanıcının yeniden giriş yapmasına HİÇBİR yol kalmıyordu.
+ *
+ * Ders: dizenin var olması yetkinin geçerli olduğunu göstermez. Beyan kanıt
+ * değildir; yetki ancak sunucuya sorularak doğrulanır.
+ *
+ * Bu küme ağ hatasından ayırmak için var: bağlantı koptu diye çalışan bir
+ * oturumu silmek, düzeltmeye çalıştığımız hatanın aynısını üretir.
+ */
+const DEAD_SESSION_ERRORS = Object.freeze([
+  'SESSION_REVOKED',       // kullanıcı Telegram > Cihazlar'dan sonlandırdı
+  'SESSION_EXPIRED',
+  'AUTH_KEY_UNREGISTERED', // anahtar sunucuda yok
+  'AUTH_KEY_INVALID',
+  'AUTH_KEY_DUPLICATED',   // aynı oturum iki uygulamadan aynı anda kullanıldı
+  'USER_DEACTIVATED_BAN',
+  'USER_DEACTIVATED',
+]);
+
+// Doğrulama ağ turu gerektirir; ayarlar ekranı her açılışta beklemesin diye
+// kısa ömürlü önbellek. Başarısızlık daha kısa tutulur ki yeniden giriş
+// yapıldığında ekran hemen düzelsin.
+const AUTH_CACHE_OK_MS = 60_000;
+const AUTH_CACHE_FAIL_MS = 5_000;
+const AUTH_CHECK_TIMEOUT_MS = 8_000;
+
+/** Söz verilen süre içinde bitmezse reddet — arayüz asılı kalmasın. */
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('AUTH_CHECK_TIMEOUT')), ms);
+    }),
+  ]);
+}
+
+/** Hata kodunu "ölü oturum" mu yoksa "ulaşılamadı" mı diye sınıflar. */
+function classifyAuthError(err) {
+  const raw = String(err?.errorMessage || err?.message || '').toUpperCase();
+  const dead = DEAD_SESSION_ERRORS.find((code) => raw.includes(code));
+  if (dead) {
+    return {
+      authorized: false,
+      reason: 'revoked',
+      code: dead,
+      message: dead === 'AUTH_KEY_DUPLICATED'
+        ? 'Oturum iptal edilmiş (aynı oturum başka bir uygulamada da kullanılmış). Yeniden giriş yap.'
+        : 'Telegram oturumu iptal edilmiş. Yeniden giriş yap.',
+    };
+  }
+  return {
+    authorized: false,
+    reason: 'unreachable',
+    code: raw.slice(0, 60) || 'UNKNOWN',
+    message: 'Telegram\'a ulaşılamadı; oturum durumu doğrulanamadı.',
+  };
+}
+
 class TelegramReader {
   constructor(configPath) {
     this.configPath = configPath;
@@ -16,6 +81,7 @@ class TelegramReader {
     this.apiHash = null;
     this.session = null;
     this.connected = false;
+    this._authCache = null;
   }
 
   _normalizeText(value) {
@@ -152,9 +218,78 @@ class TelegramReader {
     return !!(this.apiId && this.apiHash);
   }
 
-  isAuthenticated() {
+  /**
+   * Diskte bir oturum dizesi VAR MI? Ucuz, ağ turu yok.
+   *
+   * DİKKAT: bu "giriş yapılmış" demek DEĞİLDİR. İptal edilmiş bir oturum da
+   * dolu görünür. Yetki sorusunun cevabı için verifyAuthorization() kullan.
+   */
+  hasStoredSession() {
     const config = this._loadConfig();
     return !!(config.TELEGRAM_SESSION && config.TELEGRAM_SESSION.length > 10);
+  }
+
+  /**
+   * Yetki GERÇEKTEN geçerli mi? Telegram'a sorar.
+   *
+   * @returns {Promise<{authorized: boolean, reason: string, code?: string, message: string}>}
+   *   reason: 'ok' | 'not_configured' | 'no_session' | 'revoked' | 'unreachable'
+   */
+  async verifyAuthorization({ force = false } = {}) {
+    if (!this.isConfigured()) {
+      return { authorized: false, reason: 'not_configured', message: 'API ID ve API Hash ayarlanmamış' };
+    }
+    if (!this.hasStoredSession()) {
+      return { authorized: false, reason: 'no_session', message: 'Telegram girişi yapılmamış' };
+    }
+
+    if (!force && this._authCache && Date.now() < this._authCache.expiresAt) {
+      return this._authCache.value;
+    }
+
+    let value;
+    try {
+      // Ayarlar ekranı bu cevabı bekliyor; ağ ölürse süresiz asılı kalmasın.
+      await withTimeout((async () => {
+        await this.connect();
+        await this.client.invoke(new Api.users.GetUsers({ id: [new Api.InputUserSelf()] }));
+      })(), AUTH_CHECK_TIMEOUT_MS);
+      value = { authorized: true, reason: 'ok', message: 'Telegram hesabı bağlı' };
+    } catch (err) {
+      value = classifyAuthError(err);
+    }
+
+    this._authCache = {
+      value,
+      expiresAt: Date.now() + (value.authorized ? AUTH_CACHE_OK_MS : AUTH_CACHE_FAIL_MS),
+    };
+    return value;
+  }
+
+  /**
+   * Yerel oturumu siler; yeniden girişe hazır hale getirir.
+   *
+   * Yalnızca YEREL kaydı temizler — Telegram tarafındaki diğer cihazlara
+   * dokunmaz. Aynı numarayı kullanan başka uygulaman varsa etkilenmez.
+   */
+  async resetAuth() {
+    try {
+      await this.disconnect();
+    } catch { /* zaten kapalı olabilir */ }
+
+    this.client = null;
+    this.connected = false;
+    this._authCache = null;
+    this._phoneCodeHash = null;
+    this._phone = null;
+
+    const config = this._loadConfig();
+    delete config.TELEGRAM_SESSION;
+    fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+    this.session = new StringSession('');
+    console.log('[TelegramReader] Local session cleared');
+    return { status: 'ok' };
   }
 
   async connect() {
@@ -188,6 +323,18 @@ class TelegramReader {
 
   // Step 1: Send code to phone
   async sendCode(phone) {
+    // İptal edilmiş bir auth key ile YAPILAN HER İSTEK 401 döner — kod isteği
+    // dahil. Bu yüzden giriş başlatılırken ölü oturum önce temizlenir, yoksa
+    // "Kod Gönder" SESSION_REVOKED ile düşer ve kullanıcı kilitli kalır.
+    // Ağ hatasında temizlemeyiz: çalışan oturumu kaybettirmek olurdu.
+    if (this.hasStoredSession()) {
+      const auth = await this.verifyAuthorization({ force: true });
+      if (!auth.authorized && auth.reason === 'revoked') {
+        console.log('[TelegramReader] Dead session detected before sendCode:', auth.code);
+        await this.resetAuth();
+      }
+    }
+
     await this.connect();
     console.log('[TelegramReader] Sending code to:', phone);
     const result = await this.client.sendCode(
@@ -225,6 +372,7 @@ class TelegramReader {
     // Save session
     const sessionStr = this.client.session.save();
     this._saveConfig({ TELEGRAM_SESSION: sessionStr });
+    this._authCache = null; // durum değişti, eski cevabı tekrar kullanma
     console.log('[TelegramReader] Authenticated & session saved');
     return { status: 'ok', message: 'Giriş başarılı!' };
   }
@@ -242,6 +390,7 @@ class TelegramReader {
 
     const sessionStr = this.client.session.save();
     this._saveConfig({ TELEGRAM_SESSION: sessionStr });
+    this._authCache = null; // durum değişti, eski cevabı tekrar kullanma
     console.log('[TelegramReader] 2FA verified & session saved');
     return { status: 'ok', message: '2FA doğrulama başarılı!' };
   }
@@ -378,4 +527,4 @@ class TelegramReader {
   }
 }
 
-module.exports = { TelegramReader };
+module.exports = { TelegramReader, classifyAuthError, DEAD_SESSION_ERRORS };

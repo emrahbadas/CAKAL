@@ -3603,6 +3603,7 @@ ipcMain.handle('config:save', async (_event, settings) => {
 
 ipcMain.handle('config:get-all', async () => {
   const localConfig = loadLocalConfig();
+  const telegramReaderAuth = await telegramReader.verifyAuthorization();
   return {
     status: 'ok',
     data: {
@@ -3613,7 +3614,11 @@ ipcMain.handle('config:get-all', async () => {
       hasYouTube: !!process.env.YOUTUBE_API_KEY,
       hasSupabase: !!supabaseClient,
       hasTelegram: telegram.isConfigured(),
-      hasTelegramReader: telegramReader.isAuthenticated(),
+      // Uzunluk kontrolü değil, gerçek yetki sorgusu. İptal edilmiş oturum da
+      // "dolu" görünüyordu ve ayarlar ekranı yeşil yakıp giriş formunu gizliyordu.
+      hasTelegramReader: telegramReaderAuth.authorized,
+      telegramReaderAuthReason: telegramReaderAuth.reason,
+      telegramReaderAuthMessage: telegramReaderAuth.message,
       TELEGRAM_API_ID: localConfig.TELEGRAM_API_ID || '',
       TELEGRAM_API_HASH: localConfig.TELEGRAM_API_HASH || '',
     },
@@ -3773,8 +3778,9 @@ ipcMain.handle('telegram-reader:verify-2fa', async (_event, { password }) => {
 
 ipcMain.handle('telegram-reader:get-channels', async () => {
   try {
-    if (!telegramReader.isAuthenticated()) {
-      return { status: 'error', error: 'Telegram girişi yapılmamış', data: [] };
+    const auth = await telegramReader.verifyAuthorization();
+    if (!auth.authorized) {
+      return { status: 'error', error: auth.message, reason: auth.reason, data: [] };
     }
     const channels = await telegramReader.getJoinedChannels();
     return { status: 'ok', data: channels };
@@ -3785,8 +3791,9 @@ ipcMain.handle('telegram-reader:get-channels', async () => {
 
 ipcMain.handle('telegram-reader:read-messages', async (_event, { channelId, limit }) => {
   try {
-    if (!telegramReader.isAuthenticated()) {
-      return { status: 'error', error: 'Telegram girişi yapılmamış', data: [] };
+    const auth = await telegramReader.verifyAuthorization();
+    if (!auth.authorized) {
+      return { status: 'error', error: auth.message, reason: auth.reason, data: [] };
     }
     const messages = await telegramReader.readChannelMessages(channelId, limit || 20);
     return { status: 'ok', data: messages };
@@ -3797,8 +3804,9 @@ ipcMain.handle('telegram-reader:read-messages', async (_event, { channelId, limi
 
 ipcMain.handle('telegram-reader:search', async (_event, { channelIds, keywords, limit }) => {
   try {
-    if (!telegramReader.isAuthenticated()) {
-      return { status: 'error', error: 'Telegram girişi yapılmamış', data: [] };
+    const auth = await telegramReader.verifyAuthorization();
+    if (!auth.authorized) {
+      return { status: 'error', error: auth.message, reason: auth.reason, data: [] };
     }
     const results = await telegramReader.searchChannels(channelIds, keywords, limit || 10);
     return { status: 'ok', data: results };
@@ -3822,14 +3830,29 @@ ipcMain.handle('telegram-reader:remove-channel', async (_event, { channelId }) =
 });
 
 ipcMain.handle('telegram-reader:status', async () => {
+  const auth = await telegramReader.verifyAuthorization();
   return {
     status: 'ok',
     data: {
       configured: telegramReader.isConfigured(),
-      authenticated: telegramReader.isAuthenticated(),
+      authenticated: auth.authorized,
+      authReason: auth.reason,
+      authMessage: auth.message,
+      hasStoredSession: telegramReader.hasStoredSession(),
       savedChannels: telegramReader.getSavedChannels().length,
     },
   };
+});
+
+// Yerel oturumu siler; "hesabı değiştir" ve "iptal edilmiş oturumu tazele"
+// akışlarının ikisi de buradan geçer. Telegram'daki diğer cihazlara dokunmaz.
+ipcMain.handle('telegram-reader:reset', async () => {
+  try {
+    await telegramReader.resetAuth();
+    return { status: 'ok', message: 'Yerel Telegram oturumu temizlendi' };
+  } catch (err) {
+    return { status: 'error', error: err.message };
+  }
 });
 
 // ==============================

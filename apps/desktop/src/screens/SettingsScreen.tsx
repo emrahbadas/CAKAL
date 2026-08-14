@@ -72,6 +72,8 @@ export default function SettingsScreen() {
   const [tgMessage, setTgMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [tgPhoneCodeHash, setTgPhoneCodeHash] = useState('');
   const [tgReaderAuthenticated, setTgReaderAuthenticated] = useState(false);
+  const [tgAuthReason, setTgAuthReason] = useState('');
+  const [tgAuthMessage, setTgAuthMessage] = useState('');
 
   useEffect(() => {
     // Load saved config
@@ -84,10 +86,14 @@ export default function SettingsScreen() {
         // Telegram Reader
         setTgApiId(d.TELEGRAM_API_ID || '');
         setTgApiHash(d.TELEGRAM_API_HASH || '');
+        setTgAuthReason(d.telegramReaderAuthReason || '');
+        setTgAuthMessage(d.telegramReaderAuthMessage || '');
         if ((res.data as Record<string, boolean>).hasTelegramReader) {
           setTgAuthStep('done');
           setTgReaderAuthenticated(true);
         } else if (d.TELEGRAM_API_ID && d.TELEGRAM_API_HASH) {
+          // İptal edilmiş oturum da buraya düşer: API bilgileri duruyor,
+          // eksik olan yalnızca geçerli yetki. Doğrudan telefon adımına geç.
           setTgAuthStep('phone');
         }
       }
@@ -190,6 +196,29 @@ export default function SettingsScreen() {
         setTgMessage({ ok: true, text: '2FA doğrulama başarılı!' });
       } else {
         setTgMessage({ ok: false, text: res.error || '2FA başarısız' });
+      }
+    } catch (e: unknown) { setTgMessage({ ok: false, text: (e as Error).message }); }
+    setTgLoading(false);
+  };
+
+  // Hesabı değiştirmek ya da iptal edilmiş oturumu tazelemek için tek yol.
+  // Bu düğme olmadan "bağlı" görünen bir oturumdan çıkış yapılamıyordu.
+  const handleTgRelogin = async () => {
+    setTgLoading(true);
+    setTgMessage(null);
+    try {
+      const res = await window.cakalAPI.telegramReaderReset();
+      if (res.status === 'ok') {
+        setTgReaderAuthenticated(false);
+        setTgAuthReason('no_session');
+        setTgAuthMessage('');
+        setTgCode('');
+        setTg2FA('');
+        setTgPhoneCodeHash('');
+        setTgAuthStep(tgApiId && tgApiHash ? 'phone' : 'config');
+        setTgMessage({ ok: true, text: 'Yerel oturum temizlendi — telefon numaranla yeniden giriş yap' });
+      } else {
+        setTgMessage({ ok: false, text: res.error || 'Oturum temizlenemedi' });
       }
     } catch (e: unknown) { setTgMessage({ ok: false, text: (e as Error).message }); }
     setTgLoading(false);
@@ -499,11 +528,39 @@ export default function SettingsScreen() {
           </p>
 
           {tgAuthStep === 'done' ? (
-            <p className="flex items-center gap-2 text-sm text-emerald-400">
-              <CheckCircle className="h-4 w-4" /> Telegram hesabı bağlı — kanallar okunabilir
-            </p>
+            <div className="space-y-3">
+              <p className="flex items-center gap-2 text-sm text-emerald-400">
+                <CheckCircle className="h-4 w-4" /> Telegram hesabı bağlı — kanallar okunabilir
+              </p>
+              <button
+                onClick={handleTgRelogin}
+                disabled={tgLoading}
+                className="flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+              >
+                {tgLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Radio className="h-3 w-3" />}
+                Yeniden giriş yap / hesabı değiştir
+              </button>
+            </div>
           ) : (
             <div className="space-y-3">
+              {/* Oturum iptal edilmişse sebebini söyle: kullanıcı "neden tekrar
+                  giriş istiyor" diye sormasın. */}
+              {tgAuthReason === 'revoked' && (
+                <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                  <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>
+                    {tgAuthMessage || 'Önceki Telegram oturumu iptal edilmiş.'}
+                    {' '}Bu genelde Telegram &gt; Cihazlar ekranından oturum sonlandırıldığında olur.
+                  </span>
+                </p>
+              )}
+              {tgAuthReason === 'unreachable' && (
+                <p className="flex items-start gap-2 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-xs text-zinc-400">
+                  <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>{tgAuthMessage || 'Telegram\'a ulaşılamadı.'} Bağlantını kontrol edip ekranı yenile.</span>
+                </p>
+              )}
+
               {/* API ID & Hash */}
               {tgAuthStep === 'config' && (
                 <>

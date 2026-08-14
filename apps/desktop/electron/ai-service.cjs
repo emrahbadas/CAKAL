@@ -6077,8 +6077,11 @@ async function handleToolCall(name, args, options = {}) {
         if (!telegramReader) {
           return { tool: name, success: false, message: 'Telegram kanal okuyucu mevcut değil.' };
         }
-        if (!telegramReader.isAuthenticated()) {
-          return { tool: name, success: false, message: 'Telegram hesabı bağlı değil. Ayarlar → Telegram Kanal Okuyucu bölümünden giriş yap.' };
+        // Kayıtlı dize varlığı değil, gerçek yetki. İptal edilmiş oturumda
+        // araç "bağlı" sanıp çağrı yapıyor ve anlamsız 401 ile düşüyordu.
+        const tgAuth = await telegramReader.verifyAuthorization();
+        if (!tgAuth.authorized) {
+          return { tool: name, success: false, message: `${tgAuth.message} Ayarlar → Telegram Kanal Okuyucu bölümünden giriş yap.` };
         }
 
         const action = args.action;

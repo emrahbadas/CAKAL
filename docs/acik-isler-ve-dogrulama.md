@@ -88,6 +88,22 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 - **Deterministik sorular için hızlı yol yok.** "THYAO kaç TL?" turu 42 saniye sürdü: profil/strateji DB sorgusu + iki LLM geçişi + araç. Bu sorunun tek doğru cevabı var ve LLM'e ihtiyaç duymuyor. Öneri: `PRICE_SINGLE_FACT → get_stock_price → deterministik formatlayıcı` (hedef 2–3 saniye). Aynı kalıp `FINANCIAL_YOY_SINGLE_COMPANY` için de kurulabilir.
 - **Profil/strateji DB sorgusu her turda çalışıyor**, basit sorularda gereksiz. Ölçüldü: bir turda 19 saniye.
 
+### 3.6 Entegrasyon durum yüzeyleri — Telegram DÜZELTİLDİ (15 Ağustos 2026)
+
+**Bulunan:** Ayarlar → Telegram Kanal Okuyucu "Telegram hesabı bağlı — kanallar okunabilir" diyordu. Ölçüm bunun yanlış olduğunu gösterdi: `users.GetUsers` → `401 SESSION_REVOKED`. `isAuthenticated()` yetkiyi sunucuya sormuyor, yalnızca kayıtlı dizenin uzunluğuna bakıyordu (`length > 10`); iptal edilmiş oturum da 369 karakter olduğu için kontrol geçiyordu. Yanlış "bağlı" durumu `tgAuthStep === 'done'` dalını seçiyor, o dalda da giriş formu hiç çizilmiyordu → **yeniden giriş yapmak imkânsızdı**.
+
+**Yapılan:**
+- `isAuthenticated()` ikiye ayrıldı: `hasStoredSession()` (ucuz, dize var mı) ve `async verifyAuthorization()` (gerçek yetki sorgusu, 60 sn önbellek, 8 sn zaman aşımı).
+- Hata sınıflaması: `SESSION_REVOKED` / `AUTH_KEY_DUPLICATED` / `AUTH_KEY_UNREGISTERED` … → `revoked`; ağ hatası → `unreachable`. **Ağ hatasında kayıtlı oturum silinmez** — yoksa aynı kilidin yeni sürümü üretilirdi.
+- `resetAuth()` + `telegram-reader:reset` IPC: yerel oturumu siler, API bilgilerini ve kanal listesini korur, Telegram'daki diğer cihazlara dokunmaz.
+- `sendCode()` ölü oturumu önce temizler — iptal edilmiş auth key ile kod isteği de 401 döner.
+- Arayüz: `done` dalına "Yeniden giriş yap / hesabı değiştir" düğmesi; `revoked` durumunda sebebi açıklayan uyarı kutusu.
+- Kapılar (`get-channels`, `read-messages`, `search`, `read_telegram_channels` aracı) artık gerçek yetkiye bakıyor.
+
+**Doğrulama:** `tests/telegram-session-auth.test.mjs` (15 test). Regresyon mutasyonla sınandı — eski davranış geri konduğunda 5 test düşüyor. Ayrıca gerçek (iptal edilmiş) oturuma karşı canlı çalıştırıldı: `hasStoredSession()=true`, `verifyAuthorization() → {authorized:false, reason:'revoked'}`.
+
+**Açık kalan:** Aynı numarayı iki uygulamada kullanırken oturum dizesi paylaşılırsa `AUTH_KEY_DUPLICATED` ile ikisi birden iptal olur. Kod artık bu durumu sebebiyle bildiriyor ama **önlemiyor** — belge seviyesinde uyarı yeterli görüldü.
+
 ### 3.4 Yapısal
 
 - `ai-service.cjs` monoliti (~11k satır) modüllere bölünmedi.
@@ -110,6 +126,8 @@ Bunlar koda yorum olarak da yazıldı; toplu hâli buraya:
 8. **Bir dedektörü düzeltmek yetmez; kaç kopyası olduğunu SAY.** Sembol tespitinin üç ayrı uygulaması vardı. Sicil bağlandıktan sonra skor hâlâ yanlıştı çünkü sayım başka bir kopyadan geçiyordu. Düzeltmeden önce `grep` ile aynı işi yapan başka kod var mı bak.
 9. **Fixture kaynağı taklit etmiyorsa test kendini doğrular.** `debt-quality-cashflow` fixture'ındaki satır adları uydurmaydı; gerçek İş Yatırım adları farklıydı ve gevşek desen yanlış satırı seçiyordu. Test yeşildi, üretim yanlıştı. Dış kaynağa bağlı fixture'ları **bir kez gerçek yanıttan** üret.
 10. **Modelin kendi kusurunu bildirmesi bir kanıt kaynağıdır.** `-%100` anomalisini kapı değil ÇAKAL yakaladı; sektör tespiti hatasında da aynısı olmuştu. Cevaptaki "bu araç bozuk görünüyor" cümlesi ciddiye alınmalı.
+11. **Kimlik bilgisinin VAR olması GEÇERLİ olduğunu göstermez.** `isAuthenticated()` yalnızca `TELEGRAM_SESSION.length > 10` kontrol ediyordu; iptal edilmiş oturum da 369 karakterdi. Ayarlar ekranı "hesap bağlı" diye yeşil yakıp giriş formunu gizledi — **kullanıcı için çıkışsız bir kilit**: yeniden giriş yapacak düğme ekranda yoktu. Ölçüm: `hasStoredSession()=true` iken `users.GetUsers` → `401 SESSION_REVOKED`. Bu, "beyan kanıt değildir" kuralının ürün içi teşhis yüzeyine uygulanmamış hâliydi. Bir kimlik/yetki durumunu ekranda göstereceksen **sahibine sor**, dizeyi ölçme. (§3.4)
+12. **Her "bağlandı" durumunun geri dönüş yolu olmalı.** Kilit tek başına yanlış durumdan doğmadı; `tgAuthStep === 'done'` dalında hiçbir çıkış/yeniden giriş eylemi olmamasından doğdu. Durum yanlış hesaplandığı an arayüz çıkmaz sokağa dönüştü. Terminal bir "başarılı" durumu çizerken, o durumdan çıkma eylemini de aynı anda çiz.
 
 ---
 
