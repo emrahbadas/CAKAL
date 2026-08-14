@@ -66,7 +66,10 @@ const RANKING_LANGUAGE_MARKERS = [
   /(^|[^a-zçğıöşü])([İIiı]lk|[Tt]op)\s*\d+\s*(hisse|aday)/,
 ];
 
-const RANKING_RESPONSE_MARKERS = [...RANKING_ANCHOR_MARKERS, ...RANKING_LANGUAGE_MARKERS];
+// NOT: Çapa ve dil marker'ları BİRLEŞTİRİLMİŞ tek liste olarak KULLANILMAZ.
+// Çapa yakalandıktan sonra sicil doğrulamasından geçmek zorundadır; birleşik
+// listeyi ham hâlde test etmek tam da 15 Ağustos'taki kanal listesi hatasını
+// üretiyordu. Tespit için responseContainsEquityRanking'e bak.
 
 // Bir sıralamanın "yönetilmiş" sayılması için gereken kanıt araçları.
 const GOVERNED_RANKING_TOOLS = new Set(['run_investment_research_scan', 'verify_claim']);
@@ -450,14 +453,23 @@ function extractBistTickers(message = '') {
   const found = new Set();
   let m;
   while ((m = BIST_TICKER_RE.exec(text)) !== null) {
-    const token = m[2];
-    if (symbolRegistry) {
-      if (symbolRegistry.isKnownBistSymbol(token)) found.add(token);
-    } else if (!TICKER_FALSE_POSITIVES.has(token)) {
-      found.add(token);
-    }
+    if (isRecognizedTicker(m[2])) found.add(m[2]);
   }
   return [...found];
+}
+
+/**
+ * Bu büyük harfli dizi GERÇEKTEN bir BIST sembolü mü?
+ *
+ * Sicil varsa allowlist, yoksa eski kara listeye düşülür. TEK KARAR NOKTASI:
+ * aynı soruyu soran her yer buradan geçmeli. Sembol tespitinin üç ayrı kopyası
+ * olduğu ve biri düzeltilince diğerinin yanlış çalışmaya devam ettiği daha
+ * önce iki kez ölçüldü (bkz. docs §4.8).
+ */
+function isRecognizedTicker(code) {
+  if (!code) return false;
+  if (symbolRegistry) return symbolRegistry.isKnownBistSymbol(code);
+  return !TICKER_FALSE_POSITIVES.has(code);
 }
 
 function containsBistTicker(message = '') {
@@ -476,8 +488,7 @@ function collectRankingAnchorTickers(response = '') {
     const scanner = new RegExp(marker.source, flags);
     let m;
     while ((m = scanner.exec(text)) !== null) {
-      const code = m[2];
-      if (code && !TICKER_FALSE_POSITIVES.has(code)) found.add(code);
+      if (isRecognizedTicker(m[2])) found.add(m[2]);
     }
   }
   return [...found];
@@ -531,11 +542,36 @@ function isCommanderFreshMarketScanRequest(message = '') {
   return COMMANDER_RANKING_REQUEST_RE.test(text);
 }
 
-/** Cevap metni bir hisse sıralaması/seçimi sunuyor mu? */
+/**
+ * Cevap metni bir hisse sıralaması/seçimi sunuyor mu?
+ *
+ * ÖLÇÜLEN CANLI HATA (15 Ağustos 2026): "telegramdaki kanalları listele"
+ * sorusuna verilen kanal listesi hisse sıralaması sanıldı ve kapı iki kez
+ * ateşleyip cevabı bloke etti. Sebep: çapa deseni yalnız ŞEKLE bakıyordu —
+ * "satır başında numara + 3-6 büyük harf". Gerçek kanal adları:
+ *
+ *   "1. BORSA İZİNDE"          -> BORSA
+ *   "4. YILDIZ PAZAR"          -> YILDIZ
+ *   "6. MEYVE SEBZE HAL..."    -> MEYVE
+ *   "8. SAHİBİNDEN SEBZE..."   -> SAHİBİ
+ *
+ * Dördü de sicilde YOK; hiçbiri hisse değil. Finans bağlamı da cevaptan
+ * geliyordu ("Borsa Haber Hisse" kanal adı), yani kullanıcı borsadan hiç
+ * söz etmemişti.
+ *
+ * Kritik ayrıntı: `collectRankingAnchorTickers` kara listeyi uyguladığı için
+ * "BORSA"yı zaten eliyordu — ama bu fonksiyon onu ÇAĞIRMIYOR, ham deseni
+ * test ediyordu. Aynı sorunun iki cevabı vardı ve biri yanlıştı.
+ * Artık tek yoldan geçer: çapa = sicilde doğrulanmış sembol.
+ *
+ * Dil marker'ları ("en sağlam 3 hisse") koşulsuz kalır — kod geçmese bile
+ * ortada kalite hükmü vardır.
+ */
 function responseContainsEquityRanking(response = '') {
   const text = String(response || '');
   if (!text.trim()) return false;
-  return RANKING_RESPONSE_MARKERS.some((pattern) => pattern.test(text));
+  if (RANKING_LANGUAGE_MARKERS.some((pattern) => pattern.test(text))) return true;
+  return collectRankingAnchorTickers(text).length > 0;
 }
 
 /**

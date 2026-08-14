@@ -253,3 +253,80 @@ describe('kullanıcının adıyla verdiği semboller — karşılaştırma sıra
     expect(responseContainsEquityRanking(newsComparison)).toBe(true);
   });
 });
+
+/**
+ * CANLI HATA REGRESYONU — 15 Ağustos 2026
+ *
+ * "telegramdaki kanalları listele" sorusuna verilen KANAL LİSTESİ hisse
+ * sıralaması sanıldı; kapı iki kez ateşledi, bir LLM turu boşa yandı ve
+ * kullanıcı cevap yerine "Sıralama üretilemedi" bloğu gördü.
+ *
+ * Kanal adları gerçektir (hesaptan okundu). Çapa deseni yalnız ŞEKLE
+ * bakıyordu — "satır başında numara + 3-6 büyük harf":
+ *
+ *   "1. BORSA İZİNDE"        -> BORSA
+ *   "4. YILDIZ PAZAR"        -> YILDIZ
+ *   "6. MEYVE SEBZE HAL..."  -> MEYVE
+ *   "8. SAHİBİNDEN SEBZE..." -> SAHİBİ
+ *
+ * Dördü de sicilde yok. Finans bağlamı bile cevaptan geliyordu ("Borsa Haber
+ * Hisse" bir KANAL ADI) — kullanıcı borsadan hiç söz etmemişti.
+ */
+describe('REGRESYON — kanal listesi hisse sıralaması değildir', () => {
+  const telegramKanalListesi = [
+    '1. BORSA İZİNDE',
+    '2. Borsa Haber Hisse',
+    '3. Türkiye Nakliye Telegram 🇹🇷',
+    '4. YILDIZ PAZAR',
+    '5. Pazar Center (Türkiye)',
+    '6. MEYVE SEBZE HAL FİYATLARI',
+    '7. 🇹🇷 TÜRKİYE YATIRIM AKADEMİSİ ⚜️',
+    '8. SAHİBİNDEN SEBZE MEYVE AL-SAT',
+    '9. Borsa İstanbul #Bist',
+  ].join('\n');
+
+  it('kanal listesi sıralama SAYILMAZ', () => {
+    expect(responseContainsEquityRanking(telegramKanalListesi)).toBe(false);
+  });
+
+  it('kapı susar — cevap kullanıcıya ulaşır', () => {
+    const result = evaluateUngovernedRankingGate(
+      'telegramdaki kanalları listele',
+      telegramKanalListesi,
+      [toolEvent('read_telegram_channels')],
+    );
+    expect(result).toBeNull();
+  });
+
+  it('sicilde olmayan büyük harfli kelimeler çapa üretmez', () => {
+    for (const satir of ['1. BORSA İZİNDE', '4. YILDIZ PAZAR', '6. MEYVE SEBZE', '8. SAHİBİNDEN AL-SAT']) {
+      expect(responseContainsEquityRanking(satir)).toBe(false);
+    }
+  });
+
+  it('KAPSAM DARALMADI — gerçek semboller hâlâ çapa üretir', () => {
+    // Düzeltmenin kapıyı köreltmediğinin kanıtı: aynı liste biçimi,
+    // bu kez sicilde kayıtlı sembollerle.
+    const gercekSiralama = '1) TUREX — güçlü hacim\n2) SSAAT — MA50 üzeri\n3) BRSAN — bilanço olumlu';
+    expect(responseContainsEquityRanking(gercekSiralama)).toBe(true);
+
+    const result = evaluateUngovernedRankingGate(
+      'bistte en iyi hisseleri sırala',
+      gercekSiralama,
+      [toolEvent('read_telegram_channels')],
+    );
+    expect(result).toBeTruthy();
+    expect(result.status).toBe('BLOCKED_UNGOVERNED_RANKING');
+  });
+
+  it('KAPSAM DARALMADI — kod geçmese de üstünlük dili yakalanır', () => {
+    // Dil marker'ları sicilden bağımsızdır: hüküm kurulmuşsa kod aranmaz.
+    const result = evaluateUngovernedRankingGate(
+      'borsada ne alayım',
+      'Sana en sağlam 3 hisse öneriyorum: hacmi genişleyenler.',
+      [toolEvent('read_telegram_channels')],
+    );
+    expect(result).toBeTruthy();
+    expect(result.status).toBe('BLOCKED_UNGOVERNED_RANKING');
+  });
+});

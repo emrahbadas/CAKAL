@@ -104,6 +104,27 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 
 **Açık kalan:** Aynı numarayı iki uygulamada kullanırken oturum dizesi paylaşılırsa `AUTH_KEY_DUPLICATED` ile ikisi birden iptal olur. Kod artık bu durumu sebebiyle bildiriyor ama **önlemiyor** — belge seviyesinde uyarı yeterli görüldü.
 
+### 3.7 Sıralama kapısı yanlış alarmı — DÜZELTİLDİ (15 Ağustos 2026)
+
+**Bulunan:** "telegramdaki kanalları listele" sorusuna verilen kanal listesi hisse sıralaması sanıldı. Kapı iki kez ateşledi, bir LLM turu boşa yandı, kullanıcı cevap yerine "Sıralama üretilemedi" bloğu gördü.
+
+**Sebep:** `responseContainsEquityRanking` yalnız ŞEKLE bakıyordu — "satır başında numara + 3-6 büyük harf". Gerçek kanal adlarıyla ölçüldü:
+
+| satır | çapa | sicilde var mı |
+|---|---|---|
+| `1. BORSA İZİNDE` | BORSA | hayır |
+| `4. YILDIZ PAZAR` | YILDIZ | hayır |
+| `6. MEYVE SEBZE HAL FİYATLARI` | MEYVE | hayır |
+| `8. SAHİBİNDEN SEBZE MEYVE AL-SAT` | SAHİBİ | hayır |
+
+Finans bağlamı bile cevaptan geliyordu — "Borsa Haber Hisse" bir **kanal adı**. Kullanıcı borsadan hiç söz etmemişti.
+
+**Asıl bulgu:** `collectRankingAnchorTickers` kara listeyi uyguladığı için "BORSA"yı zaten eliyordu; ama `responseContainsEquityRanking` onu **çağırmıyor**, ham deseni test ediyordu. Aynı sorunun iki cevabı vardı ve biri yanlıştı. Bu, §4.8'deki "kaç kopyası var" dersinin **üçüncü** tekrarı.
+
+**Yapılan:** `isRecognizedTicker()` tek karar noktası olarak çıkarıldı (sicil varsa allowlist, yoksa kara liste); hem `extractBistTickers` hem `collectRankingAnchorTickers` oradan geçiyor. `responseContainsEquityRanking` artık dil marker'larını koşulsuz, çapaları **sicil doğrulamasından geçirerek** değerlendiriyor. Birleşik `RANKING_RESPONSE_MARKERS` listesi kaldırıldı — ham hâlde test edilmesi hatanın kaynağıydı.
+
+**Doğrulama:** `tests/ranking-intent-gate.test.mjs`'e 5 regresyon testi eklendi (fixture gerçek hesaptan okunan kanal adları). Mutasyonla sınandı: eski davranış geri konduğunda 3 test düşüyor. Kapsam daralmadığı ayrıca test edildi — `1) TUREX / 2) SSAAT / 3) BRSAN` hâlâ yakalanıyor, kod geçmeyen üstünlük dili ("en sağlam 3 hisse") hâlâ yakalanıyor.
+
 ### 3.4 Yapısal
 
 - `ai-service.cjs` monoliti (~11k satır) modüllere bölünmedi.
@@ -128,6 +149,7 @@ Bunlar koda yorum olarak da yazıldı; toplu hâli buraya:
 10. **Modelin kendi kusurunu bildirmesi bir kanıt kaynağıdır.** `-%100` anomalisini kapı değil ÇAKAL yakaladı; sektör tespiti hatasında da aynısı olmuştu. Cevaptaki "bu araç bozuk görünüyor" cümlesi ciddiye alınmalı.
 11. **Kimlik bilgisinin VAR olması GEÇERLİ olduğunu göstermez.** `isAuthenticated()` yalnızca `TELEGRAM_SESSION.length > 10` kontrol ediyordu; iptal edilmiş oturum da 369 karakterdi. Ayarlar ekranı "hesap bağlı" diye yeşil yakıp giriş formunu gizledi — **kullanıcı için çıkışsız bir kilit**: yeniden giriş yapacak düğme ekranda yoktu. Ölçüm: `hasStoredSession()=true` iken `users.GetUsers` → `401 SESSION_REVOKED`. Bu, "beyan kanıt değildir" kuralının ürün içi teşhis yüzeyine uygulanmamış hâliydi. Bir kimlik/yetki durumunu ekranda göstereceksen **sahibine sor**, dizeyi ölçme. (§3.4)
 12. **Her "bağlandı" durumunun geri dönüş yolu olmalı.** Kilit tek başına yanlış durumdan doğmadı; `tgAuthStep === 'done'` dalında hiçbir çıkış/yeniden giriş eylemi olmamasından doğdu. Durum yanlış hesaplandığı an arayüz çıkmaz sokağa dönüştü. Terminal bir "başarılı" durumu çizerken, o durumdan çıkma eylemini de aynı anda çiz.
+13. **Kapının YANLIŞ ATEŞLEMESİ de bir arıza sınıfıdır, sessiz geçmemesi kadar önemlidir.** Sıralama kapısı bir Telegram kanal listesini hisse sıralaması sanıp cevabı bloke etti. Kapıları hep "kaçırıyor mu" diye test ettik; "yok yere kapanıyor mu" diye test etmemiştik. Her kapı için en az bir **negatif** vaka yaz: kapının susması gereken, ama şekil olarak benzeyen bir girdi. Aksi hâlde koruma, koruduğu şeyin önüne geçer.
 
 ---
 
