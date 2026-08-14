@@ -4,7 +4,7 @@
 **Son güncelleme:** 14 Ağustos 2026 — **ilk canlı tur koşuldu** (13 Ağustos gecesi, 8 test). Sonuçlar ve bulunan üç hata aşağıda §4.0'da.  
 **GitHub baseline:** `emrahbadas/CAKAL` → `main` → `49d1812c255f7d9ef03f4e150e2146f4c531e51c`  
 **Baseline durumu:** `fcc6448` (PR #3: ses korumaları + entity kapsamı + huni sözleşmesi) üzerine `49d1812` (PR #4: karar kapısı kanıt zinciri) birleşti. Aday hunisi kademe 0 bağlı; kademe 5–7 (DEEP_RESEARCH, FINAL_GATE) hâlâ canlı akışa bağlı değil.  
-**Birim testi durumu:** 73 dosya / 953 test, tamamı yeşil (`npx vitest run`, 12 Ağustos 2026 20:24). Son ekleme: `supabase-realtime-transport.test.mjs` (12 test) — bildirilmemiş `ws` bağımlılığı ve sessiz yutulan transport hatası.  
+**Birim testi durumu:** 74 dosya / 962 test, tamamı yeşil (`npx vitest run`, 12 Ağustos 2026 20:24). Son ekleme: `supabase-realtime-transport.test.mjs` (12 test) — bildirilmemiş `ws` bağımlılığı ve sessiz yutulan transport hatası.  
 **Push bekleyen yerel çalışma yok.** Planın ilk sürümünde `PUSH` etiketli olan testler (değerleme anahtarları, sektör aktarımı, sonuç-duyarlı kanıt sınıfları) `d928655` ile main’e indi. Bu testler artık *gelecek* bir regresyon değil, **mevcut sürümün kabul turu**dur; etiketleri `REG` olarak güncellendi.
 
 > Bu plan sadece “cevap güzel mi?” diye bakmaz. Doğru model yönlendirmesini, doğru aracı, araç sonucunu, kanıt sınıfını, entity/dönem/tazelik kapsamını, deterministik kapıları, onarım turunu ve nihai cevabı birlikte denetler.
@@ -79,7 +79,7 @@ Bu bir öncelik etiketi değil, **koşum düzlemi** etiketidir. `HS` (headless) 
 
 #### Headless — mevcut test dosyalarıyla karşılanan
 
-`49d1812` üzerinde 73 dosya / 953 test yeşil. Aşağıdaki bölümlerin deterministik kısmı zaten kod içinde ölçülüyor; yapılacak iş **yeni test yazmak değil, plan ID’lerini mevcut testlerle eşlemek**.
+`49d1812` üzerinde 74 dosya / 962 test yeşil. Aşağıdaki bölümlerin deterministik kısmı zaten kod içinde ölçülüyor; yapılacak iş **yeni test yazmak değil, plan ID’lerini mevcut testlerle eşlemek**.
 
 | Bölüm | Headless olan ID’ler | Karşılayan test dosyaları |
 |---|---|---|
@@ -531,7 +531,7 @@ npm run db:check-financial-ingestion
 Notlar:
 
 - DB/KAP smoke testleri ortam anahtarı veya ağ nedeniyle `BLOCKED-BY-ENV` olabilir; bu durum test başarısı sayılmaz ama kod hatasıyla karıştırılmaz.
-- **Dokümantasyon drift kontrolü — `49d1812`’de temiz.** Planın ilk sürümü README’nin 660 test/49 dosya yazdığını, commit mesajının 732 bildirdiğini not etmişti. README şu an 953 test / 73 dosya diyor. Bu kontrol artık ELLE yapılmıyor: `readme-drift.test.mjs` araç sayısını ve test dosyası sayısını statik olarak kilitliyor. Çalışma anındaki toplam test sayısı kilitlenmiyor (kaynak metninden sayılamaz — bazı `it()` çağrıları döngü gövdesinde), onun doğrulaması CI'daki `npx vitest run` çıktısıdır. Kontrol her sürümde tekrarlanmalı; sayı README’de elle yazıldığı için sessizce eskir.
+- **Dokümantasyon drift kontrolü — `49d1812`’de temiz.** Planın ilk sürümü README’nin 660 test/49 dosya yazdığını, commit mesajının 732 bildirdiğini not etmişti. README şu an 962 test / 74 dosya diyor. Bu kontrol artık ELLE yapılmıyor: `readme-drift.test.mjs` araç sayısını ve test dosyası sayısını statik olarak kilitliyor. Çalışma anındaki toplam test sayısı kilitlenmiyor (kaynak metninden sayılamaz — bazı `it()` çağrıları döngü gövdesinde), onun doğrulaması CI'daki `npx vitest run` çıktısıdır. Kontrol her sürümde tekrarlanmalı; sayı README’de elle yazıldığı için sessizce eskir.
 - Yeni test sayısı, commit SHA ve test dosyaları her sürümde release kaydına yazılmalı.
 
 ## 7. Sürüm kabul kapısı
@@ -577,7 +577,7 @@ Bir sürüme “tam sistem testinden geçti” denmesi için:
 
 **Tur 0 — headless (uygulama açılmadan).** Canlı turdan önce yapılır; canlı turun kapsamını daraltır ve boşluk haritasını çıkarır.
 
-1. **ID eşlemesi:** §2.1’deki tabloyu kullanarak 953 testin hangi plan ID’sini karşıladığını dosya bazında işaretle. Tek başına planın yarısını “zaten PASS” diye kapatır; asıl çıktısı hangi ID’nin **karşılanmadığı**dır.
+1. **ID eşlemesi:** §2.1’deki tabloyu kullanarak 962 testin hangi plan ID’sini karşıladığını dosya bazında işaretle. Tek başına planın yarısını “zaten PASS” diye kapatır; asıl çıktısı hangi ID’nin **karşılanmadığı**dır.
 2. **TEK-10 kırmızı testi:** bilinen seviye-türetimi açığını test olarak sabitle. FAIL beklenir; kapatma işi ondan sonra gelir.
 3. **CTX bulaşma dizileri:** CTX-01, 04, 05, 09 saf fonksiyon seviyesinde yazılır. Entity çapraz bulaşması P0 — canlı turu beklememeli.
 4. **Mekanik kontroller:** §6’daki `lint`, `typecheck`, `build` ve smoke script’leri.
