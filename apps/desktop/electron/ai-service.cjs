@@ -18,6 +18,7 @@ const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
 const researchContractLib = require('./research-contract.cjs');
 const bistEntityResolver = require('./bist-entity-resolver.cjs');
+const { resolveTimeWindow, windowStartIso, savedChannelIds } = require('./telegram-scope.cjs');
 const {
   buildEvidenceLedger,
   // Sözleşme kapanışı hükmü indirebilsin diye: tespit + nötrleştirme.
@@ -967,10 +968,12 @@ YETENEK ENVANTERİ ANLATIM KURALLARI:
 � TELEGRAM KANAL OKUMA (read_telegram_channels) KURALLARI:
 Kullanıcı "Telegram'da ne var", "kanalda ne konuşulmuş", "Telegram borsa haberleri", "[hisse] Telegram'da", 
 "kanallarımı oku", "Telegram'dan oku" gibi bir istek yaparsa → read_telegram_channels tool'unu kullan.
-- action: "list_channels" = kullanıcının katıldığı kanalları listele
-- action: "read_messages" = belirli bir kanalın son mesajlarını oku (channel_id + limit)
-- action: "search" = birden fazla kanalda keyword ara (channel_ids + keywords + limit)
-- Kullanıcı kanal adı söylediğinde önce list_channels ile kanal listesini al, eşleştir, sonra read_messages veya search kullan
+- action: "list_channels" = kanalları listele. VARSAYILAN kapsam kullanıcının TAKİP LİSTESİ. Hesaptaki tüm kanallar yalnız scope:"all" ile ve yalnız kullanıcı takip listesini düzenlemek isterse.
+- action: "read_messages" = mesajları oku. channel_id VERME — boş bırakınca takip listesinin TAMAMI okunur, normal kullanım budur. Yalnız kullanıcı tek bir kanalı adıyla işaret ederse channel_id kullan.
+- action: "search" = takip listesinde keyword ara (keywords zorunlu; channel_ids boş bırakılır)
+- KAPSAM: Araştırma kullanıcının Ayarlar'da seçtiği takip listesi üzerinden yürür. Kanal seçmek KULLANICININ işidir; sen kanal gezmezsin.
+- ZAMAN ARALIĞI: varsayılan BUGÜN. "son 1 hafta", "son 1 ay", "tüm geçmiş" gibi AÇIK bir istek yoksa time_window'u genişletme. Genişletsen bile sistem kullanıcının ifadesine göre kısar; araç sonucundaki "[aralık: ...]" notu GERÇEK kapsamdır, cevabında ondan farklı bir kapsam iddia etme.
+- Aralıkta eşleşme çıkmaması "haber yok" DEĞİLDİR; "bu aralıkta bu kelimelerle eşleşme yok" demektir. Öyle yaz.
 - Kullanıcı hisse adı + Telegram derse → search action ile o hisse adını keyword olarak ara
 - Sonuçları analiz et: pozitif/negatif sinyal, acil al-sat dili, genel konsensüs
 - ÖNEMLİ: Telegram mesajları gerçek zamanlı veridir — YouTube veya web aramasıyla karıştırma, doğrudan kanaldan oku
@@ -3675,15 +3678,17 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'read_telegram_channels',
-      description: 'Kullanıcının katıldığı Telegram kanallarından mesajları oku veya ara. Borsa haberleri, yatırım sinyalleri, piyasa analizleri gibi içerikleri kanallardan çeker. "Telegram kanallarında ne var", "borsa kanallarını oku", "THYAO haberi var mı" gibi isteklerde kullan.',
+      description: 'Kullanıcının TAKİP LİSTESİNDEKİ Telegram kanallarından mesajları oku veya ara. Takip listesi Ayarlar\'da kullanıcı tarafından seçilir; varsayılan kapsam budur. Zaman aralığı varsayılan olarak BUGÜNDÜR — kullanıcı açıkça "son 1 hafta/ay" demedikçe genişletme.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list_channels', 'read_messages', 'search'], description: 'İşlem: list_channels=katılınan kanalları listele, read_messages=bir kanalın son mesajlarını oku, search=birden fazla kanalda keyword ara' },
-          channel_id: { type: 'string', description: 'Okunacak kanalın ID veya username\'i (read_messages için)' },
-          channel_ids: { type: 'array', items: { type: 'string' }, description: 'Aranacak kanal ID/username listesi (search için). Boş bırakılırsa kaydedilmiş kanallar kullanılır.' },
+          action: { type: 'string', enum: ['list_channels', 'read_messages', 'search'], description: 'İşlem: list_channels=kanalları listele (varsayılan: takip listesi), read_messages=mesajları oku (channel_id verilmezse TÜM takip listesi okunur), search=takip listesinde keyword ara' },
+          channel_id: { type: 'string', description: 'Tek bir kanalı okumak için ID/username (read_messages). Boş bırakılırsa takip listesinin tamamı okunur — normal kullanım budur.' },
+          channel_ids: { type: 'array', items: { type: 'string' }, description: 'Aranacak kanal ID/username listesi (search). Boş bırakılırsa takip listesi kullanılır — normal kullanım budur.' },
           keywords: { type: 'array', items: { type: 'string' }, description: 'Aranacak anahtar kelimeler (search için)' },
-          limit: { type: 'number', description: 'Kaç mesaj getirilsin (varsayılan: 20)' },
+          limit: { type: 'number', description: 'Kanal başına kaç mesaj taransın (varsayılan: 20)' },
+          scope: { type: 'string', enum: ['saved', 'all'], description: 'list_channels kapsamı: saved=kullanıcının takip listesi (varsayılan), all=hesaptaki tüm kanallar. "all" YALNIZCA kullanıcı takip listesini düzenlemek/genişletmek isterse kullanılır.' },
+          time_window: { type: 'string', enum: ['today', 'week', 'month', 'all'], description: 'Zaman aralığı. VARSAYILAN today. Yalnızca kullanıcı açıkça "son 1 hafta", "son 1 ay", "tüm geçmiş" derse genişlet — aksi hâlde bu alan yok sayılır ve today uygulanır.' },
         },
         required: ['action'],
       },
@@ -6086,33 +6091,98 @@ async function handleToolCall(name, args, options = {}) {
 
         const action = args.action;
 
+        // KAPSAM VE ARALIK BURADA BELİRLENİR, MODELDE DEĞİL.
+        // Aralık kullanıcının mesajından okunur; modelin `time_window`
+        // parametresi tek başına genişletme yetkisi taşımaz. Aksi hâlde model
+        // her turda "month" yazıp gürültüyü ve token maliyetini geri getirirdi.
+        const windowInfo = resolveTimeWindow(args.time_window, options.userMessage);
+        const sinceIso = windowStartIso(windowInfo.window);
+        const windowNote = windowInfo.clamped
+          ? ` [aralık ${windowInfo.label} ile sınırlandı — kullanıcı daha geniş bir aralık istemedi]`
+          : ` [aralık: ${windowInfo.label}]`;
+
         try {
           if (action === 'list_channels') {
+            const savedList = telegramReader.getSavedChannels();
+            const wantsAll = String(args.scope || 'saved') === 'all';
+
+            // VARSAYILAN TAKİP LİSTESİDİR. Hesaptaki tüm kanalları dökmek
+            // gürültünün kaynağıydı; kullanıcı Ayarlar'da bir küme seçtiyse
+            // araştırma o küme üzerinden yürür.
+            if (!wantsAll && savedList.length > 0) {
+              emit(`Takip listesi: ${savedList.length} kanal`);
+              const lines = savedList.map(c => `• ${c.title}`).join('\n');
+              return {
+                tool: name,
+                success: true,
+                channels: savedList,
+                scope: 'saved',
+                summary: `Takip listesi — ${savedList.length} kanal:\n${lines}\n\n(Hesaptaki tüm kanalları görmek için scope:"all"; takip listesi Ayarlar → Telegram Kanal Okuyucu'dan düzenlenir.)`,
+              };
+            }
+
             emit('Telegram kanalları listeleniyor...');
             const channels = await telegramReader.getJoinedChannels();
-            const channelList = channels
-              .filter(c => c.isChannel)
+            const visible = channels.filter(c => c.isChannel);
+            const channelList = visible
               .map(c => `• ${c.title}${c.username ? ' (@' + c.username + ')' : ''} — ${c.participantsCount} üye`)
               .join('\n');
+            const note = savedList.length === 0
+              ? '\n\n⚠️ Takip listesi BOŞ — araştırma kapsamı daraltılmamış. Kullanıcıya Ayarlar → Telegram Kanal Okuyucu\'dan kanal seçmesini öner.'
+              : `\n\n(Takip listesinde ${savedList.length} kanal seçili; araştırma varsayılan olarak onlar üzerinden yürür.)`;
             return {
               tool: name,
               success: true,
-              channels: channels.filter(c => c.isChannel),
-              summary: `${channels.filter(c => c.isChannel).length} kanal bulundu:\n${channelList}`,
+              channels: visible,
+              scope: 'all',
+              summary: `${visible.length} kanal bulundu:\n${channelList}${note}`,
             };
           }
 
           if (action === 'read_messages') {
             const channelId = args.channel_id;
-            if (!channelId) return { tool: name, success: false, message: 'channel_id gerekli' };
 
-            emit(`Kanal okunuyor: ${channelId}`);
-            const messages = await telegramReader.readChannelMessages(channelId, args.limit || 20);
+            // channel_id YOKSA hata değil: takip listesinin tamamı okunur.
+            // Normal kullanım budur — kullanıcı "şu kanala gir" demek zorunda
+            // kalmasın diye.
+            if (!channelId) {
+              const savedIds = savedChannelIds(telegramReader.getSavedChannels());
+              if (savedIds.length === 0) {
+                return {
+                  tool: name,
+                  success: false,
+                  message: 'Takip listesi boş. Ayarlar → Telegram Kanal Okuyucu\'dan taranacak kanalları seç, ya da channel_id belirt.',
+                };
+              }
+              emit(`Takip listesi okunuyor (${savedIds.length} kanal, ${windowInfo.label})...`);
+              const digest = await telegramReader.readSavedChannelsDigest(args.limit || 20, { sinceIso });
+              const perChannel = digest.channels
+                .map(c => (c.error ? `• ${c.channel}: HATA — ${c.error}` : `• ${c.channel}: ${c.inWindow} mesaj`))
+                .join('\n');
+              const failed = digest.channels.filter(c => c.error);
+              return {
+                tool: name,
+                success: true,
+                messages: digest.messages,
+                channels: digest.channels,
+                timeWindow: windowInfo.window,
+                since: sinceIso,
+                summary: `${digest.inWindow} mesaj okundu — ${digest.channels.length} kanal${windowNote}\n${perChannel}`
+                  + (failed.length ? `\n⚠️ ${failed.length} kanal okunamadı; kapsam eksik.` : ''),
+              };
+            }
+
+            emit(`Kanal okunuyor: ${channelId} (${windowInfo.label})`);
+            const res = await telegramReader.readChannelMessages(channelId, args.limit || 20, { sinceIso });
             return {
               tool: name,
               success: true,
-              messages,
-              summary: `${messages.length} mesaj okundu (${channelId})`,
+              messages: res.messages,
+              timeWindow: windowInfo.window,
+              since: sinceIso,
+              summary: `${res.inWindow} mesaj okundu (${res.channel})${windowNote}`
+                + (res.fetched !== res.inWindow ? ` — taranan ${res.fetched} mesajın ${res.inWindow} tanesi aralıkta.` : '')
+                + (res.truncated ? ' ⚠️ Limit doldu; aralıkta daha eski mesajlar olabilir.' : ''),
             };
           }
 
@@ -6133,18 +6203,21 @@ async function handleToolCall(name, args, options = {}) {
               channelIds = saved.map(c => String(c.id || '').trim()).filter(Boolean);
             }
             if (!channelIds || channelIds.length === 0) {
-              return { tool: name, success: false, message: 'Kanal listesi boş. channel_ids belirt veya Ayarlar\'dan kanal ekle.' };
+              return { tool: name, success: false, message: 'Takip listesi boş. Ayarlar → Telegram Kanal Okuyucu\'dan taranacak kanalları seç, ya da channel_ids belirt.' };
             }
 
             channelIds = [...new Set(channelIds)];
 
-            emit(`${channelIds.length} kanalda "${keywords.join(', ')}" aranıyor...`);
-            const results = await telegramReader.searchChannels(channelIds, keywords, args.limit || 10);
+            emit(`${channelIds.length} kanalda "${keywords.join(', ')}" aranıyor (${windowInfo.label})...`);
+            const results = await telegramReader.searchChannels(channelIds, keywords, args.limit || 10, { sinceIso });
             return {
               tool: name,
               success: true,
               results,
-              summary: `${results.length} mesajda eşleşme bulundu (${keywords.join(', ')})`,
+              timeWindow: windowInfo.window,
+              since: sinceIso,
+              summary: `${results.length} mesajda eşleşme bulundu (${keywords.join(', ')}) — ${channelIds.length} kanal${windowNote}`
+                + (results.length === 0 ? ' Aralıkta eşleşme yok; bu "haber yok" demek DEĞİL, "bu aralıkta bu kelimelerle eşleşme yok" demektir.' : ''),
             };
           }
 
@@ -11234,6 +11307,9 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
           registerSurgicalRequest,
           researchContract,
           researchComplexity,
+          // Telegram tarama aralığı kullanıcının KENDİ ifadesinden okunur;
+          // modelin parametresi tek başına genişletme yetkisi taşımaz.
+          userMessage: message,
         });
         const toolDuration = Date.now() - toolStart;
 
@@ -11406,6 +11482,7 @@ Kaynak erişilemezse plan değiştirme değil **amend_research_plan** ile fallba
             const toolStart = Date.now();
             result = await handleToolCall(fnName, fnArgs, {
               perplexityKey, supabaseClient, onActivity, telegramService, telegramReader, executionContract, registerSurgicalRequest,
+              userMessage: message,
             });
             _toolTimings.push({ tool: fnName, args: fnArgs, duration: Date.now() - toolStart, success: result?.success !== false, cached: false, facts: distillToolFacts(result), result });
           }

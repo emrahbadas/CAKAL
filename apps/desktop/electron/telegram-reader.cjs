@@ -8,6 +8,8 @@ const { StringSession } = require('telegram/sessions');
 const path = require('path');
 const fs = require('fs');
 
+const { filterMessagesByWindow, savedChannelIds } = require('./telegram-scope.cjs');
+
 /**
  * Telegram'ın "bu yetki artık geçerli değil" dediği hata kodları.
  *
@@ -416,17 +418,27 @@ class TelegramReader {
     return channels;
   }
 
-  // Belirli bir kanalın son mesajlarını oku
-  async readChannelMessages(channelId, limit = 20) {
+  /**
+   * Belirli bir kanalın son mesajlarını oku.
+   *
+   * @param {object} [opts]
+   * @param {string|null} [opts.sinceIso] Bu zamandan eski mesajlar elenir.
+   * @returns {Promise<{messages: Array, fetched: number, inWindow: number, truncated: boolean}>}
+   *
+   * Dönüş şekli bilinçli olarak sayaçlı: "20 mesaj çekildi, 3'ü bugüne ait"
+   * ile "kanalda bugün 3 mesaj var" farklı iddialardır. Pencereye girenlerin
+   * sayısını vermeden ikincisini söyleyemeyiz.
+   */
+  async readChannelMessages(channelId, limit = 20, opts = {}) {
     await this.connect();
 
     const resolved = await this._resolveChannelEntity(channelId);
     const entity = resolved.entity;
 
     const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
-    const messages = await this.client.getMessages(entity, { limit: safeLimit });
+    const raw = await this.client.getMessages(entity, { limit: safeLimit });
 
-    return messages
+    const mapped = raw
       .filter(m => m.message) // Sadece metin mesajları
       .map(m => ({
         id: m.id,
@@ -438,10 +450,68 @@ class TelegramReader {
         channel: resolved.channelTitle,
         channelId: resolved.channelId,
       }));
+
+    const messages = filterMessagesByWindow(mapped, opts.sinceIso || null);
+
+    return {
+      messages,
+      channel: resolved.channelTitle,
+      channelId: resolved.channelId,
+      fetched: mapped.length,
+      inWindow: messages.length,
+      // En yeni N mesajın HEPSİ pencereye girdiyse, pencerede daha eskiler de
+      // olabilir ama limit yüzünden görülmedi. Bunu söylemek zorundayız.
+      truncated: mapped.length >= safeLimit && messages.length === mapped.length,
+    };
+  }
+
+  /**
+   * Kullanıcının Ayarlar'da SEÇTİĞİ kanalları topluca okur.
+   *
+   * Amaç gürültü kontrolü: model "hangi kanala bakayım" diye dolaşmaz,
+   * kullanıcının belirlediği küme üzerinden gider.
+   */
+  async readSavedChannelsDigest(limit = 20, opts = {}) {
+    const saved = this.getSavedChannels();
+    const ids = savedChannelIds(saved);
+    if (ids.length === 0) {
+      return { channels: [], messages: [], fetched: 0, inWindow: 0, missingSelection: true };
+    }
+
+    const perChannel = [];
+    const all = [];
+    for (const id of ids) {
+      try {
+        const res = await this.readChannelMessages(id, limit, opts);
+        perChannel.push({
+          channelId: res.channelId,
+          channel: res.channel,
+          fetched: res.fetched,
+          inWindow: res.inWindow,
+          truncated: res.truncated,
+        });
+        all.push(...res.messages);
+      } catch (err) {
+        // Bir kanalın okunamaması diğerlerini düşürmemeli; ama SESSİZ de
+        // geçilmemeli — kapsam beyanı eksik kanalı içermeli.
+        const title = saved.find(c => String(c.id) === String(id))?.title || id;
+        perChannel.push({ channelId: id, channel: title, error: err.message, fetched: 0, inWindow: 0 });
+      }
+    }
+
+    all.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+    return {
+      channels: perChannel,
+      messages: all,
+      fetched: perChannel.reduce((s, c) => s + (c.fetched || 0), 0),
+      inWindow: all.length,
+      missingSelection: false,
+    };
   }
 
   // Birden fazla kanaldan keyword araması
-  async searchChannels(channelIds, keywords, limit = 10) {
+  async searchChannels(channelIds, keywords, limit = 10, opts = {}) {
     await this.connect();
 
     const cleanKeywords = (Array.isArray(keywords) ? keywords : [])
@@ -463,13 +533,16 @@ class TelegramReader {
         // Get recent messages
         const messages = await this.client.getMessages(entity, { limit: 50 });
 
+        // SIRA ÖNEMLİ: önce eşle+eşlemele, SONRA kes.
+        // Eskiden `.slice(safeLimit)` zaman filtresinden ÖNCE geliyordu;
+        // pencere eklenince aralık dışındaki mesajlar kotayı doldurup
+        // aralık içindeki eşleşmeleri dışarıda bırakabilirdi.
         const matched = messages
           .filter(m => {
             if (!m.message) return false;
             const txt = m.message.toLowerCase();
             return cleanKeywords.some(kw => txt.includes(kw));
           })
-          .slice(0, safeLimit)
           .map(m => ({
             channel: channelTitle,
             channelId: resolved.channelId || chId,
@@ -479,7 +552,7 @@ class TelegramReader {
             views: m.views || 0,
           }));
 
-        results.push(...matched);
+        results.push(...filterMessagesByWindow(matched, opts.sinceIso || null).slice(0, safeLimit));
       } catch (err) {
         console.warn(`[TelegramReader] ${chId} okunamadı:`, err.message);
         results.push({

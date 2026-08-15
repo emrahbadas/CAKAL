@@ -125,6 +125,23 @@ Finans bağlamı bile cevaptan geliyordu — "Borsa Haber Hisse" bir **kanal ad�
 
 **Doğrulama:** `tests/ranking-intent-gate.test.mjs`'e 5 regresyon testi eklendi (fixture gerçek hesaptan okunan kanal adları). Mutasyonla sınandı: eski davranış geri konduğunda 3 test düşüyor. Kapsam daralmadığı ayrıca test edildi — `1) TUREX / 2) SSAAT / 3) BRSAN` hâlâ yakalanıyor, kod geçmeyen üstünlük dili ("en sağlam 3 hisse") hâlâ yakalanıyor.
 
+### 3.8 Telegram tarama kapsamı — EKLENDİ (15 Ağustos 2026)
+
+**İstek (Kaptan):** *"Telegramdaki birçok şeyi ÇAKAL'ın görmesi gereksiz, çok fazla gürültü olur... kullanıcı şu kanala gir vs diye tek tek söylemez, gürültü azalır, tokenizasyon kontrol altına alınır. Bir de default olarak kullanıcı aksini söylemedikçe telegram taramasında sadece o günün mesajları taranır."*
+
+**Yapılan:**
+- **Takip listesi.** Ayarlar → Telegram Kanal Okuyucu'ya çift panelli seçici eklendi: *Tara* → hesaptaki kanallar solda, `›`/`‹` ile sağa/sola aktarım, *Kaydet*. Kaydedilmemiş değişiklik ekranda uyarı olarak duruyor — sessiz kalırsa ÇAKAL eski listeyi tarardı.
+- **Kapsam varsayılanı takip listesidir.** `list_channels` artık takip listesini döndürür (`scope:"all"` ile tüm kanallar, yalnız liste düzenlenirken). `read_messages` `channel_id` OLMADAN çağrılabilir ve takip listesinin tamamını okur — normal kullanım budur.
+- **Zaman penceresi varsayılan BUGÜN.** `telegram-scope.cjs` (saf modül) kullanıcının mesajından aralık çıkarır: "son 1 hafta" → week, "son 1 ay" → month, "tüm geçmiş" → all.
+- **Genişletme yetkisi modelde değil.** Model `time_window:"month"` yazsa bile kullanıcı öyle bir şey demediyse **today'e kısılır** ve araç sonucuna `[aralık bugün ile sınırlandı]` notu düşer. Bu, "beyan kanıt değildir" kuralının kapsam tarafındaki karşılığı — aksi hâlde model her turda pencereyi açıp gürültüyü ve token maliyetini geri getirebilirdi.
+- **"Bugün" İstanbul günüdür**, makinenin günü değil. Kaptan GMT+1'de; onun gece yarısı İstanbul'da ertesi gün.
+- **Kapsam beyanı dürüst.** `fetched` ≠ `inWindow` ayrı raporlanıyor; limit dolup aralıkta daha eski mesaj kalmış olabilecekse `truncated` bildiriliyor. Tarihi okunamayan mesaj **elenir** — aralık dışı olmadığını kanıtlayamıyorsak içinde sayamayız.
+- **Bir kanal düşerse** diğerleri okunur ama hata kapsam raporunda görünür.
+
+**Doğrulama:** `tests/telegram-scope.test.mjs` (35) + `tests/telegram-channel-digest.test.mjs` (11). Arama sırası mutasyonla sınandı: `slice` filtreden önce yapılırsa aralık dışı eşleşmeler kotayı doldurup bugünün eşleşmesini düşürüyor — test bunu yakalıyor.
+
+**Açık kalan:** Takip listesi seçimi canlıda (gerçek Electron penceresinde) henüz denenmedi; birim testler ve typecheck yeşil, arayüz etkileşimi kullanıcı tarafından doğrulanacak.
+
 ### 3.4 Yapısal
 
 - `ai-service.cjs` monoliti (~11k satır) modüllere bölünmedi.

@@ -57,6 +57,7 @@ interface CakalAPI {
   telegramReaderRemoveChannel: (channelId: string) => Promise<DbResult>;
   telegramReaderStatus: () => Promise<DbResult>;
   telegramReaderReset: () => Promise<DbResult>;
+  telegramReaderSetChannels: (channels: Array<{ id: string; title: string }>) => Promise<DbResult>;
 
   // Scrape Sources
   getScrapeSources: () => Promise<DbResult>;

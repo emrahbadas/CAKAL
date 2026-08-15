@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, CheckCircle, AlertCircle, Loader2, Send, Bell, Brain, ThumbsUp, ThumbsDown, Eye, Radio, KeyRound, ShieldCheck } from 'lucide-react';
+import { Save, CheckCircle, AlertCircle, Loader2, Send, Bell, Brain, ThumbsUp, ThumbsDown, Eye, Radio, KeyRound, ShieldCheck, RefreshCw, ChevronRight, ChevronLeft, Clock } from 'lucide-react';
 
 interface CapabilityGap {
   id: string;
@@ -28,6 +28,13 @@ interface SecretRef {
   ref: string;
   updatedAt: string | null;
   encrypted: boolean;
+}
+
+interface TgChannel {
+  id: string;
+  title: string;
+  username?: string | null;
+  participantsCount?: number;
 }
 
 interface SecretRequest {
@@ -75,6 +82,16 @@ export default function SettingsScreen() {
   const [tgAuthReason, setTgAuthReason] = useState('');
   const [tgAuthMessage, setTgAuthMessage] = useState('');
 
+  // Kanal seçimi: sol panel taranan tüm kanallar, sağ panel takip listesi.
+  const [tgAllChannels, setTgAllChannels] = useState<TgChannel[]>([]);
+  const [tgPicked, setTgPicked] = useState<TgChannel[]>([]);
+  const [tgSelLeft, setTgSelLeft] = useState<Set<string>>(new Set());
+  const [tgSelRight, setTgSelRight] = useState<Set<string>>(new Set());
+  const [tgScanning, setTgScanning] = useState(false);
+  const [tgSavingChannels, setTgSavingChannels] = useState(false);
+  const [tgChannelMsg, setTgChannelMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [tgDirty, setTgDirty] = useState(false);
+
   useEffect(() => {
     // Load saved config
     window.cakalAPI.getAllConfig().then((res) => {
@@ -91,6 +108,7 @@ export default function SettingsScreen() {
         if ((res.data as Record<string, boolean>).hasTelegramReader) {
           setTgAuthStep('done');
           setTgReaderAuthenticated(true);
+          loadPickedChannels();
         } else if (d.TELEGRAM_API_ID && d.TELEGRAM_API_HASH) {
           // İptal edilmiş oturum da buraya düşer: API bilgileri duruyor,
           // eksik olan yalnızca geçerli yetki. Doğrudan telefon adımına geç.
@@ -199,6 +217,81 @@ export default function SettingsScreen() {
       }
     } catch (e: unknown) { setTgMessage({ ok: false, text: (e as Error).message }); }
     setTgLoading(false);
+  };
+
+  // ── Kanal takip listesi ──
+
+  // Kayıtlı seçim her açılışta yüklenir; kullanıcı "Tara"ya basmadan da
+  // neyin seçili olduğunu görmeli.
+  const loadPickedChannels = async () => {
+    const res = await window.cakalAPI.telegramReaderGetSavedChannels();
+    if (res.data) setTgPicked(res.data as TgChannel[]);
+    setTgDirty(false);
+  };
+
+  const handleTgScan = async () => {
+    setTgScanning(true);
+    setTgChannelMsg(null);
+    try {
+      const res = await window.cakalAPI.telegramReaderGetChannels();
+      if (res.status === 'ok') {
+        const list = (res.data as TgChannel[]) || [];
+        setTgAllChannels(list);
+        setTgChannelMsg({ ok: true, text: `${list.length} kanal bulundu` });
+      } else {
+        setTgChannelMsg({ ok: false, text: res.error || 'Kanallar alınamadı' });
+      }
+    } catch (e: unknown) { setTgChannelMsg({ ok: false, text: (e as Error).message }); }
+    setTgScanning(false);
+  };
+
+  const pickedIds = new Set(tgPicked.map((c) => c.id));
+  // Sol panelde zaten seçilmiş kanallar gösterilmez — aynı kanalın iki yerde
+  // durması "hangisi geçerli" sorusunu doğurur.
+  const availableChannels = tgAllChannels.filter((c) => !pickedIds.has(c.id));
+
+  const toggle = (set: Set<string>, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  };
+
+  const handleTgAdd = () => {
+    const eklenecek = availableChannels.filter((c) => tgSelLeft.has(c.id));
+    if (eklenecek.length === 0) return;
+    setTgPicked([...tgPicked, ...eklenecek.map((c) => ({ id: c.id, title: c.title }))]);
+    setTgSelLeft(new Set());
+    setTgDirty(true);
+  };
+
+  const handleTgRemove = () => {
+    if (tgSelRight.size === 0) return;
+    setTgPicked(tgPicked.filter((c) => !tgSelRight.has(c.id)));
+    setTgSelRight(new Set());
+    setTgDirty(true);
+  };
+
+  const handleTgSaveChannels = async () => {
+    setTgSavingChannels(true);
+    setTgChannelMsg(null);
+    try {
+      const res = await window.cakalAPI.telegramReaderSetChannels(
+        tgPicked.map((c) => ({ id: c.id, title: c.title })),
+      );
+      if (res.status === 'ok') {
+        setTgPicked((res.data as TgChannel[]) || []);
+        setTgDirty(false);
+        setTgChannelMsg({
+          ok: true,
+          text: tgPicked.length === 0
+            ? 'Takip listesi boşaltıldı — ÇAKAL kanal taraması yapamaz'
+            : `${tgPicked.length} kanal kaydedildi — araştırmalar bu kanallar üzerinden yürüyecek`,
+        });
+      } else {
+        setTgChannelMsg({ ok: false, text: res.error || 'Kaydedilemedi' });
+      }
+    } catch (e: unknown) { setTgChannelMsg({ ok: false, text: (e as Error).message }); }
+    setTgSavingChannels(false);
   };
 
   // Hesabı değiştirmek ya da iptal edilmiş oturumu tazelemek için tek yol.
@@ -540,6 +633,129 @@ export default function SettingsScreen() {
                 {tgLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Radio className="h-3 w-3" />}
                 Yeniden giriş yap / hesabı değiştir
               </button>
+
+              {/* ── Takip listesi seçici ──
+                  Sol: hesaptaki kanallar. Sağ: ÇAKAL'ın tarayacağı küme.
+                  Amaç gürültü ve token kontrolü — araştırma sağdaki kümeyle
+                  sınırlı kalır, kullanıcı her seferinde kanal adı yazmaz. */}
+              <div className="mt-4 border-t border-zinc-800 pt-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                    Taranacak kanallar
+                  </h3>
+                  <button
+                    onClick={handleTgScan}
+                    disabled={tgScanning}
+                    className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
+                  >
+                    {tgScanning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    Tara
+                  </button>
+                </div>
+
+                <p className="mb-3 flex items-start gap-1.5 text-[11px] text-zinc-500">
+                  <Clock className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>
+                    ÇAKAL yalnız sağdaki kanalları tarar ve varsayılan olarak <strong className="text-zinc-400">sadece bugünün</strong> mesajlarına bakar.
+                    Daha geniş aralık için sohbette açıkça &quot;son 1 hafta&quot; / &quot;son 1 ay&quot; de.
+                  </span>
+                </p>
+
+                <div className="grid grid-cols-[1fr_auto_1fr] gap-2">
+                  {/* Sol panel */}
+                  <div>
+                    <div className="mb-1 text-[11px] text-zinc-500">
+                      Hesabındaki kanallar ({availableChannels.length})
+                    </div>
+                    <div className="h-48 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-800/60 p-1">
+                      {tgAllChannels.length === 0 ? (
+                        <p className="p-2 text-[11px] text-zinc-600">&quot;Tara&quot; ile kanallarını getir.</p>
+                      ) : availableChannels.length === 0 ? (
+                        <p className="p-2 text-[11px] text-zinc-600">Tüm kanallar takip listesinde.</p>
+                      ) : (
+                        availableChannels.map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => setTgSelLeft(toggle(tgSelLeft, c.id))}
+                            className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${
+                              tgSelLeft.has(c.id) ? 'bg-blue-600/30 text-blue-200' : 'text-zinc-300 hover:bg-zinc-700/50'
+                            }`}
+                            title={c.title}
+                          >
+                            {c.title}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Aktarım düğmeleri */}
+                  <div className="flex flex-col justify-center gap-2">
+                    <button
+                      onClick={handleTgAdd}
+                      disabled={tgSelLeft.size === 0}
+                      title="Seçilenleri takip listesine ekle"
+                      className="rounded-lg border border-zinc-700 p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-30"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={handleTgRemove}
+                      disabled={tgSelRight.size === 0}
+                      title="Seçilenleri takip listesinden çıkar"
+                      className="rounded-lg border border-zinc-700 p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-30"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {/* Sağ panel */}
+                  <div>
+                    <div className="mb-1 text-[11px] text-zinc-500">
+                      ÇAKAL bunları tarayacak ({tgPicked.length})
+                    </div>
+                    <div className="h-48 overflow-y-auto rounded-lg border border-emerald-800/60 bg-emerald-950/20 p-1">
+                      {tgPicked.length === 0 ? (
+                        <p className="p-2 text-[11px] text-zinc-600">Henüz kanal seçilmedi.</p>
+                      ) : (
+                        tgPicked.map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => setTgSelRight(toggle(tgSelRight, c.id))}
+                            className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${
+                              tgSelRight.has(c.id) ? 'bg-emerald-600/30 text-emerald-200' : 'text-zinc-300 hover:bg-zinc-700/50'
+                            }`}
+                            title={c.title}
+                          >
+                            {c.title}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    onClick={handleTgSaveChannels}
+                    disabled={tgSavingChannels || !tgDirty}
+                    className="flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-amber-400 disabled:opacity-40"
+                  >
+                    {tgSavingChannels ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Kaydet
+                  </button>
+                  {/* Kaydedilmemiş değişiklik sessiz kalmamalı: kullanıcı
+                      seçim yapıp kaydetmeden çıkarsa ÇAKAL eski listeyi tarar. */}
+                  {tgDirty && (
+                    <span className="text-[11px] text-amber-400">Kaydedilmemiş değişiklik var</span>
+                  )}
+                  {tgChannelMsg && (
+                    <span className={`text-[11px] ${tgChannelMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {tgChannelMsg.text}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">

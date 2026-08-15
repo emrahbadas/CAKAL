@@ -102,6 +102,8 @@ contextBridge.exposeInMainWorld('cakalAPI', {
     ipcRenderer.invoke('telegram-reader:status'),
   telegramReaderReset: () =>
     ipcRenderer.invoke('telegram-reader:reset'),
+  telegramReaderSetChannels: (channels) =>
+    ipcRenderer.invoke('telegram-reader:set-channels', { channels }),
 
   // Scrape Sources
   getScrapeSources: () => ipcRenderer.invoke('db:get-scrape-sources'),

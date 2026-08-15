@@ -169,7 +169,7 @@ Eksik yetenek → capability_gaps → expansion_proposals → kullanıcı onayı
 ```bash
 npm install
 cp .env.example .env   # anahtarları doldur (OpenAI, Perplexity, Supabase, Telegram)
-npm test               # 982 birim testi (75 dosya)
+npm test               # 1028 birim testi (77 dosya)
 cd apps/desktop && npm run dev
 ```
 

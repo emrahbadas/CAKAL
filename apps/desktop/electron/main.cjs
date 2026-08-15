@@ -3829,6 +3829,26 @@ ipcMain.handle('telegram-reader:remove-channel', async (_event, { channelId }) =
   return { status: 'ok', data: channels };
 });
 
+// Takip listesini TOPLUCA yaz. Ayarlar ekranındaki çift panelli seçim tek
+// "Kaydet" ile iner; tek tek ekle/çıkar IPC'si ile yapılsaydı yarı yazılmış
+// bir liste (kısmi kayıt) mümkün olurdu.
+ipcMain.handle('telegram-reader:set-channels', async (_event, { channels }) => {
+  try {
+    const clean = (Array.isArray(channels) ? channels : [])
+      .map((c) => ({
+        id: String(c?.id || '').trim(),
+        title: String(c?.title || '').trim() || String(c?.id || '').trim(),
+      }))
+      .filter((c) => c.id);
+
+    const unique = [...new Map(clean.map((c) => [c.id, c])).values()];
+    telegramReader.saveChannels(unique.map((c) => ({ ...c, addedAt: new Date().toISOString() })));
+    return { status: 'ok', data: telegramReader.getSavedChannels() };
+  } catch (err) {
+    return { status: 'error', error: err.message };
+  }
+});
+
 ipcMain.handle('telegram-reader:status', async () => {
   const auth = await telegramReader.verifyAuthorization();
   return {
