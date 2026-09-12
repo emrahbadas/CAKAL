@@ -160,7 +160,11 @@ Kaptan'ın canlı oturumundan çıkan üç kusur. Hepsi **ölçülerek** teşhis
 
 **Doğrulama:** `tests/universe-claim-and-evidence-split.test.mjs` (22) + `tests/verdict-negation.test.mjs`'e 9 regresyon. Üç düzeltme de **ayrı ayrı mutasyonla** sınandı: evren kapısı kapatılınca 1, defter ayrımı kapatılınca 1, nötrleştirici daraltılınca 5 test düşüyor.
 
-**Açık kalan:** Karar kilidi `contractOwnsRepair` yolunda **olay yaymadan** uygulanıyor (`main.cjs`) — fren çekiliyor ama aktivite monitöründe görünmüyor. Kaptan'ın "makine dairesi frene basmış mı?" şüphesinin bir sebebi buydu. Ayrı iş olarak bırakıldı.
+**(4) Sessiz fren — DÜZELTİLDİ.** Sözleşme onarımı sahipken (`contractOwnsRepair`) kapılar kendi tamamlama turlarını açmaz — bu doğru, yoksa iki sistem aynı anda onarım yapar ve aynı cevapta farklı asOf'lar karışır. Ama bu yolda hüküm indirilip **hiç olay yayılmıyordu**: cevabın altında "hüküm İNCELE seviyesine indirildi" notu, monitörde o saniyede hiçbir 🛑 yok. Kaptan'ın "makine dairesi frene basmış mı?" şüphesinin bir sebebi buydu.
+
+Kör nokta **tek kapıda değil, üçünde birden**ti (sıralama, fiyatlanma, karar kilidi) — birini düzeltip diğerlerini bırakmak hatanın üçte ikisini yerinde bırakırdı (§4.8).
+*Düzeltme:* saf `describeContractOwnedLock(kind, lock)` (test edilebilsin diye `decision-guards.cjs`'te) + tek giriş noktası `applyContractOwnedLock`. Monitör satırı artık hem gerekçeyi hem "ek tur AÇILMADI" bilgisini taşıyor — kullanıcı frenin çekildiğini ve neden ikinci bir LLM turu görmediğini aynı satırda görüyor. Karar kilidinde satır "toplanmadı" ile "toplandı ama yazılmadı" ayrımını da taşıyor (§3.9-2).
+*Kalıcı koruma:* kaynak seviyesinde kapı — `main.cjs` içindeki her `&& contractOwnsRepair) {` kısa devresi `applyContractOwnedLock(` çağırmak zorunda. Yeni bir kapı aynı kör noktayla eklenemez. Mutasyonla doğrulandı: fiyatlanma kapısı eski sessiz kalıba döndürülünce test düşüyor.
 
 ### 3.4 Yapısal
 
@@ -190,6 +194,7 @@ Bunlar koda yorum olarak da yazıldı; toplu hâli buraya:
 14. **Tespit ile YAZIM aynı genişlikte olmamalı.** Kilit "bu cevapta hüküm var mı?" (tespit) ve "hükmü nereden sileceğim?" (yazım) sorularının ikisini de tek bir `isVerdictLine` ile cevaplıyordu. Oysa hataların maliyeti zıt: tespitte yanlış pozitif koca bir onarım turu yakar, yazımda kaçan satır bloke edilmiş hükmü ekrana sızdırır. Tespit DAR, yazım GENİŞ olmalı. (§3.9)
 15. **Aynı cevapta iki sistem zıt sonuç basıyorsa, ikisi aynı kelimeyi farklı tanımlıyordur.** "Kanıt var" sözleşme için DEFTERDE, kilit için CEVAP METNİNDE demekti. Çelişki değil, tanım ayrışmasıydı; ama kullanıcıya çelişki olarak göründü ve olmayan bir ingestion hatası arattı. Kapı mesajları hangi tanıma göre konuştuğunu söylemeli: "veri yok" ile "veri var ama yazılmadı" farklı sorunlardır ve farklı düzeltme gerektirir. (§3.9)
 16. **Modelin kök-neden analizi de bir beyandır.** ÇAKAL üç kusurdan ikisini yanlış teşhis etti — ikisi de makul görünen, ölçülmemiş hikâyelerdi ("ledger a taşınmamış olabilir", "renderer bypass"). Kendi kusurunu BİLDİRMESİ kanıt kaynağıdır (§4.10), ama SEBEBİNİ açıklaması değildir. Teşhisi koda bakarak doğrula. (§3.9)
+17. **Koruma SESSİZ çalışıyorsa, çalışmıyor sayılır.** Üç kapı sözleşme onarımı sahipken hükmü indiriyor ama hiç olay yaymıyordu; fren çekiliyor, monitörde izi kalmıyordu. Kullanıcı sistemin çalışmadığını sandı ve haklıydı — gözlemleyemediği bir koruma, olmayan bir korumadan ayırt edilemez. Bir kapı hüküm değiştiriyorsa, değiştirdiğini SÖYLEMELİ. (§3.9-4)
 
 ---
 

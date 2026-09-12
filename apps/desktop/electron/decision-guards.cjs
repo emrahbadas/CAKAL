@@ -1357,6 +1357,52 @@ function neutralizeEquityVerdicts(response = '') {
  *   "toplandı ama cevapta gösterilmedi" ayrımını yapar. Verilmezse davranış
  *   eskisi gibidir (hepsi eksik sayılır).
  */
+// ── Sessiz fren ───────────────────────────────────────────────────────
+//
+// ÖLÇÜLEN CANLI HATA (12 Eylül 2026): araştırma sözleşmesi onarımı sahipken
+// (`contractOwnsRepair`) kapılar KENDİ tamamlama turlarını açmaz — bu doğru,
+// yoksa iki sistem aynı anda onarım yapar ve aynı cevapta farklı asOf'lar
+// karışır. Ama üç kapı (sıralama, fiyatlanma, karar kilidi) bu yolda hükmü
+// indirip HİÇ OLAY YAYMIYORDU.
+//
+// Sonuç: cevabın altına "hüküm İNCELE seviyesine indirildi" notu düşüyor,
+// aktivite monitöründe ise o saniyede hiçbir 🛑 görünmüyordu. Kaptan'ın
+// "makine dairesi frene basmış ama LLM dinlememiş mi ne?" şüphesinin bir
+// sebebi tam olarak buydu: fren çekiliyordu, izi yoktu.
+//
+// Üç kapıda da AYNI kör nokta vardı — bir yeri düzeltip diğerlerini bırakmak
+// (bkz. docs §4.8) aynı hatanın üçte ikisini yerinde bırakırdı.
+const CONTRACT_OWNED_LOCK_LABELS = Object.freeze({
+  ranking: 'YÖNETİLMEMİŞ SIRALAMA',
+  pricing: 'FİYATLANMA KİLİDİ',
+  verdict: 'KARAR KİLİDİ',
+});
+
+/**
+ * Sözleşme sahipken uygulanan kilidin monitör satırını üretir.
+ * Saf fonksiyon: main.cjs test edilemediği için metin burada kurulur.
+ */
+function describeContractOwnedLock(kind, lock) {
+  const label = CONTRACT_OWNED_LOCK_LABELS[kind] || 'KARAR KAPISI';
+  const parts = [];
+
+  if (lock && lock.reason) parts.push(String(lock.reason));
+  if (lock && Array.isArray(lock.notCollected) && lock.notCollected.length > 0) {
+    parts.push(`toplanmadı: ${lock.notCollected.join(', ')}`);
+  }
+  if (lock && Array.isArray(lock.notShown) && lock.notShown.length > 0) {
+    parts.push(`toplandı ama yazılmadı: ${lock.notShown.join(', ')}`);
+  }
+  if (parts.length === 0 && lock && Array.isArray(lock.missing) && lock.missing.length > 0) {
+    parts.push(`eksik: ${lock.missing.join(', ')}`);
+  }
+
+  const detail = parts.join(' | ') || 'gerekçe bildirilmedi';
+  // "ek tur AÇILMADI" bilerek yazılıyor: kullanıcı hem frenin çekildiğini
+  // hem de neden ikinci bir LLM turu görmediğini aynı satırda görmeli.
+  return `${label} uygulandı (sözleşme onarımı sahipken; ek tur AÇILMADI): ${detail}`;
+}
+
 function evaluateVerdictEvidenceLock(message, response, opts = {}) {
   if (isCommanderProductMarketplaceMessage(message)) return null;
   if (!isCommanderFinanceMessage(message)) return null;
@@ -1732,6 +1778,7 @@ module.exports = {
   COMMANDER_ACTIONABLE_FINANCE_RE,
   GOVERNED_RANKING_TOOLS,
   evaluateVerdictEvidenceLock,
+  describeContractOwnedLock,
   hasCompletedEarningsPricingRun,
   neutralizeEquityVerdicts,
   extractCommanderToolNames,

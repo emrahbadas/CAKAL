@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 
+import { readFileSync } from 'node:fs';
 import guards from '../apps/desktop/electron/decision-guards.cjs';
 import contract from '../apps/desktop/electron/research-contract.cjs';
 
-const { buildEvidenceLedger, evaluateVerdictEvidenceLock } = guards;
+const { buildEvidenceLedger, evaluateVerdictEvidenceLock, describeContractOwnedLock } = guards;
 const {
   createResearchRun, submitPlan, evaluateContract, SUB_QUESTION_STATUS,
   detectUniverseClaim, evaluateUniverseCoverage,
@@ -235,6 +236,67 @@ describe('KAPSAM AŞMIYOR — endeks adı tek başına evren iddiası değildir'
       'BIST100 evrenindeki likit adaylar',
     ]) {
       expect(detectUniverseClaim(soru)?.key, soru).toBe('BIST100');
+    }
+  });
+});
+
+/**
+ * CANLI HATA REGRESYONU — sessiz fren (12 Eylül 2026)
+ *
+ * Araştırma sözleşmesi onarımı sahipken kapılar KENDİ tamamlama turlarını
+ * açmaz — bu doğru, yoksa iki sistem aynı anda onarım yapar ve aynı cevapta
+ * farklı asOf'lar karışır. Ama bu yolda hüküm indiriliyor ve HİÇ OLAY
+ * YAYILMIYORDU: cevabın altında "hüküm İNCELE seviyesine indirildi" notu,
+ * monitörde o saniyede hiçbir 🛑 yok.
+ *
+ * Kaptan'ın "makine dairesi frene basmış ama LLM dinlememiş mi ne?"
+ * şüphesinin bir sebebi buydu — fren çekiliyordu, izi yoktu.
+ *
+ * Kör nokta ÜÇ kapıdaydı (sıralama, fiyatlanma, karar kilidi); birini
+ * düzeltip diğerlerini bırakmak hatanın üçte ikisini yerinde bırakırdı.
+ */
+describe('sessiz fren — sözleşme sahipken uygulanan kilit iz bırakır', () => {
+  it('karar kilidi satırı "toplandı ama yazılmadı" ayrımını taşır', () => {
+    const satir = describeContractOwnedLock('verdict', {
+      missing: ['Değerleme çarpanı (F/K, FD/FAVÖK veya PD/DD)'],
+      notCollected: [],
+      notShown: ['Değerleme çarpanı (F/K, FD/FAVÖK veya PD/DD)'],
+    });
+    expect(satir).toContain('KARAR KİLİDİ uygulandı');
+    expect(satir).toContain('toplandı ama yazılmadı');
+    // Kullanıcı neden ikinci bir LLM turu görmediğini de anlamalı.
+    expect(satir).toContain('ek tur AÇILMADI');
+  });
+
+  it('sıralama ve fiyatlanma kilitleri kendi etiketlerini alır', () => {
+    expect(describeContractOwnedLock('ranking', { reason: 'x' })).toContain('YÖNETİLMEMİŞ SIRALAMA');
+    expect(describeContractOwnedLock('pricing', { reason: 'y' })).toContain('FİYATLANMA KİLİDİ');
+  });
+
+  it('gerekçesiz kilitte bile satır üretilir (sessiz kalmaz)', () => {
+    const satir = describeContractOwnedLock('bilinmeyen', {});
+    expect(satir).toContain('KARAR KAPISI uygulandı');
+    expect(satir).toContain('gerekçe bildirilmedi');
+  });
+
+  it('notCollected ve notShown birlikte raporlanır', () => {
+    const satir = describeContractOwnedLock('verdict', {
+      notCollected: ['Risk seviyesi'],
+      notShown: ['Değerleme çarpanı'],
+    });
+    expect(satir).toContain('toplanmadı: Risk seviyesi');
+    expect(satir).toContain('toplandı ama yazılmadı: Değerleme çarpanı');
+  });
+
+  it('KAYNAK KAPISI — sözleşme sahipken hiçbir kilit sessizce uygulanamaz', () => {
+    // Bu test yeni bir kapının aynı kör noktayla eklenmesini engeller.
+    // Eski (hatalı) kalıp: `{ response = xLock.response; xLock = null; }`
+    const src = readFileSync(new URL('../apps/desktop/electron/main.cjs', import.meta.url), 'utf-8');
+    const kisaDevreler = src.split(/\r?\n/).filter((l) => /&& contractOwnsRepair\) \{/.test(l));
+
+    expect(kisaDevreler.length).toBeGreaterThan(0);
+    for (const satir of kisaDevreler) {
+      expect(satir, `sessiz fren: ${satir.trim()}`).toMatch(/applyContractOwnedLock\(/);
     }
   });
 });

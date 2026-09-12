@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const cron = require('node-cron');
 const { initOpenAI, chat, multiSourceSearch, resetConversation, commitConversationTurn, trackCapabilityGap, mergeRuntimeCapabilityOverrides } = require('./ai-service.cjs');
-const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock, evaluatePriceLevelProvenanceGate, evaluateDebtQualityGate } = require('./decision-guards.cjs');
+const { evaluateCommanderDecisionGate, evaluateEarningsPricingGate, evaluateUngovernedRankingGate, evaluateUnroutedCapabilityGate, evaluateVerdictEvidenceLock, evaluatePriceLevelProvenanceGate, evaluateDebtQualityGate, describeContractOwnedLock } = require('./decision-guards.cjs');
 const { createResearchRun, buildContractRepairRequest, evaluateContract: evaluateResearchContract } = require('./research-contract.cjs');
 const { buildEvidenceLedger: buildLedgerForRepair, extractBistTickers } = require('./decision-guards.cjs');
 
@@ -1615,6 +1615,20 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         emitActivity(stamped);
       };
 
+      // Sözleşme onarımı sahipken kapı kendi turunu AÇMAZ ama hükmü indirir.
+      // Bu yol eskiden hiç olay yaymıyordu: cevabın altında "hüküm indirildi"
+      // notu vardı, monitörde o saniyede hiçbir 🛑 yoktu. Fren çekiliyordu,
+      // izi yoktu. Üç kapıda da (sıralama/fiyatlanma/karar) aynı kör nokta.
+      const applyContractOwnedLock = (kind, lock) => {
+        commanderEmitActivity({
+          type: 'decision_gate',
+          agent: 'commander',
+          detail: describeContractOwnedLock(kind, lock),
+          timestamp: Date.now(),
+        });
+        return lock.response;
+      };
+
       commanderEmitActivity({ type: 'agent_start', agent: 'commander', message: payload.message, timestamp: Date.now() });
 
       // Build dynamic profile context for system prompt injection
@@ -1938,7 +1952,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // ifadesini tahmin etmeye çalışmaz; ÇAKAL'ın ÜRETTİĞİ cevaba bakar:
         // ortada hisse sıralaması varsa arkasında yönetilmiş araştırma da olmalı.
         let rankingLock = evaluateUngovernedRankingGate(payload.message, response, currentTurnEvents);
-        if (rankingLock && contractOwnsRepair) { response = rankingLock.response; rankingLock = null; }
+        if (rankingLock && contractOwnsRepair) { response = applyContractOwnedLock('ranking', rankingLock); rankingLock = null; }
         if (rankingLock) {
           commanderEmitActivity({
             type: 'decision_gate',
@@ -1990,7 +2004,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // aracı GERÇEKTEN çalışıp sınıflandırma üretmeden (provenance kaydı) çıkamaz.
         // Doğrulama cevap metnindeki kelimeyle değil tool_call activity log'uyla yapılır.
         let pricingLock = evaluateEarningsPricingGate(payload.message, response, currentTurnEvents);
-        if (pricingLock && contractOwnsRepair) { response = pricingLock.response; pricingLock = null; }
+        if (pricingLock && contractOwnsRepair) { response = applyContractOwnedLock('pricing', pricingLock); pricingLock = null; }
         if (pricingLock) {
           commanderEmitActivity({
             type: 'decision_gate',
@@ -2044,7 +2058,7 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         // çektiriyordu.
         const verdictLedger = buildLedgerForRepair(researchRun.events(), Date.now());
         let verdictLock = evaluateVerdictEvidenceLock(payload.message, response, { ledger: verdictLedger });
-        if (verdictLock && contractOwnsRepair) { response = verdictLock.response; verdictLock = null; }
+        if (verdictLock && contractOwnsRepair) { response = applyContractOwnedLock('verdict', verdictLock); verdictLock = null; }
         if (verdictLock) {
           commanderEmitActivity({
             type: 'decision_gate',
