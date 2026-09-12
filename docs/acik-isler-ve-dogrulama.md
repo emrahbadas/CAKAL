@@ -142,6 +142,26 @@ Finans bağlamı bile cevaptan geliyordu — "Borsa Haber Hisse" bir **kanal ad�
 
 **Açık kalan:** Takip listesi seçimi canlıda (gerçek Electron penceresinde) henüz denenmedi; birim testler ve typecheck yeşil, arayüz etkileşimi kullanıcı tarafından doğrulanacak.
 
+### 3.9 Hüküm sızıntısı, kanıt tanımı ayrışması, evren iddiası — DÜZELTİLDİ (12 Eylül 2026)
+
+Kaptan'ın canlı oturumundan çıkan üç kusur. Hepsi **ölçülerek** teşhis edildi; ÇAKAL'ın kendi kök-neden analizinin **ikisi yanlıştı** ve bu da ayrı bir ders.
+
+**(3) Bloke edilmiş hüküm cevapta sızdı.** Kilit ateşledi, footer'a "hüküm İNCELE seviyesine indirildi" yazdı, ama `AL` dört ayrı yerde ayakta kaldı. `neutralizeEquityVerdicts` bağlam kelimesini **aynı satırda** arıyordu; markdown'da bağlam **hiyerarşik** taşınır (tablo başlığı → veri satırları, bölüm başlığı → alt satırlar ve alt başlıklar). Tek yakalanan satır `## Karar: AL` oldu.
+*Düzeltme:* **tespit ile yazım ayrıldı.** `isVerdictLine` (tespit) DAR kalır — yanlış pozitif koca bir onarım turu yakar. Nötrleştirici (yazım) GENİŞ olur — kaçan satır bloke hükmü ekrana sızdırır. Yazıma üç kapsam eklendi: tablo başlığı bağlamı, başlık yığını üzerinden devralma, ve satırda sicilde kayıtlı sembol varsa bağlam aranmaması. Hüküm reddi (`VERDICT_NEGATION_RE`) korunur.
+*ÇAKAL'ın teşhisi:* "renderer kilitli verdict'i enforce etmiyor / presentation bypass" — **yanlış katman.** Bypass yoktu; renderer ne verildiyse onu bastı.
+
+**(2) İki sistem, iki "kanıt var" tanımı.** Aynı cevabın altında `📋 SÖZLEŞME: [s1] COMPLETE` ile `⚖️ KİLİT: Eksik kanıtlar: Değerleme çarpanı` yan yana basıldı. `investable_candidate` zorunlu setinde `VALUATION` var ve model çıtayı indiremez → s1 COMPLETE ise **çarpan deftereydi**. Sözleşme **deftere**, kilit **cevap metnine** bakıyordu. `get_valuation_multiples` beş sembol için de çalıştı; model çarpanı yalnızca yazmadı.
+*Düzeltme:* kilide defter verildi; artık **"toplanmadı"** ile **"toplandı ama gösterilmedi"** ayrı raporlanıyor ve onarım talimatı ikiye bölündü — zaten elde olan veri için yeniden araç çağrılmıyor. `risk_level` bilinçli olarak "toplanamaz" sınıfında: o bir ölçüm değil, analiz çıktısı.
+*ÇAKAL'ın teşhisi:* "veri Evidence Ledger'a taşınmamış olabilir" — **kendi altbilgisiyle çürütüldü.**
+
+**(1) Evren iddiası denetlenmiyordu.** Plan üç alt soruyu "BIST100 evreninde…" diye kurdu, `entities` alanına önceki turdan taşınan 5 sembol yazıldı, beşinin kanıtı tam olduğu için COMPLETE kapandı ve cevap "BIST100 içindeki tek temiz aday" dedi. BIST100'ün 95'ine hiç bakılmamıştı. `universeScope` alanı tam bu iş için yazılıyordu ve **hiçbir kapı okumuyordu** (ölçüm: 3 geçiş — tanım, yazım, export; 0 tüketici).
+*Düzeltme:* defter artık `universeScope` + `observedCount` taşıyor; alt soru bir evren iddia ediyorsa gözlenen enstrüman sayısı evreni karşılamadan COMPLETE olamıyor (`UNIVERSE_COVERAGE:BIST100`). Ölçülen turda: gereken 100, gözlenen 25 → kapanmaz.
+*Kapsam daraltması:* ilk sürüm yalnız endeks adına bakıyordu ve mevcut bir testi düşürdü — `"XU100 gore relatif guc"` bir **benchmark referansı**, evren iddiası değil. Artık seçim dili (`içinde/içinden/arasında/evreninde/hisselerinden`) şart.
+
+**Doğrulama:** `tests/universe-claim-and-evidence-split.test.mjs` (22) + `tests/verdict-negation.test.mjs`'e 9 regresyon. Üç düzeltme de **ayrı ayrı mutasyonla** sınandı: evren kapısı kapatılınca 1, defter ayrımı kapatılınca 1, nötrleştirici daraltılınca 5 test düşüyor.
+
+**Açık kalan:** Karar kilidi `contractOwnsRepair` yolunda **olay yaymadan** uygulanıyor (`main.cjs`) — fren çekiliyor ama aktivite monitöründe görünmüyor. Kaptan'ın "makine dairesi frene basmış mı?" şüphesinin bir sebebi buydu. Ayrı iş olarak bırakıldı.
+
 ### 3.4 Yapısal
 
 - `ai-service.cjs` monoliti (~11k satır) modüllere bölünmedi.
@@ -167,6 +187,9 @@ Bunlar koda yorum olarak da yazıldı; toplu hâli buraya:
 11. **Kimlik bilgisinin VAR olması GEÇERLİ olduğunu göstermez.** `isAuthenticated()` yalnızca `TELEGRAM_SESSION.length > 10` kontrol ediyordu; iptal edilmiş oturum da 369 karakterdi. Ayarlar ekranı "hesap bağlı" diye yeşil yakıp giriş formunu gizledi — **kullanıcı için çıkışsız bir kilit**: yeniden giriş yapacak düğme ekranda yoktu. Ölçüm: `hasStoredSession()=true` iken `users.GetUsers` → `401 SESSION_REVOKED`. Bu, "beyan kanıt değildir" kuralının ürün içi teşhis yüzeyine uygulanmamış hâliydi. Bir kimlik/yetki durumunu ekranda göstereceksen **sahibine sor**, dizeyi ölçme. (§3.4)
 12. **Her "bağlandı" durumunun geri dönüş yolu olmalı.** Kilit tek başına yanlış durumdan doğmadı; `tgAuthStep === 'done'` dalında hiçbir çıkış/yeniden giriş eylemi olmamasından doğdu. Durum yanlış hesaplandığı an arayüz çıkmaz sokağa dönüştü. Terminal bir "başarılı" durumu çizerken, o durumdan çıkma eylemini de aynı anda çiz.
 13. **Kapının YANLIŞ ATEŞLEMESİ de bir arıza sınıfıdır, sessiz geçmemesi kadar önemlidir.** Sıralama kapısı bir Telegram kanal listesini hisse sıralaması sanıp cevabı bloke etti. Kapıları hep "kaçırıyor mu" diye test ettik; "yok yere kapanıyor mu" diye test etmemiştik. Her kapı için en az bir **negatif** vaka yaz: kapının susması gereken, ama şekil olarak benzeyen bir girdi. Aksi hâlde koruma, koruduğu şeyin önüne geçer.
+14. **Tespit ile YAZIM aynı genişlikte olmamalı.** Kilit "bu cevapta hüküm var mı?" (tespit) ve "hükmü nereden sileceğim?" (yazım) sorularının ikisini de tek bir `isVerdictLine` ile cevaplıyordu. Oysa hataların maliyeti zıt: tespitte yanlış pozitif koca bir onarım turu yakar, yazımda kaçan satır bloke edilmiş hükmü ekrana sızdırır. Tespit DAR, yazım GENİŞ olmalı. (§3.9)
+15. **Aynı cevapta iki sistem zıt sonuç basıyorsa, ikisi aynı kelimeyi farklı tanımlıyordur.** "Kanıt var" sözleşme için DEFTERDE, kilit için CEVAP METNİNDE demekti. Çelişki değil, tanım ayrışmasıydı; ama kullanıcıya çelişki olarak göründü ve olmayan bir ingestion hatası arattı. Kapı mesajları hangi tanıma göre konuştuğunu söylemeli: "veri yok" ile "veri var ama yazılmadı" farklı sorunlardır ve farklı düzeltme gerektirir. (§3.9)
+16. **Modelin kök-neden analizi de bir beyandır.** ÇAKAL üç kusurdan ikisini yanlış teşhis etti — ikisi de makul görünen, ölçülmemiş hikâyelerdi ("ledger a taşınmamış olabilir", "renderer bypass"). Kendi kusurunu BİLDİRMESİ kanıt kaynağıdır (§4.10), ama SEBEBİNİ açıklaması değildir. Teşhisi koda bakarak doğrula. (§3.9)
 
 ---
 

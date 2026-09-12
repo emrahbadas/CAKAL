@@ -2037,7 +2037,13 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
 
         // Hüküm-kanıt kilidi: AL/SAT ancak değerleme + dönem karşılaştırması +
         // kaynak kanıtı + veri tazeliği + risk seviyesi tamamsa çıkabilir.
-        let verdictLock = evaluateVerdictEvidenceLock(payload.message, response);
+        // Defter kilide VERİLİR: "kanıt yok" ile "kanıt var ama cevapta
+        // gösterilmedi" ayrımı ancak böyle yapılabilir. Eskiden kilit yalnız
+        // cevap metnine bakıyordu ve toplanmış veriyi "eksik kanıt" diye
+        // raporluyordu — onarım turu da modele elindeki veriyi yeniden
+        // çektiriyordu.
+        const verdictLedger = buildLedgerForRepair(researchRun.events(), Date.now());
+        let verdictLock = evaluateVerdictEvidenceLock(payload.message, response, { ledger: verdictLedger });
         if (verdictLock && contractOwnsRepair) { response = verdictLock.response; verdictLock = null; }
         if (verdictLock) {
           commanderEmitActivity({
@@ -2047,14 +2053,25 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
             timestamp: Date.now(),
           });
 
+          // ONARIM TALİMATI İKİYE AYRILIR.
+          // Zaten toplanmış veriyi "araçlarla tamamla" demek boşa tool turu
+          // yakıyordu: 12 Eylül turunda get_valuation_multiples beş sembol
+          // için de çalışmıştı, model yalnızca çarpanı cevaba yazmamıştı.
           const completionMessage = [
             payload.message || '',
             '',
             '[ÇEKİRDEK ZORUNLULUK — KARAR KİLİDİ]',
-            'Önceki cevabında AL/SAT hükmü vardı ama şu zorunlu kanıtlar eksikti:',
-            ...verdictLock.missing.map((item) => `- ${item}`),
+            'Önceki cevabında AL/SAT hükmü vardı ama zorunlu kanıt seti cevapta tamamlanmadı.',
+            ...(verdictLock.notShown.length > 0 ? [
+              'ŞUNLAR ZATEN TOPLANDI — yeniden araç çağırma, sadece cevaba YAZ:',
+              ...verdictLock.notShown.map((item) => `- ${item}`),
+            ] : []),
+            ...(verdictLock.notCollected.length > 0 ? [
+              'ŞUNLAR HENÜZ TOPLANMADI — araçla getir ya da hükmü indir:',
+              ...verdictLock.notCollected.map((item) => `- ${item}`),
+            ] : []),
             'İki seçeneğin var:',
-            '1) Eksik kanıtları araçlarla tamamla (get_financial_statements ile yıllık karşılaştırma, değerleme çarpanları, kaynak+tarih, veri zamanı, risk/stop seviyesi) ve hükmü koru.',
+            '1) Yukarıdakileri aynı cevapta sun (toplanmışları yaz, eksikleri araçla getir) ve hükmü koru.',
             '2) Kanıt tamamlanamıyorsa hüküm kelimesi olarak SADECE İNCELE, İZLE, RİSKLİ veya VERİ YETERSİZ kullan.',
             'AL/SAT hükmünü kanıtsız tekrar etme.',
           ].join('\n');
@@ -2072,12 +2089,19 @@ ipcMain.handle('agent:run', async (_event, agentName, payload) => {
         researchRun,
           });
 
-          verdictLock = evaluateVerdictEvidenceLock(payload.message, response);
+          // Onarım turunda yeni araçlar çalışmış olabilir; defteri TEKRAR kur.
+          verdictLock = evaluateVerdictEvidenceLock(payload.message, response, {
+            ledger: buildLedgerForRepair(researchRun.events(), Date.now()),
+          });
           if (verdictLock) {
+            const parcalar = [
+              verdictLock.notCollected.length ? `toplanmadı: ${verdictLock.notCollected.join(', ')}` : null,
+              verdictLock.notShown.length ? `toplandı ama yazılmadı: ${verdictLock.notShown.join(', ')}` : null,
+            ].filter(Boolean).join(' | ');
             commanderEmitActivity({
               type: 'decision_gate',
               agent: 'commander',
-              detail: `KARAR KİLİDİ uygulandı: kanıt hâlâ eksik (${verdictLock.missing.join(', ')}). Hüküm İNCELE/RİSKLİ seviyesine indirildi.`,
+              detail: `KARAR KİLİDİ uygulandı (${parcalar}). Hüküm İNCELE/RİSKLİ seviyesine indirildi.`,
               timestamp: Date.now(),
             });
             response = verdictLock.response;

@@ -246,7 +246,16 @@ function buildEvidenceLedger(events = [], now = Date.now()) {
     for (const klass of classes) {
       let entry = ledger.get(klass);
       if (!entry) {
-        entry = { at: -Infinity, asOf: null, tool: null, tools: [], entities: new Map() };
+        entry = {
+          at: -Infinity, asOf: null, tool: null, tools: [], entities: new Map(),
+          // EVREN KAPSAMI: bu sınıfın kanıtı kaç enstrümanı GÖRDÜ?
+          // "BIST100 içindeki tek aday" gibi bir iddia, evrenin tamamının
+          // gözlendiğini varsayar. Araç evren-geneli olsa bile döndürdüğü
+          // satır sayısı evrenin tamamı olmayabilir (ölçüm: get_bist_board
+          // 628 enstrüman taşıyabilirken o turda 25 satır döndü).
+          universeScope: null,
+          observedCount: null,
+        };
         ledger.set(klass, entry);
       }
       if (at > entry.at) {
@@ -255,6 +264,14 @@ function buildEvidenceLedger(events = [], now = Date.now()) {
         entry.tool = String(event.tool);
       }
       entry.tools = [...new Set([...entry.tools, String(event.tool)])];
+
+      if (event.universeScope && event.universeScope !== 'ENTITY') {
+        entry.universeScope = event.universeScope;
+        const seen = Number(event.observedCount);
+        if (Number.isFinite(seen)) {
+          entry.observedCount = Math.max(entry.observedCount ?? 0, seen);
+        }
+      }
 
       // Entity boyutu ZORUNLU ayrım: KCHOL hakkındaki bir alt soru THYAO için
       // çekilmiş fiyatla tatmin olmamalı. Entity'siz olaylar (piyasa geneli
@@ -1196,42 +1213,183 @@ function detectEquityVerdict(response = '') {
   return String(response || '').split('\n').some(isVerdictLine);
 }
 
-function collectMissingVerdictEvidence(response = '') {
+/**
+ * "KANIT YOK" İLE "KANIT GÖSTERİLMEDİ" AYRI ŞEYLERDİR.
+ *
+ * ÖLÇÜLEN CANLI HATA (12 Eylül 2026): aynı cevabın altında iki sistem birbirine
+ * zıt sonuç bastı —
+ *
+ *   📋 SÖZLEŞME: [s1] (investable_candidate): COMPLETE
+ *   ⚖️ KARAR KİLİDİ: Eksik kanıtlar: Değerleme çarpanı (F/K, FD/FAVÖK, PD/DD)
+ *
+ * `investable_candidate` zorunlu kanıt setinde VALUATION var ve model bu çıtayı
+ * indiremez; yani s1 COMPLETE ise VALUATION DEFTERDEYDİ. Çelişki değil, İKİ
+ * FARKLI TANIM: sözleşme deftere bakar, kilit CEVAP METNİNE bakar.
+ * `get_valuation_multiples` beş sembol için de çalıştı; model çarpanı cevaba
+ * yazmadı, kilit de haklı olarak ateşledi.
+ *
+ * Kusur ateşlemesi değil, DİLİ: "eksik kanıt" cümlesi bunu veri boşluğu gibi
+ * gösterdi ve hem kullanıcıyı hem modeli olmayan bir ingestion hatası aramaya
+ * yolladı. Onarım talimatı da modele zaten elindeki veriyi yeniden çektirdi.
+ *
+ * Bu tablo iki durumu ayırır. Defter verilmezse davranış eskisi gibi kalır.
+ */
+const VERDICT_EVIDENCE_LEDGER_CLASSES = Object.freeze({
+  valuation: ['VALUATION'],
+  period_comparison: ['FUNDAMENTALS'],
+  // Kaynak ve veri zamanı her defter kaydında zaten vardır (source, asOf,
+  // retrievedAt); defterde herhangi bir kayıt varsa bunlar TOPLANMIŞ sayılır.
+  source_evidence: [],
+  freshness: [],
+  // Risk/stop bir ÖLÇÜM değil, analiz çıktısıdır. Defterde karşılığı yoktur;
+  // bunu üretmek modelin işidir, "toplanmadı" demek yanlış olur.
+  risk_level: null,
+});
+
+function classifyMissingVerdictEvidence(response = '', ledger = null, now = Date.now()) {
   const text = String(response || '');
-  return VERDICT_EVIDENCE_CHECKS.filter((check) => !check.test(text)).map((check) => check.label);
+  const failed = VERDICT_EVIDENCE_CHECKS.filter((check) => !check.test(text));
+
+  if (!(ledger instanceof Map)) {
+    return { missing: failed.map((c) => c.label), notCollected: failed.map((c) => c.label), notShown: [] };
+  }
+
+  const notCollected = [];
+  const notShown = [];
+
+  for (const check of failed) {
+    const classes = VERDICT_EVIDENCE_LEDGER_CLASSES[check.key];
+    if (classes === null || classes === undefined) { notCollected.push(check.label); continue; }
+    const collected = classes.length === 0
+      ? ledger.size > 0
+      : classes.some((klass) => hasFreshEvidence(ledger, klass, now));
+    (collected ? notShown : notCollected).push(check.label);
+  }
+
+  return { missing: failed.map((c) => c.label), notCollected, notShown };
 }
 
+function collectMissingVerdictEvidence(response = '') {
+  return classifyMissingVerdictEvidence(response).missing;
+}
+
+const HEADING_RE = /^(#{1,6})\s/;
+const TABLE_ROW_RE = /^\s*\|/;
+
+/**
+ * TESPİT İLE YAZIM AYRI TUTULUR.
+ *
+ * `isVerdictLine` TESPİT içindir ve DAR kalmalıdır: yanlış pozitif, koca bir
+ * onarım turu yakar (bkz. VERDICT_NEGATION_RE'nin doğuş sebebi).
+ * Bu fonksiyon ise kilit ZATEN karar verdikten SONRA çalışır; orada dar olmak
+ * bloke edilmiş hükmün ekrana sızması demektir. Bu yüzden yazım kapsamı
+ * bilinçli olarak tespitten GENİŞTİR.
+ *
+ * ÖLÇÜLEN CANLI HATA (12 Eylül 2026): kilit ateşledi, footer'a "hüküm İNCELE
+ * seviyesine indirildi" yazdı — ama cevapta "AL" dört ayrı yerde ayakta kaldı:
+ *
+ *   | AKBNK | AL | Trend yukarı...            → tabloda "Karar" BAŞLIK satırında
+ *   # 1) AKBNK neden AL diyebildiğim hisse?   → başlıkta bağlam kelimesi yok
+ *   ### AKBNK = ... AL hükmüne uygun tek aday
+ *   - Bir sonraki açık seansta AL adayı       → bağlam bir ÜST başlıkta
+ *
+ * Tek yakalanan satır `## Karar: AL` oldu, çünkü eski kural bağlam kelimesini
+ * AYNI satırda arıyordu. Markdown'da bağlam ise HİYERARŞİK taşınır: tablo
+ * başlığı sütununa, bölüm başlığı altındaki satırlara.
+ *
+ * Üç ek kapsam:
+ *   1. Tablo başlığında bağlam kelimesi varsa o tablonun satırları hükümdür.
+ *   2. Bölüm başlığında bağlam varsa alt satırlar ve ALT BAŞLIKLAR devralır.
+ *   3. Satırda sicilde kayıtlı bir BIST sembolü varsa bağlam kelimesi aranmaz
+ *      — "AKBNK ... AL" zaten hükümdür.
+ *
+ * Hüküm REDDİ hâlâ korunur: VERDICT_NEGATION_RE her satırda önce bakılır,
+ * yoksa "AL demiyorum" cümlesi de yeniden yazılırdı.
+ */
 function neutralizeEquityVerdicts(response = '') {
-  return String(response || '')
-    .split('\n')
-    .map((line) => {
-      if (!isVerdictLine(line)) return line;
-      return line
-        .replace(/(^|[^A-ZÇĞİÖŞÜa-zçğıöşü])AL($|[^A-ZÇĞİÖŞÜa-zçğıöşü])/g, '$1İNCELE$2')
-        .replace(/(^|[^A-ZÇĞİÖŞÜa-zçğıöşü])SAT($|[^A-ZÇĞİÖŞÜa-zçğıöşü])/g, '$1RİSKLİ$2');
-    })
-    .join('\n');
+  const lines = String(response || '').split('\n');
+
+  // Başlık yığını: {level, context}. Alt başlık üstten devralır.
+  const headingStack = [];
+  let inTable = false;
+  let tableContext = false;
+
+  const rewrite = (line) => line
+    .replace(/(^|[^A-ZÇĞİÖŞÜa-zçğıöşü])AL($|[^A-ZÇĞİÖŞÜa-zçğıöşü])/g, '$1İNCELE$2')
+    .replace(/(^|[^A-ZÇĞİÖŞÜa-zçğıöşü])SAT($|[^A-ZÇĞİÖŞÜa-zçğıöşü])/g, '$1RİSKLİ$2');
+
+  return lines.map((line) => {
+    const heading = line.match(HEADING_RE);
+    if (heading) {
+      const level = heading[1].length;
+      while (headingStack.length && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
+      const inherited = headingStack.length ? headingStack[headingStack.length - 1].context : false;
+      headingStack.push({ level, context: inherited || VERDICT_CONTEXT_LINE_RE.test(line) });
+      inTable = false;
+      tableContext = false;
+    } else if (TABLE_ROW_RE.test(line)) {
+      if (!inTable) {
+        // Tablonun İLK satırı başlıktır; sütun adları burada.
+        inTable = true;
+        tableContext = VERDICT_CONTEXT_LINE_RE.test(line);
+      }
+    } else {
+      inTable = false;
+      tableContext = false;
+    }
+
+    if (VERDICT_NEGATION_RE.test(line)) return line;
+    if (!VERDICT_WORD_RE.test(line) && !VERDICT_ARROW_RE.test(line) && !VERDICT_TICKER_RE.test(line)) return line;
+
+    const sectionContext = headingStack.length ? headingStack[headingStack.length - 1].context : false;
+    const shouldRewrite = isVerdictLine(line)
+      || tableContext
+      || sectionContext
+      || containsBistTicker(line);
+
+    return shouldRewrite ? rewrite(line) : line;
+  }).join('\n');
 }
 
-function evaluateVerdictEvidenceLock(message, response) {
+/**
+ * @param {object} [opts]
+ * @param {Map} [opts.ledger] Kanıt defteri. Verilirse kilit "toplanmadı" ile
+ *   "toplandı ama cevapta gösterilmedi" ayrımını yapar. Verilmezse davranış
+ *   eskisi gibidir (hepsi eksik sayılır).
+ */
+function evaluateVerdictEvidenceLock(message, response, opts = {}) {
   if (isCommanderProductMarketplaceMessage(message)) return null;
   if (!isCommanderFinanceMessage(message)) return null;
   if (!detectEquityVerdict(response)) return null;
 
-  const missing = collectMissingVerdictEvidence(response);
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const { missing, notCollected, notShown } = classifyMissingVerdictEvidence(response, opts.ledger || null, now);
   if (missing.length === 0) return null;
 
-  const lockedResponse = [
+  const lines = [
     neutralizeEquityVerdicts(response),
     '',
     '---',
     '⚖️ KARAR KİLİDİ (deterministik):',
     'AL/SAT hükmü için zorunlu kanıt seti bu cevapta tamamlanmadı; hüküm İNCELE/RİSKLİ seviyesine indirildi.',
-    `Eksik kanıtlar: ${missing.join(' | ')}`,
-    'Tam hüküm şartı: değerleme çarpanları + yıllık dönem karşılaştırması + kaynaklı kanıt + veri zamanı + risk/stop seviyesi aynı cevapta sunulmalı.',
-  ].join('\n');
+  ];
 
-  return { status: 'verdict_locked', missing, response: lockedResponse };
+  if (notCollected.length > 0) lines.push(`Toplanmamış kanıtlar: ${notCollected.join(' | ')}`);
+  // Bu ayrım kullanıcıya da lazım: "veri yok" ile "veri var ama yazılmadı"
+  // farklı sorunlardır ve farklı düzeltme gerektirir.
+  if (notShown.length > 0) {
+    lines.push(`Toplandı ama cevapta gösterilmedi: ${notShown.join(' | ')} — veri kanıt defterinde mevcut, hüküm için cevaba YAZILMASI gerekiyor.`);
+  }
+
+  lines.push('Tam hüküm şartı: değerleme çarpanları + yıllık dönem karşılaştırması + kaynaklı kanıt + veri zamanı + risk/stop seviyesi aynı cevapta sunulmalı.');
+
+  return {
+    status: 'verdict_locked',
+    missing,
+    notCollected,
+    notShown,
+    response: lines.join('\n'),
+  };
 }
 
 // ============================

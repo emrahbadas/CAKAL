@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import guards from '../apps/desktop/electron/decision-guards.cjs';
 import contract from '../apps/desktop/electron/research-contract.cjs';
 
-const { detectEquityVerdict, evaluateVerdictEvidenceLock, buildEvidenceLedger, hasFreshEvidence } = guards;
+const { detectEquityVerdict, evaluateVerdictEvidenceLock, buildEvidenceLedger, hasFreshEvidence, neutralizeEquityVerdicts } = guards;
 const { createResearchRun, submitPlan, evaluateContract, SUB_QUESTION_STATUS } = contract;
 
 const ok = (data = {}) => ({ success: true, data, source: 'test' });
@@ -108,5 +108,83 @@ describe('Seans hesabı borsa saat dilimine bağlı', () => {
     // Salı 12:00 Istanbul = 09:00Z
     expect(fn(new Date('2026-08-11T09:00:00Z')).marketSession).toBe('OPEN');
     expect(fn(new Date('2026-08-11T16:00:00Z')).marketSession).toBe('CLOSED'); // 19:00 Istanbul
+  });
+});
+
+/**
+ * CANLI HATA REGRESYONU — 12 Eylül 2026
+ *
+ * Karar kilidi ateşledi, footer'a "hüküm İNCELE seviyesine indirildi" yazdı —
+ * ama cevapta "AL" DÖRT ayrı yerde ayakta kaldı. Kaptan'ın sorusu haklıydı:
+ * "makine dairesi frene basmış ama LLM tarafı bunu dinlememiş mi ne?"
+ *
+ * Dinlemeyen LLM değildi. Nötrleştirici bağlam kelimesini AYNI satırda
+ * arıyordu; markdown'da bağlam ise HİYERARŞİK taşınır:
+ *   - tablo başlığındaki "Karar" sütunu veri satırlarına
+ *   - bölüm başlığındaki "Öneri" altındaki maddelere
+ * Tek yakalanan satır `## Karar: AL` oldu — ekranda İNCELE görülen tek yer.
+ *
+ * KURAL: tespit DAR kalır (yanlış pozitif bir onarım turu yakar), yazım GENİŞ
+ * olur (kaçan satır bloke edilmiş hükmü ekrana sızdırır).
+ */
+describe('REGRESYON — bloke edilmiş hüküm cevapta sızmamalı', () => {
+  const kalanAl = (text) =>
+    (String(text).match(/(^|[^A-ZÇĞİÖŞÜa-zçğıöşü])AL($|[^A-ZÇĞİÖŞÜa-zçğıöşü])/g) || []).length;
+
+  it('tablo veri satırı — "Karar" başlık satırındayken de yakalanır', () => {
+    const tablo = [
+      '| Hisse | Karar | Sebep |',
+      '|---|---|---|',
+      '| AKBNK | AL | Trend yukarı, hacim destekli |',
+    ].join('\n');
+    expect(kalanAl(neutralizeEquityVerdicts(tablo))).toBe(0);
+  });
+
+  it('başlıkta sembol varsa bağlam kelimesi aranmaz', () => {
+    const baslik = '# 1) AKBNK neden AL diyebildiğim hisse?';
+    expect(neutralizeEquityVerdicts(baslik)).toContain('İNCELE');
+  });
+
+  it('bağlam ÜST başlıktaysa alt maddeler devralır', () => {
+    const bolum = ['### Aksiyon Önerisi', '- Bir sonraki açık seansta AL adayı'].join('\n');
+    expect(kalanAl(neutralizeEquityVerdicts(bolum))).toBe(0);
+  });
+
+  it('alt başlık üst bölümün bağlamını devralır', () => {
+    const ic = ['# AKBNK için karar', '## Detay', '- Plan: AL', ].join('\n');
+    expect(kalanAl(neutralizeEquityVerdicts(ic))).toBe(0);
+  });
+
+  it('canlı cevabın tamamında hiç AL kalmıyor', () => {
+    const canli = [
+      '## Net karar tablosu',
+      '| Hisse | Karar | Sebep |',
+      '|---|---|---|',
+      '| AKBNK | AL | Trend yukarı |',
+      '# 1) AKBNK neden AL diyebildiğim hisse?',
+      '### AKBNK = kanıtları en tam ve AL hükmüne uygun tek temiz aday',
+      '### Aksiyon Önerisi',
+      '- Bir sonraki açık seansta AL adayı',
+      '## Karar: AL',
+    ].join('\n');
+    expect(kalanAl(neutralizeEquityVerdicts(canli))).toBe(0);
+  });
+
+  it('KAPSAM AŞMIYOR — hüküm sütunu olmayan tabloya dokunulmaz', () => {
+    // Fiyat tablosunda sembol var ama hüküm kelimesi yok; yeniden yazım
+    // burada içerik bozardı.
+    const fiyat = ['| Sembol | Kapanış | Trend |', '|---|---|---|', '| AKBNK | 72,70 | YUKARI |'].join('\n');
+    expect(neutralizeEquityVerdicts(fiyat)).toBe(fiyat);
+  });
+
+  it('KAPSAM AŞMIYOR — hüküm reddi hâlâ korunur', () => {
+    // Reddi cezalandırmak doğru davranışı cezalandırmaktır.
+    const red = 'Karar: AL demiyorum, kanıt eksik.';
+    expect(neutralizeEquityVerdicts(red)).toBe(red);
+  });
+
+  it('KAPSAM AŞMIYOR — sembolsüz düz metinde AL sözcüğü korunur', () => {
+    const duz = 'Kullanıcı listeden bir ürün AL tuşuna bastı.';
+    expect(neutralizeEquityVerdicts(duz)).toBe(duz);
   });
 });

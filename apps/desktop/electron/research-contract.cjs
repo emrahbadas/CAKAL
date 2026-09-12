@@ -419,6 +419,15 @@ function evaluateContract(contract, ledger, now = Date.now()) {
       else missing.push(klass);
     }
 
+    // EVREN İDDİASI SEMBOL KAPSAMINDAN AYRIDIR.
+    // Beş sembolün kanıtı tam olabilir; alt soru "BIST100 içinde" diyorsa
+    // o beş sembol evreni temsil etmez. Bu kontrol olmadan sözleşme
+    // COMPLETE kapanıyor ve cevap evren-geneli üstünlük hükmü kurabiliyordu.
+    const universe = evaluateUniverseCoverage(sq.question, ledger);
+    if (universe && !universe.covered) {
+      missing.push(`UNIVERSE_COVERAGE:${universe.claim.key}`);
+    }
+
     const status = missing.length === 0
       ? SUB_QUESTION_STATUS.COMPLETE
       : satisfied.length > 0
@@ -434,6 +443,9 @@ function evaluateContract(contract, ledger, now = Date.now()) {
       status,
       satisfiedEvidence: satisfied,
       missingEvidence: missing,
+      universeClaim: universe
+        ? { key: universe.claim.key, required: universe.claim.size, observed: universe.observed, covered: universe.covered }
+        : null,
       // Hangi sembolün hangi kanıtı eksik — onarım isteğinde adıyla istenir.
       missingByEntity: [...entityMiss.entries()].map(([klass, ents]) => ({ evidenceClass: klass, entities: ents })),
       // Onarım ipucu: hangi aracın çağrılacağı tahmin edilmez, haritadan gelir.
@@ -787,6 +799,71 @@ function universeScopeFor(toolName) {
   return UNIVERSE_SCOPED_TOOLS[toolName] || 'ENTITY';
 }
 
+// ── Evren kapsamı kapısı ───────────────────────────────────────────────
+//
+// ÖLÇÜLEN CANLI HATA (12 Eylül 2026): plan üç alt soruyu "BIST100 evreninde…"
+// diye kurdu, `entities` alanına önceki turdan taşınan 5 sembol yazıldı
+// (THYAO, ASELS, TUPRS, AKBNK, KCHOL) ve beşinin de kanıtı toplandığı için
+// sözleşme COMPLETE kapandı. Cevap da "BIST100 içindeki tek temiz aday"
+// dedi — oysa BIST100'ün 95'ine hiç bakılmamıştı.
+//
+// Sözleşme kapsamı BEYAN EDİLEN SEMBOL LİSTESİ üzerinden doğruluyordu; alt
+// sorunun kendi metnindeki EVREN iddiasını kimse okumuyordu. `universeScope`
+// alanı tam bu iş için yazılıyordu ve hiçbir kapı onu OKUMUYORDU (ölçüm:
+// 3 geçiş — tanım, yazım, export; 0 tüketici).
+//
+// Kural: alt soru bir evren iddia ediyorsa, o evrenden gözlenen enstrüman
+// sayısı evrenin boyutunu karşılamadan alt soru COMPLETE olamaz.
+const UNIVERSE_CLAIMS = Object.freeze([
+  { key: 'BIST100', size: 100, requiresMembership: true, re: /(bist\s*[-–]?\s*100|xu\s*100|bist100)/i },
+  { key: 'BIST30', size: 30, requiresMembership: true, re: /(bist\s*[-–]?\s*30|xu\s*030|xu\s*30)/i },
+  { key: 'BIST50', size: 50, requiresMembership: true, re: /(bist\s*[-–]?\s*50|xu\s*050|xu\s*50)/i },
+  // "BIST geneli" / "tüm piyasa": kapalı bir sayı yok; panonun tamamı
+  // beklenir. Eşik muhafazakâr tutuldu — amaç 5 sembollük bir kesitin
+  // "piyasa geneli" diye satılmasını engellemek. Kalıbın kendisi zaten
+  // kapsam dilidir, ayrıca üyelik kelimesi aranmaz.
+  { key: 'BIST_ALL', size: 300, requiresMembership: false, re: /(bist\s*genel|piyasa\s*genel|tüm\s*piyasa|tum\s*piyasa|borsa\s*genel|tüm\s*bist|tum\s*bist)/i },
+]);
+
+// ENDEKS ADI TEK BAŞINA EVREN İDDİASI DEĞİLDİR.
+// İlk sürüm yalnız "XU100" geçmesine bakıyordu ve mevcut bir testi düşürdü:
+//   "XU100 gore relatif guc"  → THYAO'nun endekse KIYASLA gücü
+// Bu bir BENCHMARK referansıdır; 100 üyeyi gözlemeyi gerektirmez. Evren
+// iddiası SEÇİM dili ister: "içinde", "içinden", "arasında", "evreninde",
+// "hisselerinden". Ayrım tam olarak şu: kümeden SEÇİYOR muyuz, yoksa
+// kümeye KARŞI mı ölçüyoruz?
+const UNIVERSE_MEMBERSHIP_RE = /(i[çc]inde|i[çc]inden|aras[ıi]nda|evrenin|hisselerinden|hisseleri|genelinde|kapsam[ıi]nda|dahilinde|listesinden|tamam[ıi]nda)/i;
+
+/** Alt sorunun metni bir evren iddia ediyor mu? */
+function detectUniverseClaim(question = '') {
+  const text = String(question || '');
+  return UNIVERSE_CLAIMS.find((claim) => {
+    if (!claim.re.test(text)) return false;
+    if (!claim.requiresMembership) return true;
+    return UNIVERSE_MEMBERSHIP_RE.test(text);
+  }) || null;
+}
+
+/**
+ * Defterde bu evreni karşılayacak kadar geniş bir gözlem var mı?
+ * @returns {{claim: object, observed: number|null, covered: boolean}|null}
+ */
+function evaluateUniverseCoverage(question, ledger) {
+  const claim = detectUniverseClaim(question);
+  if (!claim) return null;
+
+  let observed = null;
+  if (ledger instanceof Map) {
+    for (const entry of ledger.values()) {
+      if (!entry || !entry.universeScope) continue;
+      const seen = Number(entry.observedCount);
+      if (Number.isFinite(seen)) observed = Math.max(observed ?? 0, seen);
+    }
+  }
+
+  return { claim, observed, covered: (observed ?? 0) >= claim.size };
+}
+
 function createResearchRun(opts = {}) {
   const runId = opts.runId || `R-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const userQuestion = String(opts.userQuestion || '');
@@ -929,6 +1006,8 @@ module.exports = {
   buildCoverageBriefing,
   createResearchRun,
   universeScopeFor,
+  detectUniverseClaim,
+  evaluateUniverseCoverage,
   OUTPUT_KIND_ADMISSIBLE_EVIDENCE,
   OUTPUT_KIND_MINIMUM_EVIDENCE,
   ENTITY_SCOPED_OUTPUT_KINDS,
