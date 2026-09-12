@@ -11,7 +11,7 @@ const {
 } = scope;
 
 /**
- * TASARIM KARARI (15 Ağustos 2026, Kaptan'ın isteği)
+ * TASARIM KARARI (15 Ağustos 2026, kullanıcı isteği)
  *
  * "Telegramdaki birçok şeyi ÇAKAL'ın görmesi gereksiz, çok fazla gürültü
  * olur... default olarak kullanıcı aksini söylemedikçe telegram taramasında
@@ -109,7 +109,7 @@ describe('etkin aralık — kullanıcı otoritedir', () => {
 
 describe('aralık başlangıcı', () => {
   it('"bugün" İSTANBUL gününe göre hesaplanır', () => {
-    // Makine saati ≠ borsa saati. Kaptan GMT+1'de olabilir; onun gece
+    // Makine saati ≠ borsa saati. Kullanıcı GMT+1'de olabilir; orada gece
     // yarısı İstanbul'da ertesi gün. Aynı varsayım daha önce "bugün alım"
     // hükmünde yanlış güne düşmüştü.
     // 15 Ağustos 2026, 00:30 İstanbul = 14 Ağustos 21:30 UTC

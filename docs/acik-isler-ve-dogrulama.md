@@ -127,14 +127,14 @@ Finans bağlamı bile cevaptan geliyordu — "Borsa Haber Hisse" bir **kanal ad�
 
 ### 3.8 Telegram tarama kapsamı — EKLENDİ (15 Ağustos 2026)
 
-**İstek (Kaptan):** *"Telegramdaki birçok şeyi ÇAKAL'ın görmesi gereksiz, çok fazla gürültü olur... kullanıcı şu kanala gir vs diye tek tek söylemez, gürültü azalır, tokenizasyon kontrol altına alınır. Bir de default olarak kullanıcı aksini söylemedikçe telegram taramasında sadece o günün mesajları taranır."*
+**İstek (kullanıcı):** *"Telegramdaki birçok şeyi ÇAKAL'ın görmesi gereksiz, çok fazla gürültü olur... kullanıcı şu kanala gir vs diye tek tek söylemez, gürültü azalır, tokenizasyon kontrol altına alınır. Bir de default olarak kullanıcı aksini söylemedikçe telegram taramasında sadece o günün mesajları taranır."*
 
 **Yapılan:**
 - **Takip listesi.** Ayarlar → Telegram Kanal Okuyucu'ya çift panelli seçici eklendi: *Tara* → hesaptaki kanallar solda, `›`/`‹` ile sağa/sola aktarım, *Kaydet*. Kaydedilmemiş değişiklik ekranda uyarı olarak duruyor — sessiz kalırsa ÇAKAL eski listeyi tarardı.
 - **Kapsam varsayılanı takip listesidir.** `list_channels` artık takip listesini döndürür (`scope:"all"` ile tüm kanallar, yalnız liste düzenlenirken). `read_messages` `channel_id` OLMADAN çağrılabilir ve takip listesinin tamamını okur — normal kullanım budur.
 - **Zaman penceresi varsayılan BUGÜN.** `telegram-scope.cjs` (saf modül) kullanıcının mesajından aralık çıkarır: "son 1 hafta" → week, "son 1 ay" → month, "tüm geçmiş" → all.
 - **Genişletme yetkisi modelde değil.** Model `time_window:"month"` yazsa bile kullanıcı öyle bir şey demediyse **today'e kısılır** ve araç sonucuna `[aralık bugün ile sınırlandı]` notu düşer. Bu, "beyan kanıt değildir" kuralının kapsam tarafındaki karşılığı — aksi hâlde model her turda pencereyi açıp gürültüyü ve token maliyetini geri getirebilirdi.
-- **"Bugün" İstanbul günüdür**, makinenin günü değil. Kaptan GMT+1'de; onun gece yarısı İstanbul'da ertesi gün.
+- **"Bugün" İstanbul günüdür**, makinenin günü değil. Kullanıcı başka bir saat diliminde olabilir; orada gece yarısı İstanbul'da ertesi gündür.
 - **Kapsam beyanı dürüst.** `fetched` ≠ `inWindow` ayrı raporlanıyor; limit dolup aralıkta daha eski mesaj kalmış olabilecekse `truncated` bildiriliyor. Tarihi okunamayan mesaj **elenir** — aralık dışı olmadığını kanıtlayamıyorsak içinde sayamayız.
 - **Bir kanal düşerse** diğerleri okunur ama hata kapsam raporunda görünür.
 
@@ -144,7 +144,7 @@ Finans bağlamı bile cevaptan geliyordu — "Borsa Haber Hisse" bir **kanal ad�
 
 ### 3.9 Hüküm sızıntısı, kanıt tanımı ayrışması, evren iddiası — DÜZELTİLDİ (12 Eylül 2026)
 
-Kaptan'ın canlı oturumundan çıkan üç kusur. Hepsi **ölçülerek** teşhis edildi; ÇAKAL'ın kendi kök-neden analizinin **ikisi yanlıştı** ve bu da ayrı bir ders.
+Kullanıcının canlı oturumundan çıkan üç kusur. Hepsi **ölçülerek** teşhis edildi; ÇAKAL'ın kendi kök-neden analizinin **ikisi yanlıştı** ve bu da ayrı bir ders.
 
 **(3) Bloke edilmiş hüküm cevapta sızdı.** Kilit ateşledi, footer'a "hüküm İNCELE seviyesine indirildi" yazdı, ama `AL` dört ayrı yerde ayakta kaldı. `neutralizeEquityVerdicts` bağlam kelimesini **aynı satırda** arıyordu; markdown'da bağlam **hiyerarşik** taşınır (tablo başlığı → veri satırları, bölüm başlığı → alt satırlar ve alt başlıklar). Tek yakalanan satır `## Karar: AL` oldu.
 *Düzeltme:* **tespit ile yazım ayrıldı.** `isVerdictLine` (tespit) DAR kalır — yanlış pozitif koca bir onarım turu yakar. Nötrleştirici (yazım) GENİŞ olur — kaçan satır bloke hükmü ekrana sızdırır. Yazıma üç kapsam eklendi: tablo başlığı bağlamı, başlık yığını üzerinden devralma, ve satırda sicilde kayıtlı sembol varsa bağlam aranmaması. Hüküm reddi (`VERDICT_NEGATION_RE`) korunur.
@@ -160,11 +160,37 @@ Kaptan'ın canlı oturumundan çıkan üç kusur. Hepsi **ölçülerek** teşhis
 
 **Doğrulama:** `tests/universe-claim-and-evidence-split.test.mjs` (22) + `tests/verdict-negation.test.mjs`'e 9 regresyon. Üç düzeltme de **ayrı ayrı mutasyonla** sınandı: evren kapısı kapatılınca 1, defter ayrımı kapatılınca 1, nötrleştirici daraltılınca 5 test düşüyor.
 
-**(4) Sessiz fren — DÜZELTİLDİ.** Sözleşme onarımı sahipken (`contractOwnsRepair`) kapılar kendi tamamlama turlarını açmaz — bu doğru, yoksa iki sistem aynı anda onarım yapar ve aynı cevapta farklı asOf'lar karışır. Ama bu yolda hüküm indirilip **hiç olay yayılmıyordu**: cevabın altında "hüküm İNCELE seviyesine indirildi" notu, monitörde o saniyede hiçbir 🛑 yok. Kaptan'ın "makine dairesi frene basmış mı?" şüphesinin bir sebebi buydu.
+**(4) Sessiz fren — DÜZELTİLDİ.** Sözleşme onarımı sahipken (`contractOwnsRepair`) kapılar kendi tamamlama turlarını açmaz — bu doğru, yoksa iki sistem aynı anda onarım yapar ve aynı cevapta farklı asOf'lar karışır. Ama bu yolda hüküm indirilip **hiç olay yayılmıyordu**: cevabın altında "hüküm İNCELE seviyesine indirildi" notu, monitörde o saniyede hiçbir 🛑 yok. Kullanıcının "makine dairesi frene basmış mı?" şüphesinin bir sebebi buydu.
 
 Kör nokta **tek kapıda değil, üçünde birden**ti (sıralama, fiyatlanma, karar kilidi) — birini düzeltip diğerlerini bırakmak hatanın üçte ikisini yerinde bırakırdı (§4.8).
 *Düzeltme:* saf `describeContractOwnedLock(kind, lock)` (test edilebilsin diye `decision-guards.cjs`'te) + tek giriş noktası `applyContractOwnedLock`. Monitör satırı artık hem gerekçeyi hem "ek tur AÇILMADI" bilgisini taşıyor — kullanıcı frenin çekildiğini ve neden ikinci bir LLM turu görmediğini aynı satırda görüyor. Karar kilidinde satır "toplanmadı" ile "toplandı ama yazılmadı" ayrımını da taşıyor (§3.9-2).
 *Kalıcı koruma:* kaynak seviyesinde kapı — `main.cjs` içindeki her `&& contractOwnsRepair) {` kısa devresi `applyContractOwnedLock(` çağırmak zorunda. Yeni bir kapı aynı kör noktayla eklenemez. Mutasyonla doğrulandı: fiyatlanma kapısı eski sessiz kalıba döndürülünce test düşüyor.
+
+### 3.10 Evren kapısının KENDİ hatası — DÜZELTİLDİ (12 Eylül 2026, 04:53 turu)
+
+Kapı doğru çalıştı: s1/s2 PARTIAL kaldı, "BIST100 içindeki tek temiz aday" dili çıkmadı, hüküm İNCELE/İZLE/RİSKLİ seviyesinde kaldı. Ama onarım satırı şunu yazdı:
+
+> Kanıtı tamamlanmamış alt sorular (s1, s2) için hüküm verilmedi. **Eksik kanıtı toplayacak araçlar: yok.**
+
+**Sebep:** `UNIVERSE_COVERAGE:BIST100` bir kanıt SINIFI değil; `toolsProducing` onu bulamıyor, `buildContractRepairRequest` null dönüyordu. Kapı kapandı, anahtar verilmedi — kod tabanının kendi uyardığı tuzağın (üreticisi olmayan zorunluluk = duvar) aynısı, bu kez evren eşiğinde.
+
+**İkinci kusur:** `BIST_ALL` eşiği 300 yazılmıştı, ama `get_bist_board` limit'i `ai-service.cjs`'te **200'e kırpılıyor**. O iddia hiçbir zaman kapanamazdı.
+
+**Üçüncü ölçüm:** aynı turda `get_bist_board` ZATEN çağrılmıştı — `[ASELS, THYAO, TUPRS]` sembol listesiyle, `observedCount=3`. Talimat aracı adıyla söylemekle yetinemez; NASIL çağrılacağını da söylemeli.
+
+**Düzeltme:** evren eksiğine kendi onarım talimatı yazıldı —
+
+```
+- [s2] eksik: UNIVERSE_COVERAGE:BIST100 → BIST100 evreninin tamamı gözlenmedi
+  (gözlenen 3, gereken 100). get_bist_board'u index:"XU100", limit:100 ile çağır.
+  SEMBOL LİSTESİ VERME — birkaç sembolle çağırmak bu eksiği KAPATMAZ.
+```
+
+`BIST_ALL` eşiği 200'e (aracın tavanı) indirildi ve test bunu sabitliyor: hiçbir evren eşiği araç tavanını aşamaz.
+
+**Doğrulama:** `tests/universe-claim-and-evidence-split.test.mjs` +5 test (31 toplam).
+
+**Gözlem — kapılar doğru çalıştı:** aynı turda hüküm sızıntısı yok (tablo/başlık dahil hiç `AL` kalmadı), evren iddiası dili çıkmadı, karar kilidi ateşlemedi (çünkü AL/SAT hükmü zaten kurulmadı). Sessiz fren satırı da görünmedi — doğru, uygulanacak kilit yoktu.
 
 ### 3.4 Yapısal
 

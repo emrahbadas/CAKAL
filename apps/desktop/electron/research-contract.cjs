@@ -814,16 +814,56 @@ function universeScopeFor(toolName) {
 //
 // Kural: alt soru bir evren iddia ediyorsa, o evrenden gözlenen enstrüman
 // sayısı evrenin boyutunu karşılamadan alt soru COMPLETE olamaz.
+// EŞİK, ARACIN GERÇEKTEN ULAŞABİLECEĞİ SAYI OLMALI.
+// ÖLÇÜLEN HATA (12 Eylül, ilk sürüm): BIST_ALL eşiği 300 yazılmıştı ama
+// `get_bist_board` limit'i kodda 200'e kırpılıyor (ai-service.cjs) — yani o
+// iddia HİÇBİR ZAMAN kapanamazdı. Üreticisi olmayan zorunluluk, sözleşmeyi
+// duvara döndürür; bu tuzağa karşı kanıt sınıfları zaten korunuyordu,
+// evren eşiği aynı korumadan yoksundu.
 const UNIVERSE_CLAIMS = Object.freeze([
-  { key: 'BIST100', size: 100, requiresMembership: true, re: /(bist\s*[-–]?\s*100|xu\s*100|bist100)/i },
-  { key: 'BIST30', size: 30, requiresMembership: true, re: /(bist\s*[-–]?\s*30|xu\s*030|xu\s*30)/i },
-  { key: 'BIST50', size: 50, requiresMembership: true, re: /(bist\s*[-–]?\s*50|xu\s*050|xu\s*50)/i },
-  // "BIST geneli" / "tüm piyasa": kapalı bir sayı yok; panonun tamamı
-  // beklenir. Eşik muhafazakâr tutuldu — amaç 5 sembollük bir kesitin
-  // "piyasa geneli" diye satılmasını engellemek. Kalıbın kendisi zaten
-  // kapsam dilidir, ayrıca üyelik kelimesi aranmaz.
-  { key: 'BIST_ALL', size: 300, requiresMembership: false, re: /(bist\s*genel|piyasa\s*genel|tüm\s*piyasa|tum\s*piyasa|borsa\s*genel|tüm\s*bist|tum\s*bist)/i },
+  { key: 'BIST100', size: 100, indexFilter: 'XU100', requiresMembership: true, re: /(bist\s*[-–]?\s*100|xu\s*100|bist100)/i },
+  { key: 'BIST30', size: 30, indexFilter: 'XU030', requiresMembership: true, re: /(bist\s*[-–]?\s*30|xu\s*030|xu\s*30)/i },
+  { key: 'BIST50', size: 50, indexFilter: 'XU050', requiresMembership: true, re: /(bist\s*[-–]?\s*50|xu\s*050|xu\s*50)/i },
+  // "BIST geneli" / "tüm piyasa": kapalı bir üye sayısı yok. Eşik, tek
+  // çağrıda gözlenebilecek EN GENİŞ kesit olan 200'e bağlandı — amaç
+  // 5 sembollük bir kesitin "piyasa geneli" diye satılmasını engellemek.
+  // Kalıbın kendisi kapsam dilidir; ayrıca üyelik kelimesi aranmaz.
+  { key: 'BIST_ALL', size: 200, indexFilter: null, requiresMembership: false, re: /(bist\s*genel|piyasa\s*genel|tüm\s*piyasa|tum\s*piyasa|borsa\s*genel|tüm\s*bist|tum\s*bist)/i },
 ]);
+
+const UNIVERSE_COVERAGE_PREFIX = 'UNIVERSE_COVERAGE:';
+
+function isUniverseCoverageGap(klass) {
+  return String(klass || '').startsWith(UNIVERSE_COVERAGE_PREFIX);
+}
+
+/**
+ * Evren eksiği için ONARIM TALİMATI.
+ *
+ * ÖLÇÜLEN CANLI HATA (12 Eylül 04:53): kapı doğru çalıştı, s1/s2 PARTIAL
+ * kaldı — ama onarım satırı "Eksik kanıtı toplayacak araçlar: yok" dedi.
+ * Çünkü `UNIVERSE_COVERAGE:BIST100` bir kanıt SINIFI değil; `toolsProducing`
+ * boş dönüyor ve `buildContractRepairRequest` null veriyordu. Kapı kapanıyor,
+ * anahtar verilmiyordu.
+ *
+ * İkinci ölçüm: aynı turda `get_bist_board` ZATEN çağrılmıştı — ama
+ * `[ASELS, THYAO, TUPRS]` sembol listesiyle, yani observedCount=3. Talimat
+ * bu yüzden aracı adıyla söylemekle yetinemez, NASIL çağrılacağını da
+ * söylemeli: sembol listesi değil, endeks filtresi.
+ */
+function describeUniverseRepair(subQuestionId, klass, universeClaim) {
+  const key = String(klass).slice(UNIVERSE_COVERAGE_PREFIX.length);
+  const spec = UNIVERSE_CLAIMS.find((c) => c.key === key);
+  const gereken = universeClaim?.required ?? spec?.size ?? '?';
+  const gozlenen = universeClaim?.observed ?? 0;
+  const cagri = spec && spec.indexFilter
+    ? `get_bist_board'u index:"${spec.indexFilter}", limit:${spec.size} ile çağır`
+    : `get_bist_board'u index VERMEDEN, limit:${spec?.size ?? 200} ile çağır`;
+
+  return `- [${subQuestionId}] eksik: ${klass} → ${key} evreninin tamamı gözlenmedi `
+    + `(gözlenen ${gozlenen}, gereken ${gereken}). ${cagri}. `
+    + 'SEMBOL LİSTESİ VERME — birkaç sembolle çağırmak bu eksiği KAPATMAZ.';
+}
 
 // ENDEKS ADI TEK BAŞINA EVREN İDDİASI DEĞİLDİR.
 // İlk sürüm yalnız "XU100" geçmesine bakıyordu ve mevcut bir testi düşürdü:
@@ -974,10 +1014,24 @@ function buildContractRepairRequest(userMessage, coverage) {
   if (gaps.length === 0) return null;
 
   const actionable = gaps
-    .map((sq) => {
-      const producible = sq.missingEvidence.filter((klass) => toolsProducing(klass).length > 0);
-      if (producible.length === 0) return null;
-      return `- [${sq.id}] eksik: ${producible.join(', ')} → çağır: ${[...new Set(producible.flatMap(toolsProducing))].join(' veya ')}`;
+    .flatMap((sq) => {
+      const lines = [];
+
+      const producible = sq.missingEvidence.filter(
+        (klass) => !isUniverseCoverageGap(klass) && toolsProducing(klass).length > 0,
+      );
+      if (producible.length > 0) {
+        lines.push(`- [${sq.id}] eksik: ${producible.join(', ')} → çağır: ${[...new Set(producible.flatMap(toolsProducing))].join(' veya ')}`);
+      }
+
+      // Evren eksiği bir kanıt SINIFI değildir; toolsProducing onu bulamaz.
+      // Kendi talimatı olmadan onarım "araç yok" deyip kapıyı anahtarsız
+      // bırakıyordu.
+      for (const klass of sq.missingEvidence.filter(isUniverseCoverageGap)) {
+        lines.push(describeUniverseRepair(sq.id, klass, sq.universeClaim));
+      }
+
+      return lines;
     })
     .filter(Boolean);
 

@@ -14,7 +14,7 @@ describe('Negatif hüküm — reddi hüküm sayma', () => {
   it('REGRESYON — "AL/SAT demiyorum" hüküm değildir', () => {
     // Canlı vakada bu cümle KARAR KİLİDİ'ni tetikledi ve tam bir onarım turu
     // başlattı; oysa cevap tam olarak istenen şeyi yapıyordu.
-    const line = 'Kaptan, sözleşme onarımını uyguladım; AL/SAT demiyorum. Doğru hüküm kelimeleri: KCHOL = İNCELE';
+    const line = 'Sözleşme onarımını uyguladım; AL/SAT demiyorum. Doğru hüküm kelimeleri: KCHOL = İNCELE';
     expect(detectEquityVerdict(line)).toBe(false);
   });
 
@@ -115,7 +115,7 @@ describe('Seans hesabı borsa saat dilimine bağlı', () => {
  * CANLI HATA REGRESYONU — 12 Eylül 2026
  *
  * Karar kilidi ateşledi, footer'a "hüküm İNCELE seviyesine indirildi" yazdı —
- * ama cevapta "AL" DÖRT ayrı yerde ayakta kaldı. Kaptan'ın sorusu haklıydı:
+ * ama cevapta "AL" DÖRT ayrı yerde ayakta kaldı. Kullanıcının sorusu haklıydı:
  * "makine dairesi frene basmış ama LLM tarafı bunu dinlememiş mi ne?"
  *
  * Dinlemeyen LLM değildi. Nötrleştirici bağlam kelimesini AYNI satırda

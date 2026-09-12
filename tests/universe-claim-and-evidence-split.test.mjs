@@ -6,7 +6,7 @@ import contract from '../apps/desktop/electron/research-contract.cjs';
 
 const { buildEvidenceLedger, evaluateVerdictEvidenceLock, describeContractOwnedLock } = guards;
 const {
-  createResearchRun, submitPlan, evaluateContract, SUB_QUESTION_STATUS,
+  createResearchRun, submitPlan, evaluateContract, SUB_QUESTION_STATUS, buildContractRepairRequest,
   detectUniverseClaim, evaluateUniverseCoverage,
 } = contract;
 
@@ -249,7 +249,7 @@ describe('KAPSAM AŞMIYOR — endeks adı tek başına evren iddiası değildir'
  * YAYILMIYORDU: cevabın altında "hüküm İNCELE seviyesine indirildi" notu,
  * monitörde o saniyede hiçbir 🛑 yok.
  *
- * Kaptan'ın "makine dairesi frene basmış ama LLM dinlememiş mi ne?"
+ * Kullanıcının "makine dairesi frene basmış ama LLM dinlememiş mi ne?"
  * şüphesinin bir sebebi buydu — fren çekiliyordu, izi yoktu.
  *
  * Kör nokta ÜÇ kapıdaydı (sıralama, fiyatlanma, karar kilidi); birini
@@ -298,5 +298,78 @@ describe('sessiz fren — sözleşme sahipken uygulanan kilit iz bırakır', () 
     for (const satir of kisaDevreler) {
       expect(satir, `sessiz fren: ${satir.trim()}`).toMatch(/applyContractOwnedLock\(/);
     }
+  });
+});
+
+/**
+ * CANLI HATA REGRESYONU — 12 Eylül 2026, 04:53 (düzeltmenin KENDİ hatası)
+ *
+ * Evren kapısı doğru çalıştı, s1/s2 PARTIAL kaldı — ama onarım satırı
+ * "Eksik kanıtı toplayacak araçlar: yok" dedi. Kapı kapandı, anahtar
+ * verilmedi.
+ *
+ * Sebep: UNIVERSE_COVERAGE:* bir kanıt SINIFI değil; toolsProducing onu
+ * bulamıyor ve buildContractRepairRequest null dönüyordu. Kod tabanının
+ * kendi uyardığı tuzağın (üreticisi olmayan zorunluluk = duvar) aynısı.
+ *
+ * İkinci ölçüm: aynı turda get_bist_board ZATEN çağrılmıştı — ama
+ * [ASELS, THYAO, TUPRS] sembol listesiyle, observedCount=3. Talimat aracı
+ * adıyla söylemekle yetinemez; NASIL çağrılacağını da söylemeli.
+ */
+describe('REGRESYON — evren eksiği onarılabilir olmalı', () => {
+  function coverageWithUniverseGap(observed) {
+    const run = createResearchRun({ userQuestion: 'bist 100 hisselerinden hangisi' });
+    const res = submitPlan(run.get(), {
+      subQuestions: [{
+        id: 's2',
+        question: 'BIST100 içinde bugün alınabilir aday var mı?',
+        outputKind: 'investable_candidate',
+        entities: ['ASELS', 'THYAO', 'TUPRS'],
+        coverage: 'ALL',
+        requiredEvidence: ['FUNDAMENTALS', 'VALUATION', 'CURRENT_EQUITY_PRICE', 'MARKET_SESSION_STATUS'],
+      }],
+    });
+    run.set(res.contract);
+
+    const events = [{
+      type: 'tool_call', tool: 'get_bist_board', entities: ['ASELS', 'THYAO', 'TUPRS'],
+      timestamp: now - 60_000, success: true, data: { items: new Array(observed).fill({}) },
+      source: 'mynet', universeScope: 'BIST_ALL_SNAPSHOT', observedCount: observed,
+    }];
+    for (const e of ['ASELS', 'THYAO', 'TUPRS']) {
+      for (const t of ['get_stock_price', 'get_valuation_multiples', 'get_financial_statements']) {
+        events.push({ type: 'tool_call', tool: t, entities: [e], timestamp: now - 60_000, success: true, data: { price: 1, rows: [1] }, source: 'test' });
+      }
+    }
+    return evaluateContract(run.get(), buildEvidenceLedger(events, now), now);
+  }
+
+  it('REGRESYON — onarım isteği ÜRETİLİR (eskiden null dönüyordu)', () => {
+    const repair = buildContractRepairRequest('bist 100 hisselerinden hangisi', coverageWithUniverseGap(3));
+    expect(repair, 'evren eksiği için onarım üretilmedi — kapı anahtarsız').not.toBeNull();
+  });
+
+  it('talimat NASIL çağrılacağını söyler — endeks filtresi, sembol listesi değil', () => {
+    const repair = buildContractRepairRequest('bist 100 hisselerinden hangisi', coverageWithUniverseGap(3));
+    expect(repair.message).toContain('index:"XU100"');
+    expect(repair.message).toContain('limit:100');
+    expect(repair.message).toContain('SEMBOL LİSTESİ VERME');
+    // Gözlenen/gereken sayı da geçmeli: model neyin eksik olduğunu görsün.
+    expect(repair.message).toMatch(/gözlenen 3, gereken 100/);
+  });
+
+  it('EŞİK ULAŞILABİLİR OLMALI — aracın limit tavanını aşamaz', () => {
+    // get_bist_board limit'i ai-service.cjs'te 200'e kırpılıyor. Eşiği
+    // bunun üstüne koymak, hiçbir zaman kapanmayan bir zorunluluk yaratır.
+    const TOOL_MAX_LIMIT = 200;
+    for (const soru of ['BIST100 içinden aday', 'BIST30 içinde', 'BIST50 arasında', 'piyasa genelinde']) {
+      const claim = detectUniverseClaim(soru);
+      expect(claim.size, `${claim.key} eşiği araç tavanını aşıyor`).toBeLessThanOrEqual(TOOL_MAX_LIMIT);
+    }
+  });
+
+  it('evren gözlendiğinde eksik kalmaz', () => {
+    const cov = coverageWithUniverseGap(100);
+    expect(cov.subQuestions[0].missingEvidence).not.toContain('UNIVERSE_COVERAGE:BIST100');
   });
 });

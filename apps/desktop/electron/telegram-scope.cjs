@@ -105,8 +105,9 @@ function resolveTimeWindow(modelValue, userMessage) {
 /**
  * Aralığın başlangıç zamanı (ISO).
  *
- * "bugün" makinenin günü değil BORSANIN/KULLANICININ günü olmalı. Kaptan
- * denizde GMT+1'de olabiliyor; onun gece yarısı İstanbul'da ertesi gün.
+ * "bugün" makinenin günü değil BORSANIN/KULLANICININ günü olmalı.
+ * Kullanıcı başka bir saat diliminde olabilir (ör. GMT+1); orada gece
+ * yarısı İstanbul'da ertesi gündür.
  * Aynı varsayım daha önce "bugün alım" hükmünde yanlış güne düşmüştü.
  *
  * Türkiye 2016'dan beri kalıcı UTC+03:00 (yaz saati uygulaması yok).

@@ -1366,7 +1366,7 @@ function neutralizeEquityVerdicts(response = '') {
 // indirip HİÇ OLAY YAYMIYORDU.
 //
 // Sonuç: cevabın altına "hüküm İNCELE seviyesine indirildi" notu düşüyor,
-// aktivite monitöründe ise o saniyede hiçbir 🛑 görünmüyordu. Kaptan'ın
+// aktivite monitöründe ise o saniyede hiçbir 🛑 görünmüyordu. Kullanıcının
 // "makine dairesi frene basmış ama LLM dinlememiş mi ne?" şüphesinin bir
 // sebebi tam olarak buydu: fren çekiliyordu, izi yoktu.
 //
