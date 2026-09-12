@@ -1,3 +1,22 @@
+================================================================
+DIŞ DEĞERLENDİRME — ChatGPT'nin ÇAKAL test çıktılarına yorumları
+================================================================
+
+NE BU: ÇAKAL'ın canlı test oturumlarındaki çıktıları başka bir modele
+(ChatGPT) okutup aldığımız eleştirilerin HAM dökümüdür. Düzenlenmemiştir.
+
+NASIL OKUNMALI: buradaki değerlendirmeler iddiadır, kanıt değildir.
+Bir kısmı kodda ölçülerek DOĞRULANDI ve düzeltmeye dönüştü; bir kısmı
+ölçümle REDDEDİLDİ. Hangi maddenin hangisi olduğu şurada:
+  docs/acik-isler-ve-dogrulama.md
+
+NEDEN DURUYOR: ürünün iddialarının dışarıdan sınanma kaydı. "Beyan kanıt
+değildir" kuralı ürüne olduğu kadar bu yorumlara da uygulanır.
+
+NOT: döküm bir KAYITTIR; içindeki ifadeler sonradan düzeltilmemiştir.
+
+================================================================
+
 Kaptan, hüküm net: ÇAKAL’ın ana sonucu doğru, fakat bunu elindeki tool çıktısıyla kanıtlamamış. Tesadüfen doğru limana yanaşmış.
 
 Resmî nakit köprüsü şöyle:
