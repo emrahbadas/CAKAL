@@ -1530,6 +1530,69 @@ const TICKER_IN_HEADING_RE = /(^|[^A-ZÇĞİÖŞÜ0-9])([A-Z]{4,6})(?![A-ZÇĞİ
 
 const PRICE_LEVEL_EVIDENCE_CLASSES = Object.freeze(['TECHNICAL_SIGNAL', 'CURRENT_EQUITY_PRICE']);
 
+// ── Seviye TÜRETİM kanıtı (Kural C/D/E) ───────────────────────────────
+//
+// NEDEN GEREKLİ: Kural A (sözleşme kapanmadan rakam yok) ve Kural B (rakam
+// ölçümle aynı mertebede olmalı) gerçek koruma sağlıyor ama YETMİYOR.
+// Canlı MEYSU turunda seviyeler yalnız MARKET_SESSION_STATUS eksik olduğu
+// için engellendi — oysa seans durumu bir ZAMAN ETİKETİDİR (canlı mı,
+// gecikmeli mi), seviyenin türetim kanıtı değildir. Seans verisi geldiği an
+// kapı açılır ve model yine ölçümsüz seviye üretebilir. Yani bugünkü koruma
+// doğru sonucu YANLIŞ GEREKÇEYLE veriyor (docs §3.2).
+//
+// Kural B'nin bandı da bilerek geniş: 553'lük bir ölçüm 276–1106 arasını
+// meşru sayar. O aralıkta keyfî bir sayı seçmek hâlâ mümkün.
+//
+// KURAL C — Fiyat tek başına seviye dayanağı DEĞİLDİR.
+//   Fiyat hissenin NEREDE olduğunu söyler; desteğin/direncin nerede olduğunu
+//   söylemez. Stop/hedef için TECHNICAL_SIGNAL şart (ma20/ma50/periodHigh/
+//   periodLow/volatilite taşır). Üreticisi var: analyze_finance_signal,
+//   get_market_signal — duvar riski yok.
+//
+// KURAL D — Seviyenin DAYANAĞI adıyla beyan edilmeli.
+//   Ölçümün varlığı rakamın ondan türediğini göstermez. "Stop 549,80" ile
+//   "Stop 549,80 (MA20 altı)" epistemik olarak farklı iki cümledir. Formülü
+//   doğrulayamayız ama BEYAN EDİLMESİNİ isteyebiliriz — doğrulanamayan bir
+//   gerekçe, hiç gerekçe olmamasından iyidir ve kullanıcı denetleyebilir.
+//
+// KURAL E — Hem stop hem hedef varsa risk/getiri beyan edilmeli.
+//   Sadece stop verildiğinde (geçersizlik seviyesi) R/G tanımsızdır; bu
+//   yüzden koşul İKİSİ BİRDEN varken aranır. Aksi hâlde meşru bir
+//   "şu seviyenin altı tezi bozar" cümlesi bloklanırdı.
+const LEVEL_DERIVATION_EVIDENCE_CLASS = 'TECHNICAL_SIGNAL';
+
+const LEVEL_BASIS_RE = /(ma\s?-?\s?\d{1,3}|hareketli ortalama|\d{1,3}\s*günlük\s*ortalama|destek|direnç|direnc|dip\b|tepe\b|en d[üu]ş[üu]k|en y[üu]ksek|salın[ıi]m|salinim|swing|\batr\b|volatilite|oynaklık|oynaklik|bant|kanal|fibonacci|pivot|periyot|dönem (dibi|tepesi)|donem (dibi|tepesi)|kırılım|kirilim|geri çekilme|geri cekilme)/i;
+
+const LEVEL_RISK_REWARD_RE = /(risk\s*[/:\-–]\s*getiri|getiri\s*[/:\-–]\s*risk|risk[- ]ödül|risk[- ]odul|\br\s*[/:]\s*r\b|\brr\b|\b\d+(?:[.,]\d+)?\s*[:/]\s*\d+(?:[.,]\d+)?\b)/i;
+
+const LEVEL_STOP_RE = /(stop|zarar[- ]kes|geçersizlik|gecersizlik)/i;
+const LEVEL_TARGET_RE = /(hedef|kar al|take profit|\btp\b)/i;
+
+/**
+ * Sembol → o sembolün başlığı altındaki TÜM metin.
+ *
+ * Kural D ve E satıra değil BÖLÜME bakar: dayanak çoğu zaman seviyenin
+ * yazıldığı satırda değil, bir üstteki cümlede durur ("MA20 549,8'de;
+ * stop bunun altı").
+ */
+function extractSymbolSections(response = '') {
+  const lines = stripSystemBlocks(response).split('\n');
+  const sections = new Map();
+  let current = null;
+
+  for (const line of lines) {
+    const headingMatch = /^\s{0,3}#{1,6}\s+(.*)$/.exec(line) || /^\s*\*\*(.+?)\*\*\s*$/.exec(line);
+    if (headingMatch) {
+      TICKER_IN_HEADING_RE.lastIndex = 0;
+      const m = TICKER_IN_HEADING_RE.exec(headingMatch[1]);
+      current = m && !PRICE_LEVEL_SYMBOL_STOPWORDS.has(m[2]) ? m[2] : null;
+    }
+    if (!current) continue;
+    sections.set(current, `${sections.get(current) || ''}\n${line}`);
+  }
+  return sections;
+}
+
 // Başlıkta hisse kodu gibi görünen ama olmayan sözcükler.
 // CANLI TESTTE YAKALANDI: "FRESH MARKET SCAN" başlığındaki MARKET altı harfli
 // büyük yazıldığı için sembol sanıldı ve kapı "Kanıtsız seviye: MARKET" dedi.
@@ -1659,14 +1722,34 @@ function evaluatePriceLevelProvenanceGate(message, response, events = [], now = 
   const contractIncomplete = researchStatus !== null && researchStatus !== 'COMPLETE';
 
   const ledger = buildEvidenceLedger(events, now);
+  const sections = extractSymbolSections(response);
   const noEvidence = [];
   const notDerived = [];
+  const priceOnly = [];
+  const noBasis = [];
+  const noRiskReward = [];
 
   for (const [symbol, lines] of quoted) {
     const supported = PRICE_LEVEL_EVIDENCE_CLASSES.some(
       (klass) => hasFreshEvidenceForEntity(ledger, klass, symbol, now),
     );
     if (!supported) { noEvidence.push(symbol); continue; }
+
+    // KURAL C — fiyat var ama teknik ölçüm yok: destek/direnç bilinmiyor.
+    if (!hasFreshEvidenceForEntity(ledger, LEVEL_DERIVATION_EVIDENCE_CLASS, symbol, now)) {
+      priceOnly.push(symbol);
+      continue;
+    }
+
+    const bolum = sections.get(symbol) || lines.join('\n');
+
+    // KURAL D — dayanak adıyla beyan edilmeli.
+    if (!LEVEL_BASIS_RE.test(bolum)) noBasis.push(symbol);
+
+    // KURAL E — stop VE hedef birlikteyse risk/getiri beyanı şart.
+    const stopVar = lines.some((l) => LEVEL_STOP_RE.test(l));
+    const hedefVar = lines.some((l) => LEVEL_TARGET_RE.test(l));
+    if (stopVar && hedefVar && !LEVEL_RISK_REWARD_RE.test(bolum)) noRiskReward.push(symbol);
 
     // KURAL B — ölçüm VAR ama rakam ondan türemiş mi?
     const measured = collectMeasuredValues(events, symbol);
@@ -1681,7 +1764,7 @@ function evaluatePriceLevelProvenanceGate(message, response, events = [], now = 
 
   const blocked = contractIncomplete
     ? [...quoted.keys()]
-    : [...new Set([...noEvidence, ...notDerived])];
+    : [...new Set([...noEvidence, ...priceOnly, ...noBasis, ...noRiskReward, ...notDerived])];
   if (blocked.length === 0) return null;
 
   const explanation = [];
@@ -1696,6 +1779,28 @@ function evaluatePriceLevelProvenanceGate(message, response, events = [], now = 
     if (noEvidence.length) {
       explanation.push(
         `Şu semboller için somut seviye verildi ama o sembole ait ölçüm kanıtı yok: ${noEvidence.join(', ')}.`,
+      );
+    }
+    if (priceOnly.length) {
+      explanation.push(
+        `Şu semboller için yalnız FİYAT kanıtı var, teknik ölçüm yok: ${priceOnly.join(', ')}.`,
+        'Fiyat hissenin nerede olduğunu söyler; desteğin/direncin nerede olduğunu SÖYLEMEZ.',
+        'Stop/hedef için analyze_finance_signal çalıştır.',
+      );
+    }
+    if (noBasis.length) {
+      explanation.push(
+        `Şu sembollerde seviye verildi ama DAYANAĞI yazılmadı: ${noBasis.join(', ')}.`,
+        'Her seviyenin yanında neyden türediği açıkça yazılmalı (MA20/MA50, dönem dibi/tepesi,',
+        'destek/direnç, ATR veya volatilite tamponu, kırılım/geri çekilme). Gerekçesiz rakam',
+        'bir ölçüm değil, bir iddiadır.',
+      );
+    }
+    if (noRiskReward.length) {
+      explanation.push(
+        `Şu sembollerde hem stop hem hedef verildi ama risk/getiri beyan edilmedi: ${noRiskReward.join(', ')}.`,
+        'Stop ve hedef birlikte verildiyse risk/getiri oranı hesaplanabilir; hesaplanabilen',
+        'ama yazılmayan oran, kullanıcının işlemi değerlendirmesini engeller.',
       );
     }
     if (notDerived.length) {
@@ -1723,6 +1828,9 @@ function evaluatePriceLevelProvenanceGate(message, response, events = [], now = 
     ? `Sözleşme ${researchStatus}: seviye üretilemez (${blocked.join(', ')})`
     : [
       noEvidence.length ? `Kanıtsız seviye: ${noEvidence.join(', ')}` : null,
+      priceOnly.length ? `Teknik ölçümsüz seviye: ${priceOnly.join(', ')}` : null,
+      noBasis.length ? `Dayanaksız seviye: ${noBasis.join(', ')}` : null,
+      noRiskReward.length ? `Risk/getirisiz stop+hedef: ${noRiskReward.join(', ')}` : null,
       notDerived.length ? `Türetilemeyen seviye: ${notDerived.join(', ')}` : null,
     ].filter(Boolean).join(' | ');
 
@@ -1731,6 +1839,9 @@ function evaluatePriceLevelProvenanceGate(message, response, events = [], now = 
     reason,
     unsupportedSymbols: blocked,
     noEvidenceSymbols: noEvidence,
+    priceOnlySymbols: priceOnly,
+    noBasisSymbols: noBasis,
+    noRiskRewardSymbols: noRiskReward,
     notDerivedSymbols: notDerived,
     contractIncomplete,
     response: lockedResponse,
@@ -1754,6 +1865,7 @@ module.exports = {
   parseLevelNumbers,
   evaluatePriceLevelProvenanceGate,
   extractQuotedPriceLevels,
+  extractSymbolSections,
   RISK_GATE_THRESHOLDS,
   buildCommanderGateResponse,
   classifyAssetClass,

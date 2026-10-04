@@ -102,13 +102,22 @@ describe('nakit akışı ayrıştırması', () => {
   // Test verisi kaynağı taklit etmiyorsa test, kodu değil kendini doğrular.
   const row = (code, desc, v1) => ({ itemCode: code, itemDescTr: desc, value1: v1, value2: null, value3: null, value4: null });
 
+  // KÖPRÜ KURALI EKLENDİ (4 Ekim 2026): kaynak hükmü artık nakit köprüsü
+  // kapanmadan verilemiyor (docs §5 madde 2). Bu bloğun konusu SINIFLANDIRMA
+  // mantığı olduğu için fixture'lara köprüyü kapatan ayaklar eklendi —
+  // kapanmayan köprünün kendi testleri tests/cash-bridge.test.mjs'te.
+  const kopru = (isletme, yatirim, finansman) => [
+    row('y', 'Yatırım Faaliyetlerinden Kaynaklanan Nakit', yatirim),
+    row('n', 'Nakit ve Benzerlerindeki Değişim', isletme + yatirim + finansman),
+  ];
+
   it('MEYSU deseni: sermaye girişi kaynaklı iyileşme tespit edilir', () => {
     const items = extractCashFlowItems([
       row('1', 'İşletme Faaliyetlerinden Kaynaklanan Net Nakit', -36400000),
       row('2', 'Finansman Faaliyetlerden Kaynaklanan Nakit', 794900000),
       row('3', 'Pay İhracından Kaynaklanan Nakit Girişleri', 912500000),
+      ...kopru(-36400000, -120000000, 794900000),
     ]);
-    expect(items).toHaveLength(3);
 
     const c = classifyDebtImprovementSource(items);
     expect(c.source).toBe('EQUITY_ISSUANCE');
@@ -120,6 +129,7 @@ describe('nakit akışı ayrıştırması', () => {
     const items = extractCashFlowItems([
       row('1', 'İşletme Faaliyetlerinden Kaynaklanan Net Nakit', 1200000000),
       row('2', 'Finansman Faaliyetlerden Kaynaklanan Nakit', -300000000),
+      ...kopru(1200000000, -400000000, -300000000),
     ]);
     expect(classifyDebtImprovementSource(items).source).toBe('OPERATIONS');
   });
@@ -128,6 +138,7 @@ describe('nakit akışı ayrıştırması', () => {
     const items = extractCashFlowItems([
       row('1', 'İşletme Faaliyetlerinden Kaynaklanan Net Nakit', -50000000),
       row('2', 'Finansman Faaliyetlerden Kaynaklanan Nakit', 600000000),
+      ...kopru(-50000000, -200000000, 600000000),
     ]);
     expect(classifyDebtImprovementSource(items).source).toBe('FINANCING');
   });

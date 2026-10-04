@@ -46,10 +46,30 @@ Bunlar hata değil; **bilinçli genişletmeler**. Canlıda maliyeti ölçülmede
 
 ### 3.2 Kanıt kalitesi
 
-- **Seviye TÜRETİM kanıtı hâlâ zorunlu değil — en değerli açık madde.** 12 Ağustos'ta eklenen iki kural (sözleşme kapanmadan rakam yok + rakam ölçümle aynı mertebede olmalı) gerçek koruma sağlıyor, ama **yeterli değil**. Canlı MEYSU turunda seviyeler yalnız `MARKET_SESSION_STATUS` eksik olduğu için engellendi. Oysa seans durumu bir **zaman etiketidir** (canlı mı, gecikmeli mi, son kapanış mı), seviyenin türetim kanıtı değildir. Giriş/stop/hedef için gereken ve HİÇBİRİ zorunlu olmayan kanıtlar: salınım dipleri/tepeleri, yatay destek/direnç, ATR veya eşdeğer volatilite tamponu, giriş yöntemi (kırılım mı destekten dönüş mü), hedef yöntemi (teknik direnç mi temel değer mi), risk/getiri oranı, işlem vadesi, seviyenin formülü ve dayandığı kanıt kimliği.
-  **TEHLİKE:** mevcut sözleşmeye göre yalnız seans verisi gelince kapı AÇILABİLİR ve model yine ölçümsüz seviye üretebilir. Yani bugünkü koruma doğru sonucu **yanlış gerekçeyle** veriyor.
-  Regresyon testi adı: `levels_must_remain_blocked_when_only_session_is_missing_but_derivation_evidence_is_absent`
-- **Nakit köprüsü mutabakatı (attribution gate) yok.** Nakit akışı satırları düzeldi ama köprünün KAPANDIĞI doğrulanmıyor. Gereken: `operating + investing + financing + fxEffect === balanceDelta` kontrolü ve bir `reconciled` bayrağı. `reconciled !== true` iken composer "işletmeden geldi" veya "finansmanla makyaj yok" diyememeli; onarıma dönmeli, onarım da başarısızsa "kaynak belirlenemedi" demeli. **Ölçülen vaka:** BRSAN turunda ÇAKAL doğru sonuca vardı ama köprüyü kapatamadan vardı — eksikliği fark etti, yine de hüküm kurdu. Sonuç doğruydu; yöntem değildi.
+- ~~**Seviye TÜRETİM kanıtı zorunlu değil.**~~ **YAPILDI (4 Ekim 2026).** Kural A (sözleşme kapanmadan rakam yok) ve Kural B (rakam ölçümle aynı mertebede olmalı) yetmiyordu: canlı MEYSU turunda seviyeler YALNIZ `MARKET_SESSION_STATUS` eksik olduğu için engellenmişti. Seans durumu bir ZAMAN ETİKETİDİR, türetim kanıtı değildir — veri geldiği an kapı açılırdı. Kural B'nin bandı da bilerek geniş (553'lük ölçüm 276–1106 arasını meşru sayar).
+  **Üç yeni kural:**
+  - **C — Fiyat tek başına seviye dayanağı değildir.** Fiyat hissenin NEREDE olduğunu söyler, desteğin/direncin nerede olduğunu söylemez. Stop/hedef için `TECHNICAL_SIGNAL` şart (ma20/ma50/periodHigh/periodLow/volatilite taşır). Üreticisi var → duvar riski yok.
+  - **D — Seviyenin DAYANAĞI adıyla beyan edilmeli.** "Stop 549,80" ile "Stop 549,80 (MA20 altı)" epistemik olarak farklı iki cümledir. Formülü doğrulayamayız ama beyan edilmesini isteyebiliriz; doğrulanamayan bir gerekçe, hiç gerekçe olmamasından iyidir ve kullanıcı denetleyebilir. Kontrol SATIRA değil BÖLÜME bakar — dayanak çoğu zaman bir üstteki cümlededir.
+  - **E — Stop VE hedef birlikteyse risk/getiri beyan edilmeli.** Yalnız stop verildiğinde (geçersizlik seviyesi) R/G tanımsızdır; koşul ikisi birden varken aranır, yoksa meşru "şu seviyenin altı tezi bozar" cümlesi bloklanırdı.
+  **Doğrulama:** `tests/level-derivation.test.mjs` (25 test), adlandırılmış regresyon dahil: `levels_must_remain_blocked_when_only_session_is_missing_but_derivation_evidence_is_absent`. Üç kural ayrı ayrı mutasyonla sınandı. Eski sözleşmeyi tutan 7 test bilinçli olarak göçürüldü (§4.4) — niyeti "meşru seviye geçer" olan fixture'lara dayanak eklendi.
+  **Açık kalan:** işlem VADESİ (ufuk) hâlâ zorunlu değil. Dayanak ve risk/getiri kadar net bir blok kriteri bulunamadı; fazla geniş bir kapı meşru cevapları bloklardı (§4.13).
+- ~~**Nakit köprüsü mutabakatı (attribution gate) yok.**~~ **YAPILDI (4 Ekim 2026).** Satırlar düzelmişti ama köprünün KAPANDIĞI doğrulanmıyordu; BRSAN turunda ÇAKAL doğru sonuca kanıtsız varmıştı — sonuç doğruydu, yöntem değildi.
+  **Yapılan:** yeni saf modül `cash-bridge.cjs`. `reconcileCashBridge()` şunu kontrol eder: `işletme + yatırım + finansman + kur etkisi + diğer = net nakit değişimi`. `reconciled !== true` iken `classifyDebtImprovementSource` artık `UNRECONCILED` döndürüyor ve "kaynak belirlenemedi" demeyi şart koşuyor. Bağımsız çapraz kontrol de var: dönem sonu − dönem başı = net değişim.
+  **Satır adları ÖLÇÜLDÜ, uydurulmadı** (İş Yatırım, BRSAN 2026/6, XI_29). Hiçbiri tahmin edilemezdi; kur etkisi satırı kaynakta kısaltmalı yazılıyor: `"Yab.ı Para Çevrim Fark. Nakit Ve Nakit Benz. Üzerindeki Etkisi"`. Ölçülen köprü kuruşu kuruşuna kapanıyor:
+
+  ```
+  İşletme     +7.695.330.000
+  Yatırım     -3.554.310.000
+  Finansman     -194.124.000
+  Kur etkisi     -13.853.000
+  ──────────────────────────
+  Hesaplanan  +3.933.043.000
+  Bildirilen  +3.933.043.000   → fark 0
+  Çapraz      9.393.170.000 − 5.460.127.000 = 3.933.043.000 ✓
+  ```
+
+  **"Bilmiyoruz" ile "kapanıyor" ayrı tutuldu:** bileşen eksikse `reconciled` false döner, true değil. Opsiyonel bileşenler (kur etkisi, diğer) tabloda yoksa sıfır sayılır.
+  **Doğrulama:** `tests/cash-bridge.test.mjs` (15 test, fixture gerçek ölçümden). Mutasyonla sınandı. Sınıflandırma testlerinin fixture'ları köprüyü kapatacak şekilde tamamlandı (§4.4).
 - **YouTube arama metadata'sı araştırma kanıtı sayılıyor.** "2 video bulundu" ile "içeriği incelendi" aynı şey değil; `RESEARCH_EVIDENCE` bugün ilkiyle COMPLETE oluyor. Cevapta uzman/kurum adı, görüş tarihi, bağlantı, tezin dayanağı, incelenen paylaşım sayısı, platform dağılımı ve tekrar ayıklaması yok. Doğru ayrım: `YOUTUBE_SEARCH_METADATA` (COMPLETE olabilir) ≠ `SOCIAL_SENTIMENT_EVIDENCE` ≠ `EXPERT_RESEARCH_EVIDENCE`.
 - ~~**Sembol dedektörü Türkçe kelimeleri hisse sanıyor.**~~ **BULUNDU VE DÜZELTİLDİ (13 Ağustos 2026).** `"BRSAN'ın son dönemini GEÇEN YILIN AYNI DÖNEMİYLE karşılaştır"` → `['BRSAN','YILIN','AYNI']` → `coklu sirket (3)` → skor 4/4 → gereksiz araştırma sözleşmesi → tek şirketlik soru **81 saniye** sürdü (ilk araç bekletildi, plan kuruldu, aynı araç tekrar çağrıldı). Kara liste yapısal olarak yetersizdi: Türkçede büyük harfli kelime kümesi sınırsız. Yeni `bist-symbol-registry.cjs` (624 sembol, Mynet panosundan) **allowlist** olarak otorite; sicilde olmayan dizi sembol sayılmıyor. Ayrıca sistemde ÜÇÜNCÜ bir sembol dedektörü olduğu ortaya çıktı (`countDistinctTickers` kendi kara listesini taşıyordu) — sicil bağlandığında skor HÂLÂ 3 diyordu; tek doğruluk kaynağına indirildi. Tazeleme: `scripts/refresh-bist-symbol-registry.cjs`.
   **BİLİNÇLİ TAVİZ:** yeni halka arz edilen şirket, sicil tazelenene kadar görülmez. Eksik tetikleme, her Türkçe cümlede sahte şirket saymaktan iyidir.
@@ -256,8 +276,8 @@ Sıra keyfî değil: her madde **ürünün ana vaadine olan uzaklığına** gör
 
 | # | İş | Neden bu sırada | Nerede |
 |---|---|---|---|
-| 1 | **Seviye türetim kanıtı** — salınım/ATR/yöntem/risk-getiri zorunlu kanıt sınıfları | Bugünkü koruma doğru sonucu YANLIŞ gerekçeyle veriyor; seans verisi gelince kapı açılır ve model yine seviye uydurabilir | §3.2 |
-| 2 | **Nakit köprüsü mutabakatı** — `reconciled` bayrağı, kapanmayan köprüde hüküm yasağı | Satırlar düzeldi ama köprünün KAPANDIĞI doğrulanmıyor; ÇAKAL doğru sonuca kanıtsız vardı | §3.2 |
+| ~~1~~ | ~~**Seviye türetim kanıtı**~~ ✅ **YAPILDI (4 Ekim)** — — salınım/ATR/yöntem/risk-getiri zorunlu kanıt sınıfları | Bugünkü koruma doğru sonucu YANLIŞ gerekçeyle veriyor; seans verisi gelince kapı açılır ve model yine seviye uydurabilir | §3.2 |
+| ~~2~~ | ~~**Nakit köprüsü mutabakatı**~~ ✅ **YAPILDI (4 Ekim)** — — `reconciled` bayrağı, kapanmayan köprüde hüküm yasağı | Satırlar düzeldi ama köprünün KAPANDIĞI doğrulanmıyor; ÇAKAL doğru sonuca kanıtsız vardı | §3.2 |
 | 3 | **Tek composer akışı** — onarımı cevaptan önce bitir | İlk kompozisyon tamamen israf (~72s); brifing doğru ama yanlış yerde çalışıyor | §3.1 |
 | 4 | **Onarım aracını zorla** | Sözleşme doğru aracı söylüyor, model dinlemiyor, kimse itiraz etmiyor | §3.1 |
 | 5 | **Kanıt sınıfı ayrıştırması** — arama metadata'sı ≠ sosyal duyarlılık ≠ uzman araştırması | "2 video bulundu" bugün COMPLETE sayılıyor | §3.2 |

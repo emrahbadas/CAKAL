@@ -18,6 +18,7 @@ const { assessEarningsPricing } = require('./earnings-pricing.cjs');
 const executionContractLib = require('./execution-contract.cjs');
 const researchContractLib = require('./research-contract.cjs');
 const bistEntityResolver = require('./bist-entity-resolver.cjs');
+const { reconcileCashBridge, attributionAllowed } = require('./cash-bridge.cjs');
 const { resolveTimeWindow, windowStartIso, savedChannelIds } = require('./telegram-scope.cjs');
 const {
   buildEvidenceLedger,
@@ -4892,11 +4893,17 @@ async function handleToolCall(name, args, options = {}) {
             debtImprovementSource: classification.source,
             classification: classification.source,
             interpretation: classification.reason,
+            // Köprü mutabakatı sonuca AÇIKÇA yazılır: model "kapandı mı"
+            // sorusunu tahmin etmek zorunda kalmasın.
+            reconciliation: classification.reconciliation || reconcileCashBridge(cashFlowItems),
           },
           source: 'is_yatirim_malitablo',
           sourceLabel: 'Nakit akış ayrıştırması. KURAL: net borç azalması, kaynağı OPERATIONS değilse '
             + 'operasyonel kalite artısı olarak sunulamaz. Kaynağı cevapta AÇIKÇA yaz '
-            + '(işletme nakit akışı mı, pay ihracı mı, borçlanma mı).',
+            + '(işletme nakit akışı mı, pay ihracı mı, borçlanma mı). '
+            + 'KÖPRÜ KURALI: reconciliation.reconciled !== true ise nakdin kaynağı hakkında '
+            + 'hüküm KURMA — "kaynak belirlenemedi" de. Köprü kapanmadan satırların '
+            + 'şirketin nakit hikâyesini tarif ettiği bilinemez.',
         };
       }
 
@@ -9314,6 +9321,22 @@ const FINANCIAL_KEY_ITEM_PATTERNS_CASHFLOW = [
   { key: 'payIhraciNakitGirisi', label: 'Pay İhracından Nakit Girişi', re: /pay ihra[çc]/ },
   { key: 'borclanmaNakitGirisi', label: 'Borçlanmadan Nakit Girişi', re: /borçlanmadan kaynaklanan nakit giriş/ },
   { key: 'borcOdemesi', label: 'Borç Ödemesine İlişkin Nakit Çıkışı', re: /borç ödemelerine ilişkin nakit çıkış/ },
+
+  // ── NAKİT KÖPRÜSÜ BİLEŞENLERİ ──
+  // Satır adları İş Yatırım'dan BİREBİR ölçülerek alındı (BRSAN 2026/6,
+  // XI_29, 4 Ekim 2026). Hiçbiri tahmin edilemezdi — kur etkisi satırı
+  // kaynakta kısaltmalı yazılıyor:
+  //   "Yab.ı Para Çevrim Fark. Nakit Ve Nakit Benz. Üzerindeki Etkisi"
+  // Uydurma desen yazsaydık köprü sessizce kapanmaz, kapı da sürekli
+  // "doğrulanamadı" derdi (docs §4.9).
+  { key: 'kurCevrimEtkisi', label: 'Kur Çevrim Farklarının Nakit Üzerindeki Etkisi', re: /^yab.*çevrim fark/ },
+  { key: 'digerNakitHareketi', label: 'Diğer Nakit Girişi/Çıkışı', re: /^diğer nakit giriş/ },
+  // "Diğer Nakit ve Nakit Benzerlerindeki Artış" satırı da var; ^ çapası
+  // onu dışarıda bırakır. Bilanço kalemi "Nakit ve Nakit Benzerleri" ise
+  // "benzerlerindeki" eki olmadığı için eşleşmez.
+  { key: 'netNakitDegisimi', label: 'Nakit ve Benzerlerindeki Değişim', re: /^nakit ve (nakit )?benzerlerindeki (net )?(değişim|artış)/ },
+  { key: 'donemBasiNakit', label: 'Dönem Başı Nakit Değerler', re: /^dönem başı nakit/ },
+  { key: 'donemSonuNakit', label: 'Dönem Sonu Nakit', re: /^dönem sonu nakit/ },
 ];
 
 /**
@@ -9355,6 +9378,21 @@ function classifyDebtImprovementSource(cashFlowItems = []) {
     return { source: 'UNKNOWN', reason: 'Nakit akış kalemleri tabloda bulunamadı.' };
   }
 
+  // KÖPRÜ KAPANMADAN KAYNAK HÜKMÜ YOK.
+  // Satırların doğru okunduğunu ancak köprü kapanınca biliriz. Kapanmıyorsa
+  // bir kalem eksik/yanlış eşleşmiş demektir ve "nakit işletmeden geldi"
+  // cümlesi elimizdeki satırların şirketin nakit hikâyesini tarif ettiği
+  // VARSAYIMINA dayanır. Varsayım kanıt değildir (docs §3.2).
+  const reconciliation = reconcileCashBridge(cashFlowItems);
+  if (!attributionAllowed(reconciliation)) {
+    return {
+      source: 'UNRECONCILED',
+      reason: `${reconciliation.reason} Köprü kapanmadan nakdin kaynağı hükmü kurulamaz; `
+        + 'cevapta "kaynak belirlenemedi" de ve borç iyileşmesini operasyonel kaliteye BAĞLAMA.',
+      reconciliation,
+    };
+  }
+
   const operasyonelPozitif = Number.isFinite(isletme) && isletme > 0;
   const finansmanPozitif = Number.isFinite(finansman) && finansman > 0;
   const sermayeGirisi = Number.isFinite(payIhraci) && payIhraci > 0;
@@ -9374,7 +9412,7 @@ function classifyDebtImprovementSource(cashFlowItems = []) {
     };
   }
   if (operasyonelPozitif) {
-    return { source: 'OPERATIONS', reason: 'İşletme faaliyeti pozitif nakit üretiyor.' };
+    return { source: 'OPERATIONS', reason: 'İşletme faaliyeti pozitif nakit üretiyor. Nakit köprüsü kapanıyor.', reconciliation };
   }
   return { source: 'MIXED', reason: 'İşletme nakit akışı negatif; kaynak tek başına ayrıştırılamadı.' };
 }

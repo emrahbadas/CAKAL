@@ -250,7 +250,7 @@ describe('8) Ledger\'da olmayan gerçek sembol için sayısal stop yakalanır', 
   });
 
   it('GARAN için ölçüm varsa serbest', () => {
-    const answer = '## GARAN\n- stop bölgesi: ₺122.40 altı kapanış';
+    const answer = '## GARAN\n- MA20 124,0; destek bölgesi burada.\n- stop bölgesi: ₺122.40 altı kapanış';
     const events = [{ type: 'tool_call', tool: 'analyze_finance_signal', entities: ['GARAN'], timestamp: NOW }];
     expect(evaluatePriceLevelProvenanceGate('borsada GARAN', answer, events, NOW)).toBeNull();
   });

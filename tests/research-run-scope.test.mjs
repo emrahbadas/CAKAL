@@ -216,9 +216,13 @@ describe('Entity çıkarımı', () => {
 });
 
 describe('Seviye provenance kilidi', () => {
+  // KURAL D (4 Ekim 2026): seviyenin dayanağı da yazılmalı. Bu fixture'ın
+  // amacı provenance (ölçüm var mı) sınamak; dayanak satırı eklendi ki
+  // testler Kural D'ye değil kendi konularına baksın.
   const answer = [
     '## KCHOL',
     'Hüküm: İNCELE',
+    'MA20 196,5; destek bu bölgede.',
     '- Mantıklı giriş bölgesi: ₺194 – ₺199',
     '- Geçersizlik / stop bölgesi: ₺182.1 altı kapanış',
   ].join('\n');

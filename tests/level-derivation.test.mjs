@@ -35,7 +35,12 @@ const measurementEvent = (symbol, values, classes = ['TECHNICAL_SIGNAL']) => ({
   timestamp: NOW - 60_000,
 });
 
-const answerWith = (symbol, line) => `## ${symbol}\nGörünüm nötr.\n${line}\n`;
+// KURAL D (4 Ekim 2026) seviyenin DAYANAĞINI da istiyor: MA20/MA50, dönem
+// dibi/tepesi, destek/direnç, ATR... Bu yardımcı artık MEŞRU bir cevap
+// üretir — dayanağı yazılmış. Dayanaksız hâli ayrı yardımcıda, çünkü
+// Kural D'nin kendi testleri onu kullanacak.
+const answerWith = (symbol, line) => `## ${symbol}\nMA20 553,2 seviyesinde; destek buradan geçiyor.\n${line}\n`;
+const answerWithoutBasis = (symbol, line) => `## ${symbol}\nGörünüm nötr.\n${line}\n`;
 
 describe('ölçüm değerlerinin toplanması', () => {
   it('sembolüne ait değerleri toplar', () => {
@@ -157,5 +162,125 @@ describe('KURAL A — sözleşme kapanmadan seviye yok', () => {
       'KCHOL analiz', noLevels, events, NOW, { researchStatus: 'PARTIAL' },
     );
     expect(lock).toBeNull();
+  });
+});
+
+/**
+ * KURAL C / D / E — SEVİYE TÜRETİM KANITI (4 Ekim 2026)
+ *
+ * Kural A (sözleşme kapanmadan rakam yok) ve Kural B (rakam ölçümle aynı
+ * mertebede olmalı) gerçek koruma sağlıyordu ama yetmiyordu:
+ *
+ * Canlı MEYSU turunda seviyeler YALNIZ MARKET_SESSION_STATUS eksik olduğu
+ * için engellendi. Oysa seans durumu bir ZAMAN ETİKETİDİR (canlı mı,
+ * gecikmeli mi), seviyenin türetim kanıtı değildir. Seans verisi geldiği an
+ * kapı açılırdı ve model yine ölçümsüz seviye üretebilirdi — koruma doğru
+ * sonucu YANLIŞ GEREKÇEYLE veriyordu (docs §3.2).
+ *
+ * Kural B'nin bandı da bilerek geniş: 553'lük bir ölçüm 276–1106 arasını
+ * meşru sayar. O aralıkta keyfî sayı seçmek hâlâ mümkündü.
+ */
+describe('KURAL C — fiyat tek başına seviye dayanağı değildir', () => {
+  const fiyatOlayi = (symbol) => ({
+    type: 'tool_call', tool: 'get_stock_price', entities: [symbol],
+    evidenceClasses: ['CURRENT_EQUITY_PRICE'],
+    measurements: { [symbol]: [553.2] },
+    timestamp: NOW - 60_000,
+  });
+
+  it('yalnız fiyat kanıtıyla stop verilemez', () => {
+    const answer = answerWith('KCHOL', 'Stop 549,80 TL altında geçersizlik.');
+    const lock = evaluatePriceLevelProvenanceGate('KCHOL alım', answer, [fiyatOlayi('KCHOL')], NOW);
+    expect(lock).toBeTruthy();
+    expect(lock.priceOnlySymbols).toEqual(['KCHOL']);
+    expect(lock.response).toContain('desteğin/direncin nerede olduğunu SÖYLEMEZ');
+  });
+
+  it('teknik ölçüm varsa geçer', () => {
+    const answer = answerWith('KCHOL', 'Stop 549,80 TL altında geçersizlik.');
+    expect(evaluatePriceLevelProvenanceGate('KCHOL alım', answer, [measurementEvent('KCHOL', [553.2])], NOW)).toBeNull();
+  });
+});
+
+describe('KURAL D — seviyenin dayanağı beyan edilmeli', () => {
+  const events = [measurementEvent('KCHOL', [553.2])];
+
+  it('dayanaksız seviye bloklanır', () => {
+    const answer = answerWithoutBasis('KCHOL', 'Stop 549,80 TL altında geçersizlik.');
+    const lock = evaluatePriceLevelProvenanceGate('KCHOL alım', answer, events, NOW);
+    expect(lock).toBeTruthy();
+    expect(lock.noBasisSymbols).toEqual(['KCHOL']);
+    expect(lock.reason).toContain('Dayanaksız seviye');
+  });
+
+  it('dayanak çeşitleri kabul edilir', () => {
+    for (const dayanak of [
+      'MA50 548 seviyesinde.',
+      'Dönem dibi 545 bölgesi.',
+      '20 günlük ortalama 551.',
+      'ATR tamponu 12 TL.',
+      'Direnç 560 civarı.',
+      'Kırılım seviyesi izleniyor.',
+    ]) {
+      const answer = `## KCHOL\n${dayanak}\nStop 549,80 TL altında geçersizlik.\n`;
+      expect(evaluatePriceLevelProvenanceGate('KCHOL alım', answer, events, NOW), dayanak).toBeNull();
+    }
+  });
+
+  it('dayanak ÜST satırda olsa da sayılır (bölüm bazlı)', () => {
+    // Dayanak çoğu zaman seviyenin yazıldığı satırda değil, bir üstteki
+    // cümlede durur. Satır bazlı bakan bir kural meşru cevabı bloklardı.
+    const answer = [
+      '## KCHOL',
+      'MA20 553,2; destek bu bölgede.',
+      '',
+      'Plan:',
+      '- Stop 549,80 TL',
+    ].join('\n');
+    expect(evaluatePriceLevelProvenanceGate('KCHOL alım', answer, events, NOW)).toBeNull();
+  });
+});
+
+describe('KURAL E — stop ve hedef birlikteyse risk/getiri şart', () => {
+  const events = [measurementEvent('KCHOL', [553.2])];
+
+  it('stop + hedef var ama risk/getiri yoksa bloklanır', () => {
+    const answer = '## KCHOL\nMA20 553,2 destek.\n- Giriş 550 TL · stop 540 TL\n- Hedef 600 TL\n';
+    const lock = evaluatePriceLevelProvenanceGate('KCHOL alım', answer, events, NOW);
+    expect(lock).toBeTruthy();
+    expect(lock.noRiskRewardSymbols).toEqual(['KCHOL']);
+  });
+
+  it('risk/getiri yazılmışsa geçer', () => {
+    const answer = '## KCHOL\nMA20 553,2 destek.\n- Giriş 550 TL · stop 540 TL\n- Hedef 600 TL\n- Risk/getiri: 1:5\n';
+    expect(evaluatePriceLevelProvenanceGate('KCHOL alım', answer, events, NOW)).toBeNull();
+  });
+
+  it('KAPSAM AŞMIYOR — yalnız stop varsa risk/getiri aranmaz', () => {
+    // Geçersizlik seviyesi tek başına verildiğinde R/G tanımsızdır;
+    // aramak meşru "şu seviyenin altı tezi bozar" cümlesini bloklardı.
+    const answer = '## KCHOL\nMA20 553,2 destek.\n- Stop 540 TL altı tezi bozar.\n';
+    expect(evaluatePriceLevelProvenanceGate('KCHOL alım', answer, events, NOW)).toBeNull();
+  });
+});
+
+describe('levels_must_remain_blocked_when_only_session_is_missing_but_derivation_evidence_is_absent', () => {
+  it('ADLANDIRILMIŞ REGRESYON (docs §3.2)', () => {
+    // Senaryo: seans durumu GELDİ (sözleşme COMPLETE), fiyat ölçümü de var.
+    // Eski kapı burada AÇILIRDI. Oysa türetim kanıtı yok: ne teknik ölçüm
+    // var, ne de seviyenin dayanağı yazılmış.
+    const seansGeldi = { researchStatus: 'COMPLETE' };
+    const sadeceFiyat = [{
+      type: 'tool_call', tool: 'get_stock_price', entities: ['MEYSU'],
+      evidenceClasses: ['CURRENT_EQUITY_PRICE', 'MARKET_SESSION_STATUS'],
+      measurements: { MEYSU: [28.4] },
+      timestamp: NOW - 60_000,
+    }];
+    const answer = answerWithoutBasis('MEYSU', 'Giriş 27,50 TL · stop 25,00 TL.');
+
+    const lock = evaluatePriceLevelProvenanceGate('MEYSU alım', answer, sadeceFiyat, NOW, seansGeldi);
+    expect(lock, 'seans geldi diye kapı açılmamalı').toBeTruthy();
+    expect(lock.contractIncomplete).toBe(false);
+    expect(lock.priceOnlySymbols).toContain('MEYSU');
   });
 });
