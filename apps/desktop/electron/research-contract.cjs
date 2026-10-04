@@ -470,8 +470,21 @@ function evaluateContract(contract, ledger, now = Date.now()) {
   // Yetenek boşluğu: eksik kanıt sınıfını üreten HİÇBİR araç yoksa bu onarımla
   // kapanmaz. Körlemesine "bir araştırma aracı daha çalıştır" demek yerine
   // durumu açıkça bildir — aksi halde onarım turu boşa harcanır.
+  // EVREN EKSİĞİ YETENEK BOŞLUĞU DEĞİLDİR.
+  // ÖLÇÜLEN CANLI HATA (4 Ekim 2026): UNIVERSE_COVERAGE:* bir kanıt sınıfı
+  // olmadığı için toolsProducing boş dönüyor ve buraya "üreten araç yok"
+  // diye düşüyordu. Sonuç: AYNI onarım mesajında iki zıt talimat —
+  //   "- [s1] eksik: UNIVERSE_COVERAGE:BIST100 → get_bist_board'u
+  //      index:"XU100", limit:100 ile çağır"
+  //   "Şu kanıt sınıflarını üreten araç YOK, onları toplamaya çalışma:
+  //      UNIVERSE_COVERAGE:BIST100"
+  // Model bu turda birinciye uydu (count 50 → 100), ama çelişkiyi şansa
+  // bırakmak olmaz. Evren eksiğinin kapanma yolu VAR; kendi talimatı
+  // describeUniverseRepair'de.
   const capabilityGaps = [...new Set(
-    evaluated.flatMap((sq) => sq.missingEvidence.filter((klass) => toolsProducing(klass).length === 0)),
+    evaluated.flatMap((sq) => sq.missingEvidence.filter(
+      (klass) => !isUniverseCoverageGap(klass) && toolsProducing(klass).length === 0,
+    )),
   )];
 
   return {

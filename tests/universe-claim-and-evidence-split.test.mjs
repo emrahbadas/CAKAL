@@ -373,3 +373,77 @@ describe('REGRESYON — evren eksiği onarılabilir olmalı', () => {
     expect(cov.subQuestions[0].missingEvidence).not.toContain('UNIVERSE_COVERAGE:BIST100');
   });
 });
+
+/**
+ * CANLI HATA REGRESYONU — 4 Ekim 2026 (canlı doğrulama turunda yakalandı)
+ *
+ * Onarım mesajı AYNI metinde iki zıt talimat taşıyordu:
+ *
+ *   "- [s1] eksik: UNIVERSE_COVERAGE:BIST100 → get_bist_board'u
+ *      index:"XU100", limit:100 ile çağır"
+ *   "Şu kanıt sınıflarını üreten araç YOK, onları toplamaya çalışma:
+ *      UNIVERSE_COVERAGE:BIST100"
+ *
+ * Sebep: capabilityGaps da toolsProducing(klass).length === 0 ile hesaplanıyor
+ * ve UNIVERSE_COVERAGE:* bir kanıt sınıfı olmadığı için oraya düşüyordu.
+ * Onarım satırını düzelttim, yetenek boşluğu listesini unuttum — "bir
+ * dedektörü düzeltmek yetmez, kaç kopyası olduğunu SAY" dersinin (docs §4.8)
+ * bir tekrarı daha.
+ *
+ * Model o turda doğru olana uydu (count 50 → 100), ama çelişkiyi şansa
+ * bırakmak olmaz.
+ */
+describe('REGRESYON — evren eksiği yetenek boşluğu DEĞİLDİR', () => {
+  function coverageWithUniverseGap() {
+    const run = createResearchRun({ userQuestion: 'bist 100 hisselerinden hangisi' });
+    const res = submitPlan(run.get(), {
+      subQuestions: [{
+        id: 's1',
+        question: 'BIST100 içinde yapısal liderler hangileri?',
+        outputKind: 'structural_leader',
+        entities: ['THYAO', 'ASELS'],
+        coverage: 'ALL',
+        requiredEvidence: ['INDEX_MEMBERSHIP', 'LIQUIDITY'],
+      }],
+    });
+    run.set(res.contract);
+
+    const events = [{
+      type: 'tool_call', tool: 'get_bist_board', entities: ['THYAO', 'ASELS'],
+      timestamp: now - 60_000, success: true, data: { items: new Array(50).fill({}) },
+      source: 'mynet', universeScope: 'BIST_ALL_SNAPSHOT', observedCount: 50,
+    }];
+    return evaluateContract(run.get(), buildEvidenceLedger(events, now), now);
+  }
+
+  it('capabilityGaps evren eksiğini İÇERMEZ', () => {
+    const cov = coverageWithUniverseGap();
+    expect(cov.subQuestions[0].missingEvidence).toContain('UNIVERSE_COVERAGE:BIST100');
+    expect(cov.capabilityGaps).not.toContain('UNIVERSE_COVERAGE:BIST100');
+  });
+
+  it('onarım mesajı kendisiyle çelişmez', () => {
+    const repair = buildContractRepairRequest('bist 100 hisselerinden hangisi', coverageWithUniverseGap());
+    expect(repair).not.toBeNull();
+    // Nasıl kapatılacağı yazıyor...
+    expect(repair.message).toContain('index:"XU100"');
+    // ...ve aynı metin "üreten araç yok, uğraşma" DEMİYOR.
+    const yetenekSatiri = repair.message.split('\n').find((l) => l.includes('üreten araç YOK'));
+    expect(yetenekSatiri ?? '').not.toContain('UNIVERSE_COVERAGE');
+  });
+
+  it('GERÇEK yetenek boşlukları hâlâ bildirilir', () => {
+    // Daraltma kapsamı aşmasın: üreticisi olmayan normal sınıflar korunur.
+    const run = createResearchRun({ userQuestion: 'test' });
+    const res = submitPlan(run.get(), {
+      subQuestions: [{
+        id: 's1', question: 'THYAO teknik görünüm', outputKind: 'current_leader',
+        entities: ['THYAO'], coverage: 'ALL',
+        requiredEvidence: ['CURRENT_EQUITY_PRICE', 'TECHNICAL_SIGNAL'],
+      }],
+    });
+    run.set(res.contract);
+    const cov = evaluateContract(run.get(), buildEvidenceLedger([], now), now);
+    expect(Array.isArray(cov.capabilityGaps)).toBe(true);
+  });
+});

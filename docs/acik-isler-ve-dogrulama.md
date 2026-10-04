@@ -140,7 +140,7 @@ Finans bağlamı bile cevaptan geliyordu — "Borsa Haber Hisse" bir **kanal ad�
 
 **Doğrulama:** `tests/telegram-scope.test.mjs` (35) + `tests/telegram-channel-digest.test.mjs` (11). Arama sırası mutasyonla sınandı: `slice` filtreden önce yapılırsa aralık dışı eşleşmeler kotayı doldurup bugünün eşleşmesini düşürüyor — test bunu yakalıyor.
 
-**Açık kalan:** Takip listesi seçimi canlıda (gerçek Electron penceresinde) henüz denenmedi; birim testler ve typecheck yeşil, arayüz etkileşimi kullanıcı tarafından doğrulanacak.
+**CANLI DOĞRULANDI (4 Ekim 2026, CDP ile sürülen gerçek pencere):** Tara 23 kanal buldu, sol panel 17 gösterdi (seçili 6 doğru şekilde elendi). Ekle/çıkar çalıştı, "Kaydedilmemiş değişiklik var" uyarısı tetiklendi, geri alınca panel sayıları başlangıca döndü ve DİSK HİÇ DEĞİŞMEDİ. Kaydetme akışı zaten kullanıcının kendi kullanımıyla kanıtlı: 15 Ağustos 01:00:34 damgalı 6 kanal diskte duruyor.
 
 ### 3.9 Hüküm sızıntısı, kanıt tanımı ayrışması, evren iddiası — DÜZELTİLDİ (12 Eylül 2026)
 
@@ -191,6 +191,32 @@ Kapı doğru çalıştı: s1/s2 PARTIAL kaldı, "BIST100 içindeki tek temiz ada
 **Doğrulama:** `tests/universe-claim-and-evidence-split.test.mjs` +5 test (31 toplam).
 
 **Gözlem — kapılar doğru çalıştı:** aynı turda hüküm sızıntısı yok (tablo/başlık dahil hiç `AL` kalmadı), evren iddiası dili çıkmadı, karar kilidi ateşlemedi (çünkü AL/SAT hükmü zaten kurulmadı). Sessiz fren satırı da görünmedi — doğru, uygulanacak kilit yoktu.
+
+### 3.11 Canlı doğrulama — §3.9 ve §3.10 (4 Ekim 2026)
+
+CDP ile sürülen gerçek Electron penceresinde aynı soru yeniden soruldu. Ölçülen aktivite kaydı:
+
+```
+1. tur : Mynet canlı borsa panosu çekiliyor (XU100) → count=50
+         FİYATLANMA KİLİDİ uygulandı (sözleşme onarımı sahipken; ek tur AÇILMADI): ...
+         KARAR KİLİDİ uygulandı (sözleşme onarımı sahipken; ek tur AÇILMADI):
+           toplanmadı: Değerleme çarpanı, Dönemsel karşılaştırma
+           | toplandı ama yazılmadı: Veri tazeliği
+         Sözleşme onarımı: s1/s2/s3 → ... UNIVERSE_COVERAGE:BIST100
+2. tur : Mynet canlı borsa panosu çekiliyor (XU100) → count=100
+         Sözleşme kapanışı: PARTIAL — tam: s1; kısmi: s2, s3
+```
+
+Dört düzeltme de canlıda doğrulandı: **(a)** evren onarımı artık talimat üretiyor ve model ona UYDU (50 → 100); **(b)** `UNIVERSE_COVERAGE` hiçbir alt soruda eksik kalmadı, s1 COMPLETE oldu; **(c)** sessiz fren artık iz bırakıyor — iki kilit de monitöre düştü; **(d)** karar kilidi "toplanmadı" ile "toplandı ama yazılmadı" ayrımını ekranda gösterdi. Aday kümesi 3 sembolden 11'e çıktı — evren gerçekten tarandığı için.
+
+**YOL BOYUNCA YAKALANAN YENİ KUSUR — DÜZELTİLDİ.** Onarım mesajı kendisiyle çelişiyordu:
+
+```
+- [s1] eksik: UNIVERSE_COVERAGE:BIST100 → ... get_bist_board'u index:"XU100", limit:100 ile çağır
+Şu kanıt sınıflarını üreten araç YOK, onları toplamaya çalışma: UNIVERSE_COVERAGE:BIST100
+```
+
+`capabilityGaps` de `toolsProducing(klass).length === 0` ile hesaplanıyordu; evren eksiği kanıt sınıfı olmadığı için oraya düşüyordu. Onarım satırını düzeltip yetenek boşluğu listesini unutmuşum — §4.8'in bir tekrarı daha. Model bu turda doğru olana uydu ama çelişkiyi şansa bırakmak olmaz. `isUniverseCoverageGap` filtresi `capabilityGaps` hesabına da eklendi; iki regresyon testi mutasyonla sınandı.
 
 ### 3.4 Yapısal
 
